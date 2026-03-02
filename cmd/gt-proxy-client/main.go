@@ -1,5 +1,5 @@
 // gt-proxy-client is the pass-through binary installed in containers as both `gt` and `bd`.
-// When GT_PROXY_URL, GT_PROXY_CERT, and GT_PROXY_KEY are all set, it forwards
+// When GT_PROXY_URL, GT_PROXY_CERT, GT_PROXY_KEY, and GT_PROXY_CA are all set, it forwards
 // os.Args[1:] to the proxy server over mTLS and proxies the response.
 // Otherwise it execs the real binary at /usr/local/bin/gt.real (or the path in GT_REAL_BIN).
 package main
@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 type execRequest struct {
@@ -28,6 +29,13 @@ type execResponse struct {
 }
 
 func main() {
+	// Required environment variables:
+	//   GT_PROXY_URL  — proxy base URL (e.g. https://172.17.0.1:9876)
+	//   GT_PROXY_CERT — path to PEM client cert (issued by proxy CA)
+	//   GT_PROXY_KEY  — path to PEM client private key
+	//   GT_PROXY_CA   — path to PEM proxy CA cert (used to verify server cert)
+	// Optional:
+	//   GT_REAL_BIN   — fallback binary path (default /usr/local/bin/gt.real)
 	proxyURL := os.Getenv("GT_PROXY_URL")
 	certFile := os.Getenv("GT_PROXY_CERT")
 	keyFile := os.Getenv("GT_PROXY_KEY")
@@ -36,8 +44,18 @@ func main() {
 	// but passed separately so the Go HTTP client can also trust the proxy server cert.
 	caFile := os.Getenv("GT_PROXY_CA")
 
-	if proxyURL == "" || certFile == "" || keyFile == "" {
-		// Fall through to the real binary.
+	if proxyURL == "" || certFile == "" || keyFile == "" || caFile == "" {
+		// Print which variable is missing, then fall through to the real binary.
+		for _, kv := range []struct{ k, v string }{
+			{"GT_PROXY_URL", proxyURL},
+			{"GT_PROXY_CERT", certFile},
+			{"GT_PROXY_KEY", keyFile},
+			{"GT_PROXY_CA", caFile},
+		} {
+			if kv.v == "" {
+				fmt.Fprintf(os.Stderr, "gt-proxy-client: %s is not set, falling through to real binary\n", kv.k)
+			}
+		}
 		execReal()
 		return
 	}
@@ -49,25 +67,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	tlsCfg := &tls.Config{
-		Certificates: []tls.Certificate{clientCert},
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gt-proxy-client: read CA: %v\n", err)
+		os.Exit(1)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		fmt.Fprintf(os.Stderr, "gt-proxy-client: invalid CA PEM\n")
+		os.Exit(1)
 	}
 
-	if caFile != "" {
-		caPEM, err := os.ReadFile(caFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "gt-proxy-client: read CA: %v\n", err)
-			os.Exit(1)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caPEM) {
-			fmt.Fprintf(os.Stderr, "gt-proxy-client: invalid CA PEM\n")
-			os.Exit(1)
-		}
-		tlsCfg.RootCAs = pool
+	tlsCfg := &tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      pool,
 	}
 
 	httpClient := &http.Client{
+		Timeout:   5 * time.Minute,
 		Transport: &http.Transport{TLSClientConfig: tlsCfg},
 	}
 

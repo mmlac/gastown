@@ -163,14 +163,11 @@ func TestStartIntegration(t *testing.T) {
 	clientCert, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
 	require.NoError(t, err)
 
-	// ServerName must match the CN on the server cert ("gt-proxy-server"),
-	// not the IP we're connecting to, because IssueServer issues no IP SANs.
 	authorisedClient := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				Certificates: []tls.Certificate{clientCert},
 				RootCAs:      pool,
-				ServerName:   "gt-proxy-server",
 			},
 		},
 	}
@@ -196,8 +193,7 @@ func TestStartIntegration(t *testing.T) {
 		noCertClient := &http.Client{
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
-					RootCAs:    pool,
-					ServerName: "gt-proxy-server",
+					RootCAs: pool,
 					// No Certificates — no client cert presented.
 				},
 			},
@@ -226,7 +222,6 @@ func TestStartIntegration(t *testing.T) {
 				TLSClientConfig: &tls.Config{
 					Certificates: []tls.Certificate{wrongClientCert},
 					RootCAs:      pool,
-					ServerName:   "gt-proxy-server",
 				},
 			},
 		}
@@ -256,7 +251,6 @@ func TestStartIntegration(t *testing.T) {
 				TLSClientConfig: &tls.Config{
 					Certificates: []tls.Certificate{clientCert},
 					RootCAs:      pool,
-					ServerName:   "gt-proxy-server",
 				},
 			},
 		}

@@ -98,8 +98,11 @@ func (s *Server) Start(ctx context.Context) error {
 		IdleTimeout:  2 * time.Minute,
 	}
 
-	// Generate a server cert from our CA for TLS.
-	certPEM, keyPEM, err := s.ca.IssueServer("gt-proxy-server", 365*24*time.Hour)
+	// Generate a server cert from our CA for TLS, including IP SANs so that clients
+	// connecting by IP (e.g. containers reaching the proxy at 172.17.0.1) can verify
+	// the cert without an explicit ServerName override.
+	ips := serverListenIPs(s.cfg.ListenAddr)
+	certPEM, keyPEM, err := s.ca.IssueServer("gt-proxy-server", ips, 365*24*time.Hour)
 	if err != nil {
 		return fmt.Errorf("issue server cert: %w", err)
 	}
@@ -135,6 +138,64 @@ func (s *Server) Start(ctx context.Context) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// serverListenIPs returns the IP addresses that should be included as IP SANs in the
+// server certificate. It parses the host portion of listenAddr and:
+//   - If it is a specific non-loopback IP, returns [that IP, 127.0.0.1].
+//   - If it is 0.0.0.0 (unspecified), enumerates all non-loopback IPv4 interface
+//     addresses and prepends 127.0.0.1.
+//   - Returns [127.0.0.1] at minimum on any parse or enumeration error.
+func serverListenIPs(listenAddr string) []net.IP {
+	loopback := net.ParseIP("127.0.0.1")
+
+	host, _, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return []net.IP{loopback}
+	}
+
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// hostname or empty — just use loopback
+		return []net.IP{loopback}
+	}
+
+	if ip.IsUnspecified() {
+		// 0.0.0.0 — include loopback plus all non-loopback IPv4 interface addresses.
+		ips := []net.IP{loopback}
+		ifaces, err := net.Interfaces()
+		if err != nil {
+			return ips
+		}
+		for _, iface := range ifaces {
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				var ifaceIP net.IP
+				switch v := addr.(type) {
+				case *net.IPNet:
+					ifaceIP = v.IP
+				case *net.IPAddr:
+					ifaceIP = v.IP
+				}
+				if ifaceIP == nil || ifaceIP.IsLoopback() {
+					continue
+				}
+				if ip4 := ifaceIP.To4(); ip4 != nil {
+					ips = append(ips, ip4)
+				}
+			}
+		}
+		return ips
+	}
+
+	if ip.IsLoopback() {
+		return []net.IP{loopback}
+	}
+	// Specific non-loopback IP: include both that IP and loopback for local connections.
+	return []net.IP{ip, loopback}
 }
 
 // minimalEnv returns a minimal environment for git and gt/bd subprocesses,
