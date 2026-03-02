@@ -422,6 +422,107 @@ func TestHandleExecAuditLog(t *testing.T) {
 	})
 }
 
+// TestExecRateLimit verifies that per-client rate limiting returns 429 when exceeded.
+func TestExecRateLimit(t *testing.T) {
+	// Burst of 1, rate of 0 (never refills) → second request is always rejected.
+	srv := New(Config{
+		AllowedCommands: []string{"echo"},
+		ExecRateLimit:   0.001, // near-zero refill; burst covers the first request
+		ExecRateBurst:   1,
+	}, nil)
+
+	body := `{"argv":["echo","hi"]}`
+
+	// First request should succeed (consumes the single burst token).
+	req1 := makeFakeRequest("POST", "/v1/exec", body, "gt-gastown-ratelimitclient")
+	rec1 := httptest.NewRecorder()
+	srv.handleExec(rec1, req1)
+	assert.Equal(t, http.StatusOK, rec1.Code)
+
+	// Second immediate request from the same client should be rate-limited.
+	req2 := makeFakeRequest("POST", "/v1/exec", body, "gt-gastown-ratelimitclient")
+	rec2 := httptest.NewRecorder()
+	srv.handleExec(rec2, req2)
+	assert.Equal(t, http.StatusTooManyRequests, rec2.Code)
+	assert.Contains(t, rec2.Body.String(), "rate limit exceeded")
+
+	// A different client should still succeed (rate limits are per-client).
+	req3 := makeFakeRequest("POST", "/v1/exec", body, "gt-gastown-otherclient")
+	rec3 := httptest.NewRecorder()
+	srv.handleExec(rec3, req3)
+	assert.Equal(t, http.StatusOK, rec3.Code)
+}
+
+// TestExecRateLimitLogsWarn verifies that rate limit rejections are logged at WARN.
+func TestExecRateLimitLogsWarn(t *testing.T) {
+	lc := &logCapture{}
+	srv := New(Config{
+		AllowedCommands: []string{"echo"},
+		ExecRateLimit:   0.001,
+		ExecRateBurst:   1,
+		Logger:          slog.New(lc),
+	}, nil)
+
+	body := `{"argv":["echo","hi"]}`
+	// Drain the burst token.
+	srv.handleExec(httptest.NewRecorder(),
+		makeFakeRequest("POST", "/v1/exec", body, "gt-gastown-warntest"))
+	// This one should be rejected and logged.
+	srv.handleExec(httptest.NewRecorder(),
+		makeFakeRequest("POST", "/v1/exec", body, "gt-gastown-warntest"))
+
+	_, ok := lc.findEntry(slog.LevelWarn, "exec rate limit exceeded")
+	assert.True(t, ok, "expected WARN 'exec rate limit exceeded' log entry")
+}
+
+// TestExecConcurrencyLimit verifies that the global concurrency cap returns 503.
+func TestExecConcurrencyLimit(t *testing.T) {
+	// Cap at 1 concurrent exec; burst large enough that rate limiting doesn't interfere.
+	srv := New(Config{
+		AllowedCommands:   []string{"sh"},
+		MaxConcurrentExec: 1,
+		ExecRateBurst:     100,
+	}, nil)
+
+	// Block the single semaphore slot with a long-running command.
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+
+	go func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		body := `{"argv":["sh","-c","sleep 10"]}`
+		req := httptest.NewRequest("POST", "/v1/exec", strings.NewReader(body))
+		req = req.WithContext(ctx)
+
+		// Signal that the goroutine has acquired the semaphore slot by starting
+		// the handler, then wait for the test to send a competing request.
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			close(started)
+		}()
+		srv.handleExec(httptest.NewRecorder(), req)
+	}()
+
+	// Wait until the long-running command has (likely) acquired the semaphore.
+	<-started
+	_ = unblock // not used — the goroutine's command will time out on its own
+
+	// A second request should be rejected with 503.
+	req2 := httptest.NewRequest("POST", "/v1/exec", strings.NewReader(`{"argv":["sh","-c","exit 0"]}`))
+	rec2 := httptest.NewRecorder()
+	srv.handleExec(rec2, req2)
+	assert.Equal(t, http.StatusServiceUnavailable, rec2.Code)
+	assert.Contains(t, rec2.Body.String(), "server busy")
+}
+
+// TestExecDefaultLimits verifies that default limits are applied when config values are zero.
+func TestExecDefaultLimits(t *testing.T) {
+	srv := New(Config{AllowedCommands: []string{"echo"}}, nil)
+	assert.Equal(t, 32, cap(srv.execSem), "default MaxConcurrentExec should be 32")
+}
+
 // TestBinaryResolution verifies that commands not found in PATH are removed from the allowlist.
 func TestBinaryResolution(t *testing.T) {
 	lc := &logCapture{}

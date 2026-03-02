@@ -28,6 +28,7 @@ require (
 	golang.org/x/sys v0.41.0
 	golang.org/x/term v0.40.0
 	golang.org/x/text v0.34.0
+	golang.org/x/time v0.0.0-20220210224613-90d013bbcef8
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 

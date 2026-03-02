@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+
+	"golang.org/x/time/rate"
 )
 
 // execRequest is the body for POST /v1/exec.
@@ -74,6 +76,27 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	// Use the resolved absolute binary path to prevent PATH hijacking after startup.
 	if resolved, ok := s.resolvedPaths[cmd0]; ok {
 		argv[0] = resolved
+	}
+
+	// Per-client rate limiting: identified by cert CN (or "unknown" if absent).
+	ratioKey := identity
+	if ratioKey == "" {
+		ratioKey = "unknown"
+	}
+	if !s.limiterFor(ratioKey).Allow() {
+		s.log.Warn("exec rate limit exceeded", "identity", identity)
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
+	// Global concurrency cap: reject immediately if all slots are busy.
+	select {
+	case s.execSem <- struct{}{}:
+		defer func() { <-s.execSem }()
+	default:
+		s.log.Warn("exec concurrency limit exceeded", "identity", identity)
+		http.Error(w, "server busy", http.StatusServiceUnavailable)
+		return
 	}
 
 	out, errOut, exitCode := runCommand(r.Context(), argv)
@@ -154,6 +177,18 @@ func cnToIdentity(cn string) string {
 // isAllowed reports whether cmd is in the allowlist.
 func (s *Server) isAllowed(cmd string) bool {
 	return s.allowed[cmd]
+}
+
+// limiterFor returns the rate.Limiter for the given client identity, creating
+// one if it does not exist. The limiter is stored in a sync.Map so concurrent
+// requests for the same identity safely share a single limiter.
+func (s *Server) limiterFor(identity string) *rate.Limiter {
+	if v, ok := s.rateLimiters.Load(identity); ok {
+		return v.(*rate.Limiter)
+	}
+	l := rate.NewLimiter(s.rateLimit, s.rateBurst)
+	v, _ := s.rateLimiters.LoadOrStore(identity, l)
+	return v.(*rate.Limiter)
 }
 
 func runCommand(ctx context.Context, argv []string) (stdout, stderr string, exitCode int) {

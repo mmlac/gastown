@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 // Config holds configuration for the proxy server.
@@ -36,16 +38,32 @@ type Config struct {
 	// ExtraSANHosts are additional DNS names to embed in the server cert as DNS SANs.
 	// Merged with the default "gt-proxy-server" DNS SAN by Start().
 	ExtraSANHosts []string
+	// MaxConcurrentExec caps the number of exec subprocesses that may run
+	// concurrently across all clients. 0 uses the default (32).
+	MaxConcurrentExec int
+	// ExecRateLimit is the sustained request rate per client (identified by
+	// mTLS cert CN) in requests per second. 0 uses the default (10 req/s).
+	ExecRateLimit float64
+	// ExecRateBurst is the maximum burst size for the per-client rate limiter.
+	// 0 uses the default (20).
+	ExecRateBurst int
 }
 
 // Server is an mTLS HTTP proxy server.
 type Server struct {
-	cfg          Config
-	ca           *CA
-	allowed      map[string]bool
-	allowedSubs  map[string]map[string]bool
+	cfg           Config
+	ca            *CA
+	allowed       map[string]bool
+	allowedSubs   map[string]map[string]bool
 	resolvedPaths map[string]string
-	log          *slog.Logger
+	log           *slog.Logger
+
+	// execSem is a semaphore limiting global concurrent exec subprocesses.
+	execSem chan struct{}
+	// rateLimiters holds a *rate.Limiter per client identity (cert CN).
+	rateLimiters sync.Map
+	rateLimit    rate.Limit
+	rateBurst    int
 
 	lnMu sync.Mutex
 	ln   net.Listener
@@ -97,7 +115,30 @@ func New(cfg Config, ca *CA) *Server {
 		allowedSubs[cmd] = m
 	}
 
-	return &Server{cfg: cfg, ca: ca, allowed: allowed, allowedSubs: allowedSubs, resolvedPaths: resolvedPaths, log: l}
+	maxConcurrent := cfg.MaxConcurrentExec
+	if maxConcurrent <= 0 {
+		maxConcurrent = 32
+	}
+	rl := cfg.ExecRateLimit
+	if rl <= 0 {
+		rl = 10.0
+	}
+	rb := cfg.ExecRateBurst
+	if rb <= 0 {
+		rb = 20
+	}
+
+	return &Server{
+		cfg:           cfg,
+		ca:            ca,
+		allowed:       allowed,
+		allowedSubs:   allowedSubs,
+		resolvedPaths: resolvedPaths,
+		log:           l,
+		execSem:       make(chan struct{}, maxConcurrent),
+		rateLimit:     rate.Limit(rl),
+		rateBurst:     rb,
+	}
 }
 
 // Addr returns the address the server is listening on.
