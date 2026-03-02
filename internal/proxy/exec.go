@@ -144,14 +144,15 @@ func extractIdentity(r *http.Request) string {
 
 // polecatName extracts the polecat name from a CN of the form "gt-<rig>-<name>".
 // The last "-" is the rig/name separator, so hyphenated rig names are handled correctly.
-// Returns "" if the CN does not match the expected format or the name is empty.
+// Returns "" if the CN does not match the expected format, or if rig or name is empty.
 func polecatName(cn string) string {
 	if !strings.HasPrefix(cn, "gt-") {
 		return ""
 	}
 	rest := cn[3:] // strip "gt-"
 	idx := strings.LastIndex(rest, "-")
-	if idx < 0 {
+	// idx <= 0: idx < 0 means no separator; idx == 0 means rig is empty.
+	if idx <= 0 {
 		return ""
 	}
 	return rest[idx+1:]

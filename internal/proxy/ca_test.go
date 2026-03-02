@@ -314,6 +314,24 @@ func TestIssuePolecat(t *testing.T) {
 		}
 	})
 
+	t.Run("malformed CNs are rejected", func(t *testing.T) {
+		cases := []string{
+			"gt--furiosa",     // empty rig segment
+			"gt-gastown-",     // empty name segment
+			"gt-",             // no rig or name
+			"notgt-rig-name",  // missing gt- prefix
+			"gt-nodashinrest", // no rig/name separator
+			"",                // empty string
+		}
+		for _, cn := range cases {
+			cn := cn
+			t.Run(cn, func(t *testing.T) {
+				_, _, err := ca.IssuePolecat(cn, time.Hour)
+				assert.Error(t, err, "expected error for malformed CN %q", cn)
+			})
+		}
+	})
+
 	t.Run("TTL is respected", func(t *testing.T) {
 		ttl := 30 * time.Minute
 		certPEM, _, err := ca.IssuePolecat("gt-gastown-test", ttl)

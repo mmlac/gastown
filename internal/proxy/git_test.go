@@ -178,6 +178,16 @@ func TestAuthorizeReceivePack(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden, rec.Code)
 	})
 
+	t.Run("CN with empty rig segment returns 403", func(t *testing.T) {
+		// gt--furiosa has an empty rig; polecatName now returns "" for this case.
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack",
+			bytes.NewReader(receivePackBody("refs/heads/polecat/furiosa-abc")))
+		ok := srv.authorizeReceivePack(rec, req, "gt--furiosa")
+		assert.False(t, ok)
+		assert.Equal(t, http.StatusForbidden, rec.Code)
+	})
+
 	t.Run("valid CN and valid refs — body is rewound correctly", func(t *testing.T) {
 		cn := "gt-gastown-furiosa"
 		body := receivePackBody("refs/heads/polecat/furiosa-abc123")

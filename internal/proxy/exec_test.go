@@ -106,7 +106,7 @@ func TestPolecatName(t *testing.T) {
 		{"gt-gastown-furiosa", "furiosa"},
 		{"gt-gas-town-furiosa", "furiosa"}, // hyphenated rig
 		{"gt-gastown-", ""},                // empty name
-		{"gt--furiosa", "furiosa"},         // empty rig; name still extracted
+		{"gt--furiosa", ""},                 // empty rig; rejected
 		{"noprefix-rig-name", ""},          // missing gt- prefix
 		{"gt-nodashinrest", ""},            // only one component after stripping gt-
 		{"", ""},                           // empty string

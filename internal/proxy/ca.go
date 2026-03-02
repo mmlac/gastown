@@ -144,8 +144,13 @@ func (ca *CA) IssueServer(cn string, extraIPs []net.IP, extraDNSNames []string, 
 }
 
 // IssuePolecat issues a leaf certificate signed by the CA for a polecat (client auth).
-// cn should be in the format "gt-<rig>-<name>" (e.g. "gt-gastown-furiosa").
+// cn must be in the format "gt-<rig>-<name>" with non-empty rig and name segments
+// (e.g. "gt-gastown-furiosa"). Returns an error for malformed CNs to prevent issuing
+// certs whose rig/name parsing would be inconsistent across exec and git auth.
 func (ca *CA) IssuePolecat(cn string, ttl time.Duration) (certPEM, keyPEM []byte, err error) {
+	if cnToIdentity(cn) == "" {
+		return nil, nil, fmt.Errorf("invalid polecat CN %q: must be gt-<rig>-<name> with non-empty rig and name", cn)
+	}
 	return ca.issue(cn, nil, nil, ttl, x509.ExtKeyUsageClientAuth)
 }
 
