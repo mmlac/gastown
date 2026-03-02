@@ -109,17 +109,21 @@ func LoadOrGenerateCA(dir string) (*CA, error) {
 }
 
 // IssueServer issues a leaf certificate signed by the CA for use as a TLS server cert.
+// The cn is also included as a DNS Subject Alternative Name so that modern TLS clients
+// (Go 1.15+) can verify it without relying on the deprecated Common Name field.
 func (ca *CA) IssueServer(cn string, ttl time.Duration) (certPEM, keyPEM []byte, err error) {
-	return ca.issue(cn, ttl, x509.ExtKeyUsageServerAuth)
+	return ca.issue(cn, []string{cn}, ttl, x509.ExtKeyUsageServerAuth)
 }
 
 // IssuePolecat issues a leaf certificate signed by the CA for a polecat (client auth).
 // cn should be in the format "gt-<rig>-<name>" (e.g. "gt-gastown-furiosa").
 func (ca *CA) IssuePolecat(cn string, ttl time.Duration) (certPEM, keyPEM []byte, err error) {
-	return ca.issue(cn, ttl, x509.ExtKeyUsageClientAuth)
+	return ca.issue(cn, nil, ttl, x509.ExtKeyUsageClientAuth)
 }
 
-func (ca *CA) issue(cn string, ttl time.Duration, eku x509.ExtKeyUsage) (certPEM, keyPEM []byte, err error) {
+// issue creates and signs a leaf certificate. dnsNames is added as SANs for server
+// certs so that modern TLS stacks (Go 1.15+) accept them without relying on the CN.
+func (ca *CA) issue(cn string, dnsNames []string, ttl time.Duration, eku x509.ExtKeyUsage) (certPEM, keyPEM []byte, err error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate leaf key: %w", err)
@@ -133,6 +137,7 @@ func (ca *CA) issue(cn string, ttl time.Duration, eku x509.ExtKeyUsage) (certPEM
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: cn},
+		DNSNames:     dnsNames, // required by modern TLS clients for server certs
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(ttl),
 		KeyUsage:     x509.KeyUsageDigitalSignature,

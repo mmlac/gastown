@@ -137,9 +137,14 @@ func (s *Server) authorizeReceivePack(w http.ResponseWriter, r *http.Request, cl
 // validateReceivePackRefs parses the git-receive-pack pkt-line stream and validates
 // that all pushed refs are under refs/heads/polecat/<cnName>-* (prefix form only).
 func validateReceivePackRefs(body []byte, cnName string) error {
+	// The pkt-line wire format: each record is a 4-hex-digit length (including the
+	// length field itself) followed by that many bytes of payload.  "0000" is a
+	// flush packet that terminates the ref list.  Any binary pack data that follows
+	// the flush packet is never read by this loop.
 	data := string(body)
 	offset := 0
 	for offset < len(data) {
+		// Guard: need at least 4 bytes for the length field.
 		if offset+4 > len(data) {
 			break
 		}
@@ -149,17 +154,23 @@ func validateReceivePackRefs(body []byte, cnName string) error {
 		}
 		var pktLen int
 		_, err := fmt.Sscanf(lenHex, "%x", &pktLen)
+		// pktLen < 4 would underflow the payload slice; treat as malformed and stop.
 		if err != nil || pktLen < 4 {
 			break
 		}
 		end := offset + pktLen
+		// Guard: truncated packet — length field claims more bytes than available.
 		if end > len(data) {
 			break
 		}
+		// Payload starts after the 4-byte length prefix; always advances by pktLen
+		// (even when pktLen==4, the empty payload line is skipped below).
 		line := data[offset+4 : end]
 		offset = end
 
 		// Each line: "<old-sha> <new-sha> <refname>\0[capabilities]\n"
+		// Strip the trailing newline, then truncate at the first NUL byte so that
+		// capability strings (e.g. "\0side-band-64k") do not pollute the ref name.
 		line = strings.TrimRight(line, "\n")
 		if idx := strings.IndexByte(line, 0); idx >= 0 {
 			line = line[:idx]
