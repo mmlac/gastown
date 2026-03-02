@@ -409,7 +409,39 @@ security.
 
 | Method | Path | Description |
 |--------|------|-------------|
+| `POST` | `/v1/admin/issue-cert` | Issue a new polecat client certificate |
 | `POST` | `/v1/admin/deny-cert` | Add a certificate serial to the runtime deny list |
+
+### Issuing a polecat certificate
+
+Issue a client certificate for a polecat by providing the rig name, polecat
+name, and an optional TTL (defaults to 720h / 30 days):
+
+```bash
+curl -s -X POST http://127.0.0.1:9877/v1/admin/issue-cert \
+  -H 'Content-Type: application/json' \
+  -d '{"rig": "MyRig", "name": "rust", "ttl": "720h"}'
+```
+
+Returns HTTP 200 with a JSON body containing the PEM-encoded certificate, key,
+and CA certificate, plus metadata:
+
+```json
+{
+  "cn":         "gt-MyRig-rust",
+  "cert":       "-----BEGIN CERTIFICATE-----\n...",
+  "key":        "-----BEGIN EC PRIVATE KEY-----\n...",
+  "ca":         "-----BEGIN CERTIFICATE-----\n...",
+  "serial":     "3f2a1b...",
+  "expires_at": "2026-04-01T22:37:00Z"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `rig` | `string` | **Required.** Rig name (e.g. `"MyRig"`) |
+| `name` | `string` | **Required.** Polecat name (e.g. `"rust"`) |
+| `ttl` | `string` | Optional Go duration (e.g. `"720h"`). Default: `720h` (30 days) |
 
 ### Revoking a certificate
 
@@ -552,6 +584,7 @@ but for production always configure the correct SANs or use a hostname.
 
 | Method | Path | Description |
 |--------|------|-------------|
+| `POST` | `/v1/admin/issue-cert` | Issue a new polecat client certificate |
 | `POST` | `/v1/admin/deny-cert` | Add a certificate serial to the runtime deny list |
 
 ### Certificate CN format

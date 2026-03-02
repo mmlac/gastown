@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -283,6 +284,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.cfg.AdminListenAddr != "" {
 		adminMux := http.NewServeMux()
 		adminMux.HandleFunc("/v1/admin/deny-cert", s.handleDenyCert)
+		adminMux.HandleFunc("/v1/admin/issue-cert", s.handleIssueCert)
 
 		adminSrv = &http.Server{
 			Addr:         s.cfg.AdminListenAddr,
@@ -382,6 +384,90 @@ func serverListenIPs(listenAddr string) []net.IP {
 	}
 	// Specific non-loopback IP: include both that IP and loopbacks for local connections.
 	return []net.IP{ip, loopback4, loopback6}
+}
+
+// issueCertRequest is the JSON body for POST /v1/admin/issue-cert.
+type issueCertRequest struct {
+	// Rig is the rig name (e.g. "MyRig").
+	Rig string `json:"rig"`
+	// Name is the polecat name (e.g. "rust").
+	Name string `json:"name"`
+	// TTL is the certificate validity duration (e.g. "720h"). Defaults to 720h (30 days).
+	TTL string `json:"ttl"`
+}
+
+// issueCertResponse is the JSON response for POST /v1/admin/issue-cert.
+type issueCertResponse struct {
+	CN        string `json:"cn"`
+	Cert      string `json:"cert"`
+	Key       string `json:"key"`
+	CA        string `json:"ca"`
+	Serial    string `json:"serial"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+// handleIssueCert handles POST /v1/admin/issue-cert on the local admin server.
+// It issues a new polecat client certificate signed by the server's CA.
+func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
+	var req issueCertRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Rig == "" {
+		http.Error(w, "bad request: rig is required", http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" {
+		http.Error(w, "bad request: name is required", http.StatusBadRequest)
+		return
+	}
+
+	ttl := 720 * time.Hour // 30 days
+	if req.TTL != "" {
+		parsed, err := time.ParseDuration(req.TTL)
+		if err != nil {
+			http.Error(w, "bad request: invalid ttl: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if parsed <= 0 {
+			http.Error(w, "bad request: ttl must be positive", http.StatusBadRequest)
+			return
+		}
+		ttl = parsed
+	}
+
+	cn := "gt-" + req.Rig + "-" + req.Name
+	certPEM, keyPEM, err := s.ca.IssuePolecat(cn, ttl)
+	if err != nil {
+		http.Error(w, "failed to issue certificate: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Parse the cert to extract serial and expiry for the response.
+	block, _ := pem.Decode(certPEM)
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		http.Error(w, "internal error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.log.Info("cert issued via admin API", "cn", cn, "serial", leaf.SerialNumber.Text(16))
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(issueCertResponse{
+		CN:        cn,
+		Cert:      string(certPEM),
+		Key:       string(keyPEM),
+		CA:        string(s.ca.CertPEM),
+		Serial:    leaf.SerialNumber.Text(16),
+		ExpiresAt: leaf.NotAfter.UTC().Format(time.RFC3339),
+	})
 }
 
 // denyCertRequest is the JSON body for POST /v1/admin/deny-cert.

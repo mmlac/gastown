@@ -183,11 +183,11 @@ func TestExtraSANHosts(t *testing.T) {
 
 	extraHost := "proxy.example.com"
 	srv, err := New(Config{
-		ListenAddr:    "127.0.0.1:0",
+		ListenAddr:      "127.0.0.1:0",
 		AllowedCommands: []string{"echo"},
-		TownRoot:      t.TempDir(),
-		ExtraSANHosts: []string{extraHost},
-		Logger:        discardLogger(),
+		TownRoot:        t.TempDir(),
+		ExtraSANHosts:   []string{extraHost},
+		Logger:          discardLogger(),
 	}, ca)
 	require.NoError(t, err)
 
@@ -674,5 +674,163 @@ func TestAdminDenyCertEndpoint(t *testing.T) {
 			strings.NewReader(`{"argv":["echo","hi"]}`),
 		)
 		assert.Error(t, err, "revoked cert should be rejected at TLS handshake")
+	})
+}
+
+// TestAdminIssueCertEndpoint verifies the local admin HTTP endpoint for issuing polecat certs.
+func TestAdminIssueCertEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := GenerateCA(dir)
+	require.NoError(t, err)
+
+	srv, err := New(Config{
+		ListenAddr:      "127.0.0.1:0",
+		AdminListenAddr: "127.0.0.1:0",
+		AllowedCommands: []string{"echo"},
+		TownRoot:        t.TempDir(),
+		Logger:          discardLogger(),
+	}, ca)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() { srv.Start(ctx) }() //nolint:errcheck
+
+	var mainAddr, adminAddr string
+	require.Eventually(t, func() bool {
+		if a := srv.Addr(); a != nil {
+			mainAddr = a.String()
+		}
+		if a := srv.AdminAddr(); a != nil {
+			adminAddr = a.String()
+		}
+		return mainAddr != "" && adminAddr != ""
+	}, 5*time.Second, 10*time.Millisecond)
+	waitForServer(t, mainAddr, 5*time.Second)
+	waitForServer(t, adminAddr, 5*time.Second)
+
+	adminClient := &http.Client{}
+
+	t.Run("GET returns 405", func(t *testing.T) {
+		resp, err := adminClient.Get("http://" + adminAddr + "/v1/admin/issue-cert")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+	})
+
+	t.Run("missing rig returns 400", func(t *testing.T) {
+		resp, err := adminClient.Post(
+			"http://"+adminAddr+"/v1/admin/issue-cert",
+			"application/json",
+			strings.NewReader(`{"name":"rust"}`),
+		)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("missing name returns 400", func(t *testing.T) {
+		resp, err := adminClient.Post(
+			"http://"+adminAddr+"/v1/admin/issue-cert",
+			"application/json",
+			strings.NewReader(`{"rig":"MyRig"}`),
+		)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("invalid ttl returns 400", func(t *testing.T) {
+		resp, err := adminClient.Post(
+			"http://"+adminAddr+"/v1/admin/issue-cert",
+			"application/json",
+			strings.NewReader(`{"rig":"MyRig","name":"rust","ttl":"bogus"}`),
+		)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("negative ttl returns 400", func(t *testing.T) {
+		resp, err := adminClient.Post(
+			"http://"+adminAddr+"/v1/admin/issue-cert",
+			"application/json",
+			strings.NewReader(`{"rig":"MyRig","name":"rust","ttl":"-1h"}`),
+		)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("valid request issues cert that works with mTLS server", func(t *testing.T) {
+		resp, err := adminClient.Post(
+			"http://"+adminAddr+"/v1/admin/issue-cert",
+			"application/json",
+			strings.NewReader(`{"rig":"MyRig","name":"rust","ttl":"1h"}`),
+		)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result issueCertResponse
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+		assert.Equal(t, "gt-MyRig-rust", result.CN)
+		assert.NotEmpty(t, result.Cert)
+		assert.NotEmpty(t, result.Key)
+		assert.NotEmpty(t, result.CA)
+		assert.NotEmpty(t, result.Serial)
+		assert.NotEmpty(t, result.ExpiresAt)
+
+		// Use the issued cert to make an mTLS request to the main server.
+		clientCert, err := tls.X509KeyPair([]byte(result.Cert), []byte(result.Key))
+		require.NoError(t, err)
+
+		pool := x509.NewCertPool()
+		ok := pool.AppendCertsFromPEM([]byte(result.CA))
+		require.True(t, ok, "returned CA PEM should be valid")
+
+		mTLSClient := &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					Certificates: []tls.Certificate{clientCert},
+					RootCAs:      pool,
+				},
+			},
+		}
+		execResp, err := mTLSClient.Post(
+			"https://"+mainAddr+"/v1/exec",
+			"application/json",
+			strings.NewReader(`{"argv":["echo","hello"]}`),
+		)
+		require.NoError(t, err)
+		defer execResp.Body.Close()
+		assert.Equal(t, http.StatusOK, execResp.StatusCode)
+
+		var execResult execResponse
+		require.NoError(t, json.NewDecoder(execResp.Body).Decode(&execResult))
+		assert.Equal(t, 0, execResult.ExitCode)
+		assert.Contains(t, execResult.Stdout, "hello")
+	})
+
+	t.Run("default ttl is used when not specified", func(t *testing.T) {
+		resp, err := adminClient.Post(
+			"http://"+adminAddr+"/v1/admin/issue-cert",
+			"application/json",
+			strings.NewReader(`{"rig":"MyRig","name":"furiosa"}`),
+		)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result issueCertResponse
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+		assert.Equal(t, "gt-MyRig-furiosa", result.CN)
+
+		expiry, err := time.Parse(time.RFC3339, result.ExpiresAt)
+		require.NoError(t, err)
+		// Default TTL is 720h (30 days). Allow some clock skew.
+		expectedExpiry := time.Now().Add(720 * time.Hour)
+		assert.WithinDuration(t, expectedExpiry, expiry, 5*time.Minute)
 	})
 }
