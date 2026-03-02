@@ -132,13 +132,15 @@ func LoadOrGenerateCA(dir string) (*CA, error) {
 }
 
 // IssueServer issues a leaf certificate signed by the CA for use as a TLS server cert.
-// The cn is also included as a DNS Subject Alternative Name so that modern TLS clients
+// The cn is always included as a DNS Subject Alternative Name so that modern TLS clients
 // (Go 1.15+) can verify it without relying on the deprecated Common Name field.
+// extraDNSNames are additional DNS SANs (e.g. operator-specified hostnames).
 // extraIPs are added as IP Subject Alternative Names so clients connecting by IP address
 // (e.g. a container reaching the proxy at 172.17.0.1) can verify the cert without
 // setting an explicit ServerName override.
-func (ca *CA) IssueServer(cn string, extraIPs []net.IP, ttl time.Duration) (certPEM, keyPEM []byte, err error) {
-	return ca.issue(cn, []string{cn}, extraIPs, ttl, x509.ExtKeyUsageServerAuth)
+func (ca *CA) IssueServer(cn string, extraIPs []net.IP, extraDNSNames []string, ttl time.Duration) (certPEM, keyPEM []byte, err error) {
+	dnsNames := append([]string{cn}, extraDNSNames...)
+	return ca.issue(cn, dnsNames, extraIPs, ttl, x509.ExtKeyUsageServerAuth)
 }
 
 // IssuePolecat issues a leaf certificate signed by the CA for a polecat (client auth).

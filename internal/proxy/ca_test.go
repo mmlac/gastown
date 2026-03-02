@@ -139,7 +139,7 @@ func TestLoadOrGenerateCA(t *testing.T) {
 		ca, err := LoadOrGenerateCA(dir)
 		require.NoError(t, err)
 
-		certPEM, _, err := ca.IssueServer("test-server", nil, time.Hour)
+		certPEM, _, err := ca.IssueServer("test-server", nil, nil, time.Hour)
 		require.NoError(t, err)
 
 		block, _ := pem.Decode(certPEM)
@@ -163,7 +163,7 @@ func TestIssueServer(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("cert parses and verifies against CA", func(t *testing.T) {
-		certPEM, keyPEM, err := ca.IssueServer("test-server", nil, time.Hour)
+		certPEM, keyPEM, err := ca.IssueServer("test-server", nil, nil, time.Hour)
 		require.NoError(t, err)
 		assert.NotNil(t, certPEM)
 		assert.NotNil(t, keyPEM)
@@ -183,7 +183,7 @@ func TestIssueServer(t *testing.T) {
 	})
 
 	t.Run("ExtKeyUsage contains ServerAuth and NOT ClientAuth", func(t *testing.T) {
-		certPEM, _, err := ca.IssueServer("test-server", nil, time.Hour)
+		certPEM, _, err := ca.IssueServer("test-server", nil, nil, time.Hour)
 		require.NoError(t, err)
 
 		block, _ := pem.Decode(certPEM)
@@ -204,7 +204,7 @@ func TestIssueServer(t *testing.T) {
 	})
 
 	t.Run("CN matches argument", func(t *testing.T) {
-		certPEM, _, err := ca.IssueServer("my-proxy-server", nil, time.Hour)
+		certPEM, _, err := ca.IssueServer("my-proxy-server", nil, nil, time.Hour)
 		require.NoError(t, err)
 
 		block, _ := pem.Decode(certPEM)
@@ -216,7 +216,7 @@ func TestIssueServer(t *testing.T) {
 	t.Run("NotAfter is approximately now+ttl within 5s tolerance", func(t *testing.T) {
 		ttl := 2 * time.Hour
 		before := time.Now().Add(ttl)
-		certPEM, _, err := ca.IssueServer("test", nil, ttl)
+		certPEM, _, err := ca.IssueServer("test", nil, nil, ttl)
 		require.NoError(t, err)
 		after := time.Now().Add(ttl)
 
@@ -231,9 +231,9 @@ func TestIssueServer(t *testing.T) {
 	})
 
 	t.Run("random serial not big.NewInt(1)", func(t *testing.T) {
-		certPEM1, _, err := ca.IssueServer("a", nil, time.Hour)
+		certPEM1, _, err := ca.IssueServer("a", nil, nil, time.Hour)
 		require.NoError(t, err)
-		certPEM2, _, err := ca.IssueServer("b", nil, time.Hour)
+		certPEM2, _, err := ca.IssueServer("b", nil, nil, time.Hour)
 		require.NoError(t, err)
 
 		block1, _ := pem.Decode(certPEM1)
@@ -335,7 +335,7 @@ func TestCertEdgeCases(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("ttl=0 produces cert that is already expired or expiring immediately", func(t *testing.T) {
-		certPEM, _, err := ca.IssueServer("test", nil, 0)
+		certPEM, _, err := ca.IssueServer("test", nil, nil, 0)
 		require.NoError(t, err)
 
 		block, _ := pem.Decode(certPEM)
@@ -363,7 +363,7 @@ func TestIssueServerIPSANs(t *testing.T) {
 	t.Run("IP SAN is embedded in cert", func(t *testing.T) {
 		targetIP := net.ParseIP("192.168.1.100")
 		loopback := net.ParseIP("127.0.0.1")
-		certPEM, _, err := ca.IssueServer("gt-proxy-server", []net.IP{targetIP, loopback}, time.Hour)
+		certPEM, _, err := ca.IssueServer("gt-proxy-server", []net.IP{targetIP, loopback}, nil, time.Hour)
 		require.NoError(t, err)
 
 		block, _ := pem.Decode(certPEM)
@@ -378,7 +378,7 @@ func TestIssueServerIPSANs(t *testing.T) {
 
 	t.Run("cert verifies for IP SAN host", func(t *testing.T) {
 		ip := net.ParseIP("10.0.0.1")
-		certPEM, _, err := ca.IssueServer("gt-proxy-server", []net.IP{ip}, time.Hour)
+		certPEM, _, err := ca.IssueServer("gt-proxy-server", []net.IP{ip}, nil, time.Hour)
 		require.NoError(t, err)
 
 		block, _ := pem.Decode(certPEM)
@@ -396,7 +396,7 @@ func TestIssueServerIPSANs(t *testing.T) {
 	})
 
 	t.Run("nil extraIPs produces no IP SANs", func(t *testing.T) {
-		certPEM, _, err := ca.IssueServer("gt-proxy-server", nil, time.Hour)
+		certPEM, _, err := ca.IssueServer("gt-proxy-server", nil, nil, time.Hour)
 		require.NoError(t, err)
 
 		block, _ := pem.Decode(certPEM)

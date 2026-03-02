@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -24,6 +25,7 @@ const defaultAllowedSubcmds = "" +
 
 func main() {
 	var (
+		configFile     = flag.String("config", "", "path to config file (default: ~/gt/.runtime/proxy/config.json)")
 		listen         = flag.String("listen", "0.0.0.0:9876", "address to listen on")
 		caDir          = flag.String("ca-dir", "", "directory for CA cert/key (default: ~/gt/.runtime/ca)")
 		allowedCmds    = flag.String("allowed-cmds", "gt,bd", "comma-separated list of allowed commands")
@@ -37,6 +39,38 @@ func main() {
 	if err != nil {
 		slog.Error("cannot determine home dir", "err", err)
 		os.Exit(1)
+	}
+
+	// Determine config file path and load it.
+	cfgPath := *configFile
+	if cfgPath == "" {
+		cfgPath = filepath.Join(home, "gt", ".runtime", "proxy", "config.json")
+	}
+	fileCfg, err := loadConfig(cfgPath)
+	if err != nil {
+		slog.Error("failed to load config file", "path", cfgPath, "err", err)
+		os.Exit(1)
+	}
+
+	// Merge: flag values override config file values. We use flag.Visit to detect
+	// which flags were explicitly set by the user, so we only override those fields.
+	explicitFlags := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) { explicitFlags[f.Name] = true })
+
+	if !explicitFlags["listen"] && fileCfg.ListenAddr != "" {
+		*listen = fileCfg.ListenAddr
+	}
+	if !explicitFlags["ca-dir"] && fileCfg.CADir != "" {
+		*caDir = fileCfg.CADir
+	}
+	if !explicitFlags["town-root"] && fileCfg.TownRoot != "" {
+		*townRoot = fileCfg.TownRoot
+	}
+	if !explicitFlags["allowed-cmds"] && len(fileCfg.AllowedCommands) > 0 {
+		*allowedCmds = strings.Join(fileCfg.AllowedCommands, ",")
+	}
+	if !explicitFlags["allowed-subcmds"] && len(fileCfg.AllowedSubcommands) > 0 {
+		*allowedSubcmds = buildAllowedSubcmds(fileCfg.AllowedSubcommands)
 	}
 
 	if *caDir == "" {
@@ -63,11 +97,37 @@ func main() {
 		cmds[i] = strings.TrimSpace(cmds[i])
 	}
 
+	// Parse extra_san_ips: convert strings to net.IP, skip invalid entries with a warning.
+	var extraSANIPs []net.IP
+	for _, s := range fileCfg.ExtraSANIPs {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		ip := net.ParseIP(s)
+		if ip == nil {
+			slog.Warn("extra_san_ips: invalid IP address — skipping", "entry", s)
+			continue
+		}
+		extraSANIPs = append(extraSANIPs, ip)
+	}
+
+	// Parse extra_san_hosts: filter empty strings.
+	var extraSANHosts []string
+	for _, h := range fileCfg.ExtraSANHosts {
+		h = strings.TrimSpace(h)
+		if h != "" {
+			extraSANHosts = append(extraSANHosts, h)
+		}
+	}
+
 	cfg := proxy.Config{
 		ListenAddr:         *listen,
 		AllowedCommands:    cmds,
 		AllowedSubcommands: parseAllowedSubcmds(*allowedSubcmds),
 		TownRoot:           *townRoot,
+		ExtraSANIPs:        extraSANIPs,
+		ExtraSANHosts:      extraSANHosts,
 	}
 
 	srv := proxy.New(cfg, ca)
@@ -79,6 +139,16 @@ func main() {
 		slog.Error("server error", "err", err)
 		os.Exit(1)
 	}
+}
+
+// buildAllowedSubcmds serialises a map[string][]string back into the semicolon-separated
+// "cmd:sub1,sub2,..." format expected by parseAllowedSubcmds.
+func buildAllowedSubcmds(m map[string][]string) string {
+	parts := make([]string, 0, len(m))
+	for cmd, subs := range m {
+		parts = append(parts, cmd+":"+strings.Join(subs, ","))
+	}
+	return strings.Join(parts, ";")
 }
 
 // parseAllowedSubcmds parses a string of the form

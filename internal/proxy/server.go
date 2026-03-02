@@ -30,6 +30,12 @@ type Config struct {
 	TownRoot string
 	// Logger is the structured logger to use. nil uses slog.Default().
 	Logger *slog.Logger
+	// ExtraSANIPs are additional IP addresses to embed in the server cert as IP SANs.
+	// Merged with auto-detected local interface IPs by Start().
+	ExtraSANIPs []net.IP
+	// ExtraSANHosts are additional DNS names to embed in the server cert as DNS SANs.
+	// Merged with the default "gt-proxy-server" DNS SAN by Start().
+	ExtraSANHosts []string
 }
 
 // Server is an mTLS HTTP proxy server.
@@ -133,9 +139,14 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Generate a server cert from our CA for TLS, including IP SANs so that clients
 	// connecting by IP (e.g. containers reaching the proxy at 172.17.0.1) can verify
-	// the cert without an explicit ServerName override.
-	ips := serverListenIPs(s.cfg.ListenAddr)
-	certPEM, keyPEM, err := s.ca.IssueServer("gt-proxy-server", ips, 365*24*time.Hour)
+	// the cert without an explicit ServerName override. ExtraSANIPs are appended to
+	// the auto-detected local interface IPs to support NAT/VPN/external addresses.
+	//
+	// Note: external NAT IPs (the IP shown by "curl ifconfig.me") cannot be
+	// auto-detected because they are assigned to the router, not to any local
+	// interface. Operators must declare them explicitly via ExtraSANIPs.
+	ips := append(serverListenIPs(s.cfg.ListenAddr), s.cfg.ExtraSANIPs...)
+	certPEM, keyPEM, err := s.ca.IssueServer("gt-proxy-server", ips, s.cfg.ExtraSANHosts, 365*24*time.Hour)
 	if err != nil {
 		return fmt.Errorf("issue server cert: %w", err)
 	}

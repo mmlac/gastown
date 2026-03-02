@@ -108,6 +108,112 @@ func TestMinimalEnv(t *testing.T) {
 	})
 }
 
+func TestExtraSANIPs(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := GenerateCA(dir)
+	require.NoError(t, err)
+
+	extraIP := net.ParseIP("192.0.2.99")
+	srv := New(Config{
+		ListenAddr:      "127.0.0.1:0",
+		AllowedCommands: []string{"echo"},
+		TownRoot:        t.TempDir(),
+		ExtraSANIPs:     []net.IP{extraIP},
+		Logger:          discardLogger(),
+	}, ca)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() { srv.Start(ctx) }() //nolint:errcheck
+
+	var addr string
+	require.Eventually(t, func() bool {
+		if a := srv.Addr(); a != nil {
+			addr = a.String()
+			return true
+		}
+		return false
+	}, 5*time.Second, 10*time.Millisecond)
+	waitForServer(t, addr, 5*time.Second)
+
+	// Dial and inspect the server cert for the extra IP SAN.
+	pool := x509.NewCertPool()
+	pool.AddCert(ca.Cert)
+	conn, err := tls.Dial("tcp", addr, &tls.Config{
+		RootCAs:    pool,
+		ServerName: "gt-proxy-server",
+	})
+	require.NoError(t, err)
+	defer conn.Close()
+
+	certs := conn.ConnectionState().PeerCertificates
+	require.NotEmpty(t, certs)
+	serverCert := certs[0]
+
+	found := false
+	for _, ip := range serverCert.IPAddresses {
+		if ip.Equal(extraIP) {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "extra IP SAN 192.0.2.99 should appear in server cert IPAddresses; got: %v", serverCert.IPAddresses)
+}
+
+func TestExtraSANHosts(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := GenerateCA(dir)
+	require.NoError(t, err)
+
+	extraHost := "proxy.example.com"
+	srv := New(Config{
+		ListenAddr:    "127.0.0.1:0",
+		AllowedCommands: []string{"echo"},
+		TownRoot:      t.TempDir(),
+		ExtraSANHosts: []string{extraHost},
+		Logger:        discardLogger(),
+	}, ca)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() { srv.Start(ctx) }() //nolint:errcheck
+
+	var addr string
+	require.Eventually(t, func() bool {
+		if a := srv.Addr(); a != nil {
+			addr = a.String()
+			return true
+		}
+		return false
+	}, 5*time.Second, 10*time.Millisecond)
+	waitForServer(t, addr, 5*time.Second)
+
+	// Dial and inspect the server cert for the extra DNS SAN.
+	pool := x509.NewCertPool()
+	pool.AddCert(ca.Cert)
+	conn, err := tls.Dial("tcp", addr, &tls.Config{
+		RootCAs:    pool,
+		ServerName: "gt-proxy-server",
+	})
+	require.NoError(t, err)
+	defer conn.Close()
+
+	certs := conn.ConnectionState().PeerCertificates
+	require.NotEmpty(t, certs)
+	serverCert := certs[0]
+
+	found := false
+	for _, name := range serverCert.DNSNames {
+		if name == extraHost {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "extra DNS SAN %q should appear in server cert DNSNames; got: %v", extraHost, serverCert.DNSNames)
+}
+
 // waitForServer polls addr until a TCP connection succeeds or timeout elapses.
 func waitForServer(t *testing.T, addr string, timeout time.Duration) {
 	t.Helper()
