@@ -368,3 +368,225 @@ func TestStartIntegration(t *testing.T) {
 		assert.Error(t, err, "requests after shutdown should fail")
 	})
 }
+
+// TestCertRevocation verifies that a cert added to the deny list is rejected at
+// the TLS handshake and that other (non-revoked) certs continue to work.
+func TestCertRevocation(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := GenerateCA(dir)
+	require.NoError(t, err)
+
+	srv := New(Config{
+		ListenAddr:      "127.0.0.1:0",
+		AllowedCommands: []string{"echo"},
+		TownRoot:        t.TempDir(),
+		Logger:          discardLogger(),
+	}, ca)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() { srv.Start(ctx) }() //nolint:errcheck
+
+	var addr string
+	require.Eventually(t, func() bool {
+		if a := srv.Addr(); a != nil {
+			addr = a.String()
+			return true
+		}
+		return false
+	}, 5*time.Second, 10*time.Millisecond)
+	waitForServer(t, addr, 5*time.Second)
+
+	pool := x509.NewCertPool()
+	pool.AddCert(ca.Cert)
+
+	// Issue two distinct polecat certs.
+	cert1PEM, key1PEM, err := ca.IssuePolecat("gt-gastown-alice", time.Hour)
+	require.NoError(t, err)
+	tlsCert1, err := tls.X509KeyPair(cert1PEM, key1PEM)
+	require.NoError(t, err)
+
+	cert2PEM, key2PEM, err := ca.IssuePolecat("gt-gastown-bob", time.Hour)
+	require.NoError(t, err)
+	tlsCert2, err := tls.X509KeyPair(cert2PEM, key2PEM)
+	require.NoError(t, err)
+
+	makeClient := func(cert tls.Certificate) *http.Client {
+		return &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					Certificates: []tls.Certificate{cert},
+					RootCAs:      pool,
+				},
+			},
+		}
+	}
+
+	// Both certs work before any revocation.
+	for _, c := range []tls.Certificate{tlsCert1, tlsCert2} {
+		_, err := makeClient(c).Post(
+			"https://"+addr+"/v1/exec",
+			"application/json",
+			strings.NewReader(`{"argv":["echo","hi"]}`),
+		)
+		require.NoError(t, err, "both certs should work before revocation")
+	}
+
+	// Parse cert1's serial number and revoke it via DenyCert.
+	leaf1, err := x509.ParseCertificate(tlsCert1.Certificate[0])
+	require.NoError(t, err)
+	srv.DenyCert(leaf1.SerialNumber)
+
+	// cert1 is now denied — TLS handshake must fail.
+	_, err = makeClient(tlsCert1).Post(
+		"https://"+addr+"/v1/exec",
+		"application/json",
+		strings.NewReader(`{"argv":["echo","hi"]}`),
+	)
+	assert.Error(t, err, "revoked cert1 should be rejected at TLS handshake")
+
+	// cert2 is not revoked — it must still work.
+	resp, err := makeClient(tlsCert2).Post(
+		"https://"+addr+"/v1/exec",
+		"application/json",
+		strings.NewReader(`{"argv":["echo","hi"]}`),
+	)
+	require.NoError(t, err, "non-revoked cert2 should still work")
+	resp.Body.Close()
+}
+
+// TestAdminDenyCertEndpoint verifies the local admin HTTP endpoint for revoking certs.
+func TestAdminDenyCertEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := GenerateCA(dir)
+	require.NoError(t, err)
+
+	srv := New(Config{
+		ListenAddr:      "127.0.0.1:0",
+		AdminListenAddr: "127.0.0.1:0",
+		AllowedCommands: []string{"echo"},
+		TownRoot:        t.TempDir(),
+		Logger:          discardLogger(),
+	}, ca)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() { srv.Start(ctx) }() //nolint:errcheck
+
+	// Wait for both listeners to be bound.
+	var mainAddr, adminAddr string
+	require.Eventually(t, func() bool {
+		if a := srv.Addr(); a != nil {
+			mainAddr = a.String()
+		}
+		if a := srv.AdminAddr(); a != nil {
+			adminAddr = a.String()
+		}
+		return mainAddr != "" && adminAddr != ""
+	}, 5*time.Second, 10*time.Millisecond)
+	waitForServer(t, mainAddr, 5*time.Second)
+	waitForServer(t, adminAddr, 5*time.Second)
+
+	pool := x509.NewCertPool()
+	pool.AddCert(ca.Cert)
+
+	// Issue a cert for testing.
+	certPEM, keyPEM, err := ca.IssuePolecat("gt-gastown-carol", time.Hour)
+	require.NoError(t, err)
+	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	require.NoError(t, err)
+
+	leaf, err := x509.ParseCertificate(tlsCert.Certificate[0])
+	require.NoError(t, err)
+	serialHex := leaf.SerialNumber.Text(16)
+
+	mTLSClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				Certificates: []tls.Certificate{tlsCert},
+				RootCAs:      pool,
+			},
+		},
+	}
+	adminClient := &http.Client{}
+
+	t.Run("cert works before revocation", func(t *testing.T) {
+		_, err := mTLSClient.Post(
+			"https://"+mainAddr+"/v1/exec",
+			"application/json",
+			strings.NewReader(`{"argv":["echo","hi"]}`),
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("GET to admin endpoint returns 405", func(t *testing.T) {
+		resp, err := adminClient.Get("http://" + adminAddr + "/v1/admin/deny-cert")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+	})
+
+	t.Run("malformed JSON returns 400", func(t *testing.T) {
+		resp, err := adminClient.Post(
+			"http://"+adminAddr+"/v1/admin/deny-cert",
+			"application/json",
+			strings.NewReader("{not json}"),
+		)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("missing serial returns 400", func(t *testing.T) {
+		resp, err := adminClient.Post(
+			"http://"+adminAddr+"/v1/admin/deny-cert",
+			"application/json",
+			strings.NewReader(`{}`),
+		)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("invalid serial returns 400", func(t *testing.T) {
+		resp, err := adminClient.Post(
+			"http://"+adminAddr+"/v1/admin/deny-cert",
+			"application/json",
+			strings.NewReader(`{"serial":"not-hex-!@#"}`),
+		)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("valid serial returns 204 and cert is rejected", func(t *testing.T) {
+		// Revoke carol's cert via the admin API.
+		resp, err := adminClient.Post(
+			"http://"+adminAddr+"/v1/admin/deny-cert",
+			"application/json",
+			strings.NewReader(`{"serial":"`+serialHex+`"}`),
+		)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+		// carol's cert must now be rejected at the TLS handshake.
+		// Use a fresh client to avoid reusing a cached connection.
+		freshMTLS := &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					Certificates: []tls.Certificate{tlsCert},
+					RootCAs:      pool,
+				},
+			},
+		}
+		_, err = freshMTLS.Post(
+			"https://"+mainAddr+"/v1/exec",
+			"application/json",
+			strings.NewReader(`{"argv":["echo","hi"]}`),
+		)
+		assert.Error(t, err, "revoked cert should be rejected at TLS handshake")
+	})
+}

@@ -13,6 +13,10 @@ type ProxyConfig struct {
 	// ListenAddr is the address and port to listen on (e.g. "0.0.0.0:9876").
 	ListenAddr string `json:"listen_addr"`
 
+	// AdminListenAddr is the address for the local admin HTTP server.
+	// Defaults to "127.0.0.1:9877". Set to "" to disable.
+	AdminListenAddr string `json:"admin_listen_addr"`
+
 	// CADir is the directory holding ca.crt and ca.key.
 	// Defaults to ~/gt/.runtime/ca if empty.
 	CADir string `json:"ca_dir"`

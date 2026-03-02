@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -38,6 +40,10 @@ type Config struct {
 	// ExtraSANHosts are additional DNS names to embed in the server cert as DNS SANs.
 	// Merged with the default "gt-proxy-server" DNS SAN by Start().
 	ExtraSANHosts []string
+	// AdminListenAddr is the address for the local admin HTTP server (no TLS).
+	// The admin server exposes management endpoints for operators running on the same host.
+	// If empty, no admin server is started. Recommended: "127.0.0.1:0" or "127.0.0.1:9877".
+	AdminListenAddr string
 	// MaxConcurrentExec caps the number of exec subprocesses that may run
 	// concurrently across all clients. 0 uses the default (32).
 	MaxConcurrentExec int
@@ -57,6 +63,7 @@ type Server struct {
 	allowedSubs   map[string]map[string]bool
 	resolvedPaths map[string]string
 	log           *slog.Logger
+	denyList      *DenyList
 
 	// execSem is a semaphore limiting global concurrent exec subprocesses.
 	execSem chan struct{}
@@ -65,8 +72,9 @@ type Server struct {
 	rateLimit    rate.Limit
 	rateBurst    int
 
-	lnMu sync.Mutex
-	ln   net.Listener
+	lnMu    sync.Mutex
+	ln      net.Listener
+	adminLn net.Listener
 }
 
 // New creates a new Server with the given config and CA.
@@ -135,6 +143,7 @@ func New(cfg Config, ca *CA) *Server {
 		allowedSubs:   allowedSubs,
 		resolvedPaths: resolvedPaths,
 		log:           l,
+		denyList:      NewDenyList(),
 		execSem:       make(chan struct{}, maxConcurrent),
 		rateLimit:     rate.Limit(rl),
 		rateBurst:     rb,
@@ -153,15 +162,48 @@ func (s *Server) Addr() net.Addr {
 	return s.ln.Addr()
 }
 
+// AdminAddr returns the address the admin server is listening on.
+// Returns nil if no admin server was configured or if Start() has not yet bound
+// the admin listener.
+func (s *Server) AdminAddr() net.Addr {
+	s.lnMu.Lock()
+	defer s.lnMu.Unlock()
+	if s.adminLn == nil {
+		return nil
+	}
+	return s.adminLn.Addr()
+}
+
+// DenyCert adds a certificate serial number to the server's deny list.
+// Any active or future TLS connection presenting a cert with this serial will be
+// rejected at the TLS handshake. This method is safe for concurrent use.
+func (s *Server) DenyCert(serial *big.Int) {
+	s.denyList.Deny(serial)
+}
+
 // Start begins listening and serving. Blocks until ctx is cancelled.
 func (s *Server) Start(ctx context.Context) error {
 	pool := x509.NewCertPool()
 	pool.AddCert(s.ca.Cert)
 
+	dl := s.denyList
 	tlsCfg := &tls.Config{
 		ClientAuth: tls.RequireAndVerifyClientCert,
 		ClientCAs:  pool,
 		MinVersion: tls.VersionTLS13,
+		// VerifyPeerCertificate is called after the standard chain verification
+		// passes. We use it to check the leaf cert's serial against the deny list,
+		// so that a revoked certificate is rejected at the TLS handshake before any
+		// HTTP data is processed.
+		VerifyPeerCertificate: func(_ [][]byte, verifiedChains [][]*x509.Certificate) error {
+			if len(verifiedChains) > 0 && len(verifiedChains[0]) > 0 {
+				leaf := verifiedChains[0][0]
+				if dl.IsDenied(leaf.SerialNumber) {
+					return fmt.Errorf("certificate serial %s has been revoked", leaf.SerialNumber.Text(16))
+				}
+			}
+			return nil
+		},
 	}
 
 	mux := http.NewServeMux()
@@ -214,11 +256,47 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}()
 
+	// Start the local admin HTTP server if configured. The admin server does not
+	// use TLS because it is intended only for same-host operator tools (witness,
+	// mayor). Binding to 127.0.0.1 keeps it off-network; any process on the same
+	// host can reach it, which is the intended access model.
+	var adminSrv *http.Server
+	if s.cfg.AdminListenAddr != "" {
+		adminMux := http.NewServeMux()
+		adminMux.HandleFunc("/v1/admin/deny-cert", s.handleDenyCert)
+
+		adminSrv = &http.Server{
+			Addr:         s.cfg.AdminListenAddr,
+			Handler:      adminMux,
+			ReadTimeout:  10 * time.Second,
+			WriteTimeout: 10 * time.Second,
+		}
+
+		adminLn, err := net.Listen("tcp", s.cfg.AdminListenAddr)
+		if err != nil {
+			_ = srv.Shutdown(context.Background())
+			return fmt.Errorf("admin listen: %w", err)
+		}
+		s.lnMu.Lock()
+		s.adminLn = adminLn
+		s.lnMu.Unlock()
+
+		s.log.Info("gt-proxy-server: admin listening", "addr", adminLn.Addr())
+		go func() {
+			if err := adminSrv.Serve(adminLn); err != nil && err != http.ErrServerClosed {
+				s.log.Error("admin server error", "err", err)
+			}
+		}()
+	}
+
 	select {
 	case <-ctx.Done():
 		// Issue 5: Give shutdown a reasonable deadline to drain in-flight requests.
 		shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		if adminSrv != nil {
+			_ = adminSrv.Shutdown(shutCtx)
+		}
 		return srv.Shutdown(shutCtx)
 	case err := <-errCh:
 		return err
@@ -281,6 +359,46 @@ func serverListenIPs(listenAddr string) []net.IP {
 	}
 	// Specific non-loopback IP: include both that IP and loopback for local connections.
 	return []net.IP{ip, loopback}
+}
+
+// denyCertRequest is the JSON body for POST /v1/admin/deny-cert.
+type denyCertRequest struct {
+	// Serial is the certificate serial number in lowercase hexadecimal (no "0x" prefix).
+	Serial string `json:"serial"`
+}
+
+// handleDenyCert handles POST /v1/admin/deny-cert on the local admin server.
+// It adds the given certificate serial number to the server's deny list so that
+// any subsequent TLS handshake presenting that certificate is rejected.
+//
+// The admin server is local-only (bound to 127.0.0.1), so no additional
+// authentication is required beyond having local access to the host.
+func (s *Server) handleDenyCert(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<10) // 1 KiB is ample for a serial
+	var req denyCertRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Serial == "" {
+		http.Error(w, "bad request: serial is required", http.StatusBadRequest)
+		return
+	}
+
+	serial := new(big.Int)
+	if _, ok := serial.SetString(req.Serial, 16); !ok {
+		http.Error(w, "bad request: serial must be lowercase hex (no 0x prefix)", http.StatusBadRequest)
+		return
+	}
+
+	s.denyList.Deny(serial)
+	s.log.Info("cert revoked via admin API", "serial", req.Serial)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // minimalEnv returns a minimal environment for git and gt/bd subprocesses,

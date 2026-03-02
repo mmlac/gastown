@@ -27,6 +27,7 @@ func main() {
 	var (
 		configFile     = flag.String("config", "", "path to config file (default: ~/gt/.runtime/proxy/config.json)")
 		listen         = flag.String("listen", "0.0.0.0:9876", "address to listen on")
+		adminListen    = flag.String("admin-listen", "127.0.0.1:9877", "address for local admin HTTP server (use empty string to disable)")
 		caDir          = flag.String("ca-dir", "", "directory for CA cert/key (default: ~/gt/.runtime/ca)")
 		allowedCmds    = flag.String("allowed-cmds", "gt,bd", "comma-separated list of allowed commands")
 		allowedSubcmds = flag.String("allowed-subcmds", defaultAllowedSubcmds,
@@ -59,6 +60,9 @@ func main() {
 
 	if !explicitFlags["listen"] && fileCfg.ListenAddr != "" {
 		*listen = fileCfg.ListenAddr
+	}
+	if !explicitFlags["admin-listen"] && fileCfg.AdminListenAddr != "" {
+		*adminListen = fileCfg.AdminListenAddr
 	}
 	if !explicitFlags["ca-dir"] && fileCfg.CADir != "" {
 		*caDir = fileCfg.CADir
@@ -123,6 +127,7 @@ func main() {
 
 	cfg := proxy.Config{
 		ListenAddr:         *listen,
+		AdminListenAddr:    *adminListen,
 		AllowedCommands:    cmds,
 		AllowedSubcommands: parseAllowedSubcmds(*allowedSubcmds),
 		TownRoot:           *townRoot,
