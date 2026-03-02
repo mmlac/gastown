@@ -136,7 +136,11 @@ func main() {
 		ExtraSANHosts:      extraSANHosts,
 	}
 
-	srv := proxy.New(cfg, ca)
+	srv, err := proxy.New(cfg, ca)
+	if err != nil {
+		slog.Error("invalid server config", "err", err)
+		os.Exit(1)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

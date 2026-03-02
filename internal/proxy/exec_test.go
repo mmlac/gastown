@@ -79,6 +79,16 @@ func (lc *logCapture) hasLevel(level slog.Level) bool {
 	return false
 }
 
+// newExecTestServer creates a Server for exec tests with a valid TownRoot.
+// All exec tests pass nil as the CA since they don't exercise TLS handshakes.
+func newExecTestServer(t *testing.T, cfg Config) *Server {
+	t.Helper()
+	cfg.TownRoot = t.TempDir()
+	srv, err := New(cfg, nil)
+	require.NoError(t, err)
+	return srv
+}
+
 // makeFakeRequest builds an httptest.Request with a fake TLS peer certificate CN.
 func makeFakeRequest(method, path, body, cn string) *http.Request {
 	var bodyReader *strings.Reader
@@ -162,7 +172,7 @@ func TestExtractIdentity(t *testing.T) {
 }
 
 func TestHandleExec(t *testing.T) {
-	srv := New(Config{AllowedCommands: []string{"echo", "sh", "sleep"}}, nil)
+	srv := newExecTestServer(t, Config{AllowedCommands: []string{"echo", "sh", "sleep"}})
 
 	t.Run("GET returns 405", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/v1/exec", nil)
@@ -225,7 +235,7 @@ func TestHandleExec(t *testing.T) {
 		require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf '%s %s' \"$1\" \"$2\"\n"), 0755))
 		t.Setenv("PATH", scriptDir+":"+os.Getenv("PATH"))
 
-		srv2 := New(Config{AllowedCommands: []string{"printargs.sh"}}, nil)
+		srv2 := newExecTestServer(t, Config{AllowedCommands: []string{"printargs.sh"}})
 		body := `{"argv":["printargs.sh"]}`
 		req := makeFakeRequest("POST", "/v1/exec", body, "gt-gastown-rust")
 		rec := httptest.NewRecorder()
@@ -316,21 +326,21 @@ func TestRunCommand(t *testing.T) {
 
 // TestIsAllowed tests the Server.isAllowed helper.
 func TestIsAllowed(t *testing.T) {
-	srv := New(Config{AllowedCommands: []string{"echo", "sh"}}, nil)
+	srv := newExecTestServer(t, Config{AllowedCommands: []string{"echo", "sh"}})
 	assert.True(t, srv.isAllowed("echo"))
 	assert.True(t, srv.isAllowed("sh"))
 	assert.False(t, srv.isAllowed("curl"))
 	assert.False(t, srv.isAllowed(""))
 
 	// Empty allowlist — no commands allowed.
-	empty := New(Config{}, nil)
+	empty := newExecTestServer(t, Config{})
 	assert.False(t, empty.isAllowed("echo"))
 	assert.False(t, empty.isAllowed("sh"))
 }
 
 // TestHandleExecBodyBytes tests that bodies close to the limit are handled correctly.
 func TestHandleExecBodyBytes(t *testing.T) {
-	srv := New(Config{AllowedCommands: []string{"echo"}}, nil)
+	srv := newExecTestServer(t, Config{AllowedCommands: []string{"echo"}})
 
 	t.Run("body exactly at limit succeeds if valid JSON", func(t *testing.T) {
 		// Small valid body should succeed.
@@ -366,12 +376,12 @@ func TestHandleExecBodyBytes(t *testing.T) {
 
 // TestSubcommandValidation tests the subcommand allowlist enforcement.
 func TestSubcommandValidation(t *testing.T) {
-	srv := New(Config{
+	srv := newExecTestServer(t, Config{
 		AllowedCommands: []string{"echo", "sh"},
 		AllowedSubcommands: map[string][]string{
 			"echo": {"hello", "world"},
 		},
-	}, nil)
+	})
 
 	t.Run("subcommand not in allowlist returns 403", func(t *testing.T) {
 		body := `{"argv":["echo","forbidden"]}`
@@ -414,7 +424,7 @@ func TestHandleExecAuditLog(t *testing.T) {
 	t.Run("success emits INFO record with identity and cmd fields", func(t *testing.T) {
 		lc := &logCapture{}
 		logger := slog.New(lc)
-		srv := New(Config{AllowedCommands: []string{"echo"}, Logger: logger}, nil)
+		srv := newExecTestServer(t, Config{AllowedCommands: []string{"echo"}, Logger: logger})
 
 		req := makeFakeRequest("POST", "/v1/exec", `{"argv":["echo","hi"]}`, "gt-gastown-shiny")
 		rec := httptest.NewRecorder()
@@ -430,7 +440,7 @@ func TestHandleExecAuditLog(t *testing.T) {
 	t.Run("non-zero exit emits WARN record", func(t *testing.T) {
 		lc := &logCapture{}
 		logger := slog.New(lc)
-		srv := New(Config{AllowedCommands: []string{"sh"}, Logger: logger}, nil)
+		srv := newExecTestServer(t, Config{AllowedCommands: []string{"sh"}, Logger: logger})
 
 		body := `{"argv":["sh","-c","exit 7"]}`
 		req := httptest.NewRequest("POST", "/v1/exec", strings.NewReader(body))
@@ -447,11 +457,11 @@ func TestHandleExecAuditLog(t *testing.T) {
 // TestExecRateLimit verifies that per-client rate limiting returns 429 when exceeded.
 func TestExecRateLimit(t *testing.T) {
 	// Burst of 1, rate of 0 (never refills) → second request is always rejected.
-	srv := New(Config{
+	srv := newExecTestServer(t, Config{
 		AllowedCommands: []string{"echo"},
 		ExecRateLimit:   0.001, // near-zero refill; burst covers the first request
 		ExecRateBurst:   1,
-	}, nil)
+	})
 
 	body := `{"argv":["echo","hi"]}`
 
@@ -478,12 +488,12 @@ func TestExecRateLimit(t *testing.T) {
 // TestExecRateLimitLogsWarn verifies that rate limit rejections are logged at WARN.
 func TestExecRateLimitLogsWarn(t *testing.T) {
 	lc := &logCapture{}
-	srv := New(Config{
+	srv := newExecTestServer(t, Config{
 		AllowedCommands: []string{"echo"},
 		ExecRateLimit:   0.001,
 		ExecRateBurst:   1,
 		Logger:          slog.New(lc),
-	}, nil)
+	})
 
 	body := `{"argv":["echo","hi"]}`
 	// Drain the burst token.
@@ -500,11 +510,11 @@ func TestExecRateLimitLogsWarn(t *testing.T) {
 // TestExecConcurrencyLimit verifies that the global concurrency cap returns 503.
 func TestExecConcurrencyLimit(t *testing.T) {
 	// Cap at 1 concurrent exec; burst large enough that rate limiting doesn't interfere.
-	srv := New(Config{
+	srv := newExecTestServer(t, Config{
 		AllowedCommands:   []string{"sh"},
 		MaxConcurrentExec: 1,
 		ExecRateBurst:     100,
-	}, nil)
+	})
 
 	// Block the single semaphore slot with a long-running command.
 	started := make(chan struct{})
@@ -541,17 +551,17 @@ func TestExecConcurrencyLimit(t *testing.T) {
 
 // TestExecDefaultLimits verifies that default limits are applied when config values are zero.
 func TestExecDefaultLimits(t *testing.T) {
-	srv := New(Config{AllowedCommands: []string{"echo"}}, nil)
+	srv := newExecTestServer(t, Config{AllowedCommands: []string{"echo"}})
 	assert.Equal(t, 32, cap(srv.execSem), "default MaxConcurrentExec should be 32")
 	assert.Equal(t, 60*time.Second, srv.execTimeout, "default ExecTimeout should be 60s")
 }
 
 // TestExecTimeout verifies that a per-command timeout kills a slow subprocess.
 func TestExecTimeout(t *testing.T) {
-	srv := New(Config{
+	srv := newExecTestServer(t, Config{
 		AllowedCommands: []string{"sleep"},
 		ExecTimeout:     100 * time.Millisecond,
-	}, nil)
+	})
 
 	body := `{"argv":["sleep","10"]}`
 	req := httptest.NewRequest("POST", "/v1/exec", strings.NewReader(body))
@@ -576,10 +586,10 @@ func TestExecTimeout(t *testing.T) {
 // TestExecTimeoutNegativeDisables verifies that a negative ExecTimeout passes
 // the context through unchanged (no deadline wrapping).
 func TestExecTimeoutNegativeDisables(t *testing.T) {
-	srv := New(Config{
+	srv := newExecTestServer(t, Config{
 		AllowedCommands: []string{"echo"},
 		ExecTimeout:     -1,
-	}, nil)
+	})
 	assert.Equal(t, time.Duration(-1), srv.execTimeout)
 
 	// A quick command should still succeed when timeout is disabled.
@@ -598,10 +608,10 @@ func TestBinaryResolution(t *testing.T) {
 	lc := &logCapture{}
 	logger := slog.New(lc)
 
-	srv := New(Config{
+	srv := newExecTestServer(t, Config{
 		AllowedCommands: []string{"echo", "this-binary-does-not-exist-xyzzy-12345"},
 		Logger:          logger,
-	}, nil)
+	})
 
 	assert.True(t, srv.isAllowed("echo"), "echo should remain in allowlist")
 	assert.False(t, srv.isAllowed("this-binary-does-not-exist-xyzzy-12345"),

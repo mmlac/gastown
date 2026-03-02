@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -86,7 +87,15 @@ type Server struct {
 // It logs a warning if AllowedCommands is empty, since no commands would be
 // permitted — a safe default but almost certainly a misconfiguration.
 // Any AllowedCommands entries containing "/" or "\" are rejected and removed.
-func New(cfg Config, ca *CA) *Server {
+// Returns an error if Config.TownRoot is empty or not an absolute path.
+func New(cfg Config, ca *CA) (*Server, error) {
+	if cfg.TownRoot == "" {
+		return nil, fmt.Errorf("Config.TownRoot must be non-empty")
+	}
+	if !filepath.IsAbs(cfg.TownRoot) {
+		return nil, fmt.Errorf("Config.TownRoot must be an absolute path, got %q", cfg.TownRoot)
+	}
+
 	l := cfg.Logger
 	if l == nil {
 		l = slog.Default()
@@ -157,7 +166,7 @@ func New(cfg Config, ca *CA) *Server {
 		execTimeout:   et,
 		rateLimit:     rate.Limit(rl),
 		rateBurst:     rb,
-	}
+	}, nil
 }
 
 // Addr returns the address the server is listening on.

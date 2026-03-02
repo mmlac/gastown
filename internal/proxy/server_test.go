@@ -24,24 +24,37 @@ func discardLogger() *slog.Logger {
 }
 
 func TestNew(t *testing.T) {
+	t.Run("empty TownRoot returns error", func(t *testing.T) {
+		_, err := New(Config{Logger: discardLogger()}, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "TownRoot")
+	})
+
+	t.Run("relative TownRoot returns error", func(t *testing.T) {
+		_, err := New(Config{TownRoot: "relative/path", Logger: discardLogger()}, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "TownRoot")
+	})
+
 	t.Run("empty AllowedCommands logs warning and produces empty map", func(t *testing.T) {
-		// New() logs a warning but must not panic.
-		assert.NotPanics(t, func() {
-			srv := New(Config{Logger: discardLogger()}, nil)
-			assert.NotNil(t, srv)
-			assert.Empty(t, srv.allowed)
-		})
+		// New() logs a warning but must not panic or error (other than TownRoot).
+		srv, err := New(Config{TownRoot: t.TempDir(), Logger: discardLogger()}, nil)
+		require.NoError(t, err)
+		assert.NotNil(t, srv)
+		assert.Empty(t, srv.allowed)
 	})
 
 	t.Run("AllowedCommands are stored in allowed map", func(t *testing.T) {
-		srv := New(Config{AllowedCommands: []string{"gt", "bd"}, Logger: discardLogger()}, nil)
+		srv, err := New(Config{TownRoot: t.TempDir(), AllowedCommands: []string{"gt", "bd"}, Logger: discardLogger()}, nil)
+		require.NoError(t, err)
 		assert.True(t, srv.allowed["gt"])
 		assert.True(t, srv.allowed["bd"])
 		assert.False(t, srv.allowed["curl"])
 	})
 
 	t.Run("isAllowed reflects allowed map", func(t *testing.T) {
-		srv := New(Config{AllowedCommands: []string{"gt", "bd"}, Logger: discardLogger()}, nil)
+		srv, err := New(Config{TownRoot: t.TempDir(), AllowedCommands: []string{"gt", "bd"}, Logger: discardLogger()}, nil)
+		require.NoError(t, err)
 		assert.True(t, srv.isAllowed("gt"))
 		assert.True(t, srv.isAllowed("bd"))
 		assert.False(t, srv.isAllowed("curl"))
@@ -49,7 +62,8 @@ func TestNew(t *testing.T) {
 	})
 
 	t.Run("AllowedCommands with path separators are rejected", func(t *testing.T) {
-		srv := New(Config{AllowedCommands: []string{"/usr/bin/gt", "bd", `C:\gt.exe`}, Logger: discardLogger()}, nil)
+		srv, err := New(Config{TownRoot: t.TempDir(), AllowedCommands: []string{"/usr/bin/gt", "bd", `C:\gt.exe`}, Logger: discardLogger()}, nil)
+		require.NoError(t, err)
 		assert.False(t, srv.isAllowed("/usr/bin/gt"), "absolute path should be rejected")
 		assert.True(t, srv.isAllowed("bd"), "plain name should be accepted")
 		assert.False(t, srv.isAllowed(`C:\gt.exe`), "windows path should be rejected")
@@ -114,13 +128,14 @@ func TestExtraSANIPs(t *testing.T) {
 	require.NoError(t, err)
 
 	extraIP := net.ParseIP("192.0.2.99")
-	srv := New(Config{
+	srv, err := New(Config{
 		ListenAddr:      "127.0.0.1:0",
 		AllowedCommands: []string{"echo"},
 		TownRoot:        t.TempDir(),
 		ExtraSANIPs:     []net.IP{extraIP},
 		Logger:          discardLogger(),
 	}, ca)
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -167,13 +182,14 @@ func TestExtraSANHosts(t *testing.T) {
 	require.NoError(t, err)
 
 	extraHost := "proxy.example.com"
-	srv := New(Config{
+	srv, err := New(Config{
 		ListenAddr:    "127.0.0.1:0",
 		AllowedCommands: []string{"echo"},
 		TownRoot:      t.TempDir(),
 		ExtraSANHosts: []string{extraHost},
 		Logger:        discardLogger(),
 	}, ca)
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -301,12 +317,13 @@ func TestStartIntegration(t *testing.T) {
 	ca, err := GenerateCA(dir)
 	require.NoError(t, err)
 
-	srv := New(Config{
+	srv, err := New(Config{
 		ListenAddr:      "127.0.0.1:0",
 		AllowedCommands: []string{"echo"},
 		TownRoot:        t.TempDir(),
 		Logger:          discardLogger(),
 	}, ca)
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -443,12 +460,13 @@ func TestCertRevocation(t *testing.T) {
 	ca, err := GenerateCA(dir)
 	require.NoError(t, err)
 
-	srv := New(Config{
+	srv, err := New(Config{
 		ListenAddr:      "127.0.0.1:0",
 		AllowedCommands: []string{"echo"},
 		TownRoot:        t.TempDir(),
 		Logger:          discardLogger(),
 	}, ca)
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -529,13 +547,14 @@ func TestAdminDenyCertEndpoint(t *testing.T) {
 	ca, err := GenerateCA(dir)
 	require.NoError(t, err)
 
-	srv := New(Config{
+	srv, err := New(Config{
 		ListenAddr:      "127.0.0.1:0",
 		AdminListenAddr: "127.0.0.1:0",
 		AllowedCommands: []string{"echo"},
 		TownRoot:        t.TempDir(),
 		Logger:          discardLogger(),
 	}, ca)
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

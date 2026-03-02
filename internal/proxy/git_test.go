@@ -161,7 +161,8 @@ func TestValidateReceivePackRefs(t *testing.T) {
 // ---- authorizeReceivePack ----
 
 func TestAuthorizeReceivePack(t *testing.T) {
-	srv := New(Config{}, nil)
+	srv, err := New(Config{TownRoot: t.TempDir()}, nil)
+	require.NoError(t, err)
 
 	t.Run("CN with no gt- prefix returns 403", func(t *testing.T) {
 		rec := httptest.NewRecorder()
@@ -252,7 +253,8 @@ func TestAuthorizeReceivePack(t *testing.T) {
 func newGitServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	townRoot := t.TempDir()
-	srv := New(Config{TownRoot: townRoot}, nil)
+	srv, err := New(Config{TownRoot: townRoot}, nil)
+	require.NoError(t, err)
 	// Pre-create the "testrip" repo directory so routing tests that reach
 	// handleInfoRefs/handlePack pass the repo existence pre-flight.
 	require.NoError(t, os.MkdirAll(filepath.Join(townRoot, "testrip", ".repo.git"), 0700))
@@ -508,7 +510,8 @@ func newGitServerWithLog(t *testing.T) (*Server, string, *logCapture) {
 	t.Helper()
 	lc := &logCapture{}
 	townRoot := t.TempDir()
-	srv := New(Config{TownRoot: townRoot, Logger: slog.New(lc)}, nil)
+	srv, err := New(Config{TownRoot: townRoot, Logger: slog.New(lc)}, nil)
+	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(filepath.Join(townRoot, "testrip", ".repo.git"), 0700))
 	return srv, townRoot, lc
 }
@@ -588,7 +591,8 @@ func TestHandleGitAuditLogIntegration(t *testing.T) {
 	t.Run("fetch emits INFO git fetch record", func(t *testing.T) {
 		lc := &logCapture{}
 		townRoot := t.TempDir()
-		srv := New(Config{TownRoot: townRoot, Logger: slog.New(lc)}, nil)
+		srv, err := New(Config{TownRoot: townRoot, Logger: slog.New(lc)}, nil)
+		require.NoError(t, err)
 		makeBareRepo(t, gitPath, townRoot)
 
 		req := fakeGitRequest("POST", "/v1/git/testrip/git-upload-pack",
