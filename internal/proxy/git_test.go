@@ -221,6 +221,9 @@ func newGitServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	townRoot := t.TempDir()
 	srv := New(Config{TownRoot: townRoot}, nil)
+	// Pre-create the "testrip" repo directory so routing tests that reach
+	// handleInfoRefs/handlePack pass the repo existence pre-flight.
+	require.NoError(t, os.MkdirAll(filepath.Join(townRoot, "testrip", ".repo.git"), 0700))
 	return srv, townRoot
 }
 
@@ -419,5 +422,41 @@ func TestHandleUploadPackIntegration(t *testing.T) {
 		assert.Equal(t, http.StatusOK, rec.Code)
 		assert.Equal(t, "application/x-git-upload-pack-result",
 			rec.Header().Get("Content-Type"))
+	})
+}
+
+// ---- missing repo pre-flight ----
+
+func TestHandleGitMissingRepo(t *testing.T) {
+	t.Run("info/refs returns 404 for missing repo", func(t *testing.T) {
+		srv, _ := newGitServer(t)
+		req := httptest.NewRequest("GET",
+			"/v1/git/missingrig/info/refs?service=git-upload-pack", nil)
+		w := httptest.NewRecorder()
+		srv.handleGit(w, req)
+		assert.Equal(t, http.StatusNotFound, w.Code)
+		// Must NOT contain a pkt-line service header — that would mean headers
+		// were committed before the 404 check.
+		assert.NotContains(t, w.Body.String(), "# service=")
+	})
+
+	t.Run("git-upload-pack returns 404 for missing repo", func(t *testing.T) {
+		srv, _ := newGitServer(t)
+		req := httptest.NewRequest("POST",
+			"/v1/git/missingrig/git-upload-pack",
+			bytes.NewReader([]byte("0000")))
+		w := httptest.NewRecorder()
+		srv.handleGit(w, req)
+		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("git-receive-pack returns 404 for missing repo", func(t *testing.T) {
+		srv, _ := newGitServer(t)
+		req := httptest.NewRequest("POST",
+			"/v1/git/missingrig/git-receive-pack",
+			bytes.NewReader(receivePackBody("refs/heads/polecat/furiosa-abc")))
+		w := httptest.NewRecorder()
+		srv.handleGit(w, req)
+		assert.Equal(t, http.StatusNotFound, w.Code)
 	})
 }

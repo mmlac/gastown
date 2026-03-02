@@ -1,10 +1,61 @@
+// Git smart-HTTP proxy
+//
+// This file implements a git smart-HTTP server that bridges sandboxed containers
+// to the host's bare repositories (~/gt/<rig>/.repo.git).  Containers never
+// contact GitHub directly; all fetch and push traffic flows through this proxy.
+//
+// Protocol overview
+//
+//	git clone / fetch uses two round-trips over HTTP:
+//	  1. GET  /v1/git/<rig>/info/refs?service=git-upload-pack
+//	       Server advertises available refs.
+//	  2. POST /v1/git/<rig>/git-upload-pack
+//	       Client sends want/have lines; server streams the pack file.
+//
+//	git push uses:
+//	  1. GET  /v1/git/<rig>/info/refs?service=git-receive-pack
+//	       Server advertises current refs.
+//	  2. POST /v1/git/<rig>/git-receive-pack
+//	       Client sends the pkt-line ref-update commands + pack data.
+//
+//	The proxy runs the corresponding git binary (git-upload-pack or
+//	git-receive-pack) against the bare repo, piping HTTP request/response
+//	bodies as the subprocess stdin/stdout.  This is the same mechanism used
+//	by git-http-backend.
+//
+// Security model
+//
+//   - Rig name is validated against rigNameRe (^[a-zA-Z0-9_-]+$) to prevent
+//     path traversal before constructing the repo path.
+//   - The repository must exist; handlers return 404 before writing any
+//     response body if repoPath is missing (avoids corrupt partial responses).
+//   - git-receive-pack requires a valid mTLS client cert.  The cert CN
+//     (format: "gt-<rig>-<name>") is parsed to extract the polecat name.
+//     Every pushed ref must match refs/heads/polecat/<name>-*; any other
+//     ref is rejected with 403 before git ever sees the request body.
+//   - git-upload-pack is unrestricted for any authenticated client (read-only).
+//   - Subprocesses inherit only HOME and PATH from the server environment;
+//     no credentials, tokens, or secrets are visible to git.
+//
+// Why headers are committed before the subprocess
+//
+//	The git smart-HTTP protocol requires the response Content-Type and the
+//	pkt-line service advertisement to appear before git's output.  The HTTP
+//	ResponseWriter flushes headers on the first Write call, so once the
+//	pkt-line prefix is written the status is committed to 200.  The repo
+//	existence pre-flight in handleGit is the safeguard: it returns a clean
+//	4xx before any write occurs, eliminating the most likely failure mode.
+//	Failures in the git subprocess after headers are sent are logged but
+//	cannot be returned to the client as HTTP errors.
 package proxy
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -46,6 +97,16 @@ func (s *Server) handleGit(w http.ResponseWriter, r *http.Request) {
 
 	repoPath := filepath.Join(s.cfg.TownRoot, rig, ".repo.git")
 
+	if _, err := os.Stat(repoPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			http.Error(w, fmt.Sprintf("rig %q not found", rig), http.StatusNotFound)
+			return
+		}
+		s.log.Error("stat repo path failed", "path", repoPath, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
 	switch {
 	case rest == "info/refs":
 		s.handleInfoRefs(w, r, repoPath, rig)
@@ -73,6 +134,10 @@ func (s *Server) handleInfoRefs(w http.ResponseWriter, r *http.Request, repoPath
 		return
 	}
 
+	// Caller (handleGit) has verified repoPath exists. Headers and the pkt-line
+	// service prefix are written now because the git smart-HTTP protocol requires
+	// them to precede git's output. Once written the 200 status is committed;
+	// any git subprocess failure is logged but cannot be surfaced as an HTTP error.
 	w.Header().Set("Content-Type", "application/x-"+service+"-advertisement")
 	w.Header().Set("Cache-Control", "no-cache")
 
