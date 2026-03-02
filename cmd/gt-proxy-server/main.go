@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -30,7 +31,7 @@ func main() {
 		adminListen    = flag.String("admin-listen", "127.0.0.1:9877", "address for local admin HTTP server (use empty string to disable)")
 		caDir          = flag.String("ca-dir", "", "directory for CA cert/key (default: ~/gt/.runtime/ca)")
 		allowedCmds    = flag.String("allowed-cmds", "gt,bd", "comma-separated list of allowed commands")
-		allowedSubcmds = flag.String("allowed-subcmds", defaultAllowedSubcmds,
+		allowedSubcmds = flag.String("allowed-subcmds", discoverAllowedSubcmds(),
 			`semicolon-separated list of "cmd:sub1,sub2,..." subcommand allowlists`)
 		townRoot = flag.String("town-root", "", "Gas Town root directory (default: $GT_TOWN or ~/gt)")
 	)
@@ -144,6 +145,22 @@ func main() {
 		slog.Error("server error", "err", err)
 		os.Exit(1)
 	}
+}
+
+// discoverAllowedSubcmds calls "gt proxy-subcmds" to auto-discover the allowed
+// subcommand list. Falls back to defaultAllowedSubcmds if the command is
+// unavailable or returns empty output.
+func discoverAllowedSubcmds() string {
+	out, err := exec.Command("gt", "proxy-subcmds").Output()
+	if err != nil {
+		slog.Debug("gt proxy-subcmds discovery failed, using built-in default", "err", err)
+		return defaultAllowedSubcmds
+	}
+	result := strings.TrimSpace(string(out))
+	if result == "" {
+		return defaultAllowedSubcmds
+	}
+	return result
 }
 
 // buildAllowedSubcmds serialises a map[string][]string back into the semicolon-separated
