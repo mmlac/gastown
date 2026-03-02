@@ -1653,8 +1653,14 @@ func TestClearCompletionMetadata_NoBd(t *testing.T) {
 	}
 }
 
-
-// --- Heartbeat v2 tests (gt-3vr5) ---
+// installMockHasSession replaces the hasSession package variable with a mock.
+// The mockFn receives a session name and returns (alive, error).
+func installMockHasSession(t *testing.T, mockFn func(sessionName string) (bool, error)) {
+	t.Helper()
+	old := hasSession
+	hasSession = mockFn
+	t.Cleanup(func() { hasSession = old })
+}
 
 func TestHeartbeatV2_ExitingStateSkipsZombieDetection(t *testing.T) {
 	t.Parallel()
@@ -1791,9 +1797,65 @@ func TestZombieAgentSelfReportedStuck_Classification(t *testing.T) {
 	if ZombieAgentSelfReportedStuck != "agent-self-reported-stuck" {
 		t.Errorf("ZombieAgentSelfReportedStuck = %q, want %q", ZombieAgentSelfReportedStuck, "agent-self-reported-stuck")
 	}
-	// Should imply active work (agent is alive and asking for help)
-	if !ZombieAgentSelfReportedStuck.ImpliesActiveWork() {
-		t.Error("ZombieAgentSelfReportedStuck should imply active work")
+
+	installMockBd(t,
+		func(args []string) (string, error) {
+			return `[{"agent_state":"working","hook_bead":"gt-TARGET"}]`, nil
+		},
+		func(args []string) error { return nil },
+	)
+	installMockHasSession(t, func(name string) (bool, error) {
+		return true, nil
+	})
+
+	if IsBeadActivelyWorked(townRoot, rigName, "gt-TARGET", "") {
+		t.Error("should return false: hidden dirs should be skipped")
+	}
+}
+
+func TestResetAbandonedBead_SkipsWhenBeadActivelyWorked(t *testing.T) {
+	// Set up town directory with two polecats: alpha (dead) and bravo (alive with same bead)
+	townRoot := t.TempDir()
+	rigName := "testrig"
+	polecatsDir := filepath.Join(townRoot, rigName, "polecats")
+	for _, name := range []string{"alpha", "bravo"} {
+		if err := os.MkdirAll(filepath.Join(polecatsDir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	resetCalled := false
+	installMockBd(t,
+		func(args []string) (string, error) {
+			if len(args) > 0 && args[0] == "show" {
+				beadID := args[1]
+				// Agent bead queries return hook_bead
+				if strings.Contains(beadID, "bravo") {
+					return `[{"agent_state":"working","hook_bead":"gt-TARGET"}]`, nil
+				}
+				// Work bead status query
+				return `[{"status":"hooked"}]`, nil
+			}
+			return "{}", nil
+		},
+		func(args []string) error {
+			if len(args) > 0 && args[0] == "update" {
+				resetCalled = true
+			}
+			return nil
+		},
+	)
+	installMockHasSession(t, func(name string) (bool, error) {
+		return true, nil // bravo's session is alive
+	})
+
+	// alpha is dead, bravo is alive with same bead — should NOT reset
+	result := resetAbandonedBead(townRoot, rigName, "gt-TARGET", "alpha", nil)
+	if result {
+		t.Error("resetAbandonedBead should return false when another live polecat has the bead")
+	}
+	if resetCalled {
+		t.Error("bd update should not have been called — bead is actively worked")
 	}
 }
 

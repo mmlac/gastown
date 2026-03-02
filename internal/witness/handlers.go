@@ -73,6 +73,13 @@ func DefaultBdCli() *BdCli {
 	}
 }
 
+// hasSession checks if a tmux session exists. Tests override this to avoid
+// requiring a live tmux server.
+var hasSession = func(sessionName string) (bool, error) {
+	t := tmux.NewTmux()
+	return t.HasSession(sessionName)
+}
+
 // initRegistryFromTownRoot initializes registries from a known town root,
 // logging any errors so that misconfiguration is observable.
 func initRegistryFromTownRoot(townRoot string) {
@@ -1883,6 +1890,64 @@ Please re-dispatch to an available polecat.`,
 	}
 
 	return true
+}
+
+// IsBeadActivelyWorked checks whether a given bead is currently hooked to a live
+// polecat in the specified rig. This prevents duplicate work: if bead X is already
+// hooked to a live polecat, we must not reset it for re-dispatch or spawn a new
+// polecat for the same bead.
+//
+// excludePolecat is the name of the polecat being considered dead/abandoned — we
+// skip it since we already know it's dead. Pass "" to check all polecats.
+//
+// See: https://github.com/steveyegge/gastown/issues/2203
+func IsBeadActivelyWorked(workDir, rigName, beadID, excludePolecat string) bool {
+	if beadID == "" {
+		return false
+	}
+
+	townRoot, err := workspace.Find(workDir)
+	if err != nil || townRoot == "" {
+		townRoot = workDir
+	}
+	initRegistryFromTownRoot(townRoot)
+
+	polecatsDir := filepath.Join(townRoot, rigName, "polecats")
+	entries, err := os.ReadDir(polecatsDir)
+	if err != nil {
+		return false
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+
+		polecatName := entry.Name()
+		if polecatName == excludePolecat {
+			continue
+		}
+
+		// Check if this polecat has our bead hooked
+		prefix := beads.GetPrefixForRig(townRoot, rigName)
+		agentBeadID := beads.PolecatBeadIDWithPrefix(prefix, rigName, polecatName)
+		_, hookBead := getAgentBeadState(workDir, agentBeadID)
+		if hookBead != beadID {
+			continue
+		}
+
+		// This polecat has our bead — check if its session is alive
+		sessionName := session.PolecatSessionName(session.PrefixFor(rigName), polecatName)
+		alive, err := hasSession(sessionName)
+		if err != nil {
+			continue // Transient error — don't block on it
+		}
+		if alive {
+			return true // Live polecat already working this bead
+		}
+	}
+
+	return false
 }
 
 // OrphanedBeadResult contains a single detected orphaned bead.
