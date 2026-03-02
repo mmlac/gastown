@@ -7,17 +7,77 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// logEntry captures a single structured log record for test assertions.
+type logEntry struct {
+	level slog.Level
+	msg   string
+	attrs map[string]string
+}
+
+// logCapture is a slog.Handler that records all log entries in memory.
+type logCapture struct {
+	mu      sync.Mutex
+	entries []logEntry
+}
+
+func (lc *logCapture) Enabled(_ context.Context, _ slog.Level) bool { return true }
+
+func (lc *logCapture) Handle(_ context.Context, r slog.Record) error {
+	e := logEntry{
+		level: r.Level,
+		msg:   r.Message,
+		attrs: make(map[string]string),
+	}
+	r.Attrs(func(a slog.Attr) bool {
+		e.attrs[a.Key] = a.Value.String()
+		return true
+	})
+	lc.mu.Lock()
+	lc.entries = append(lc.entries, e)
+	lc.mu.Unlock()
+	return nil
+}
+
+func (lc *logCapture) WithAttrs(_ []slog.Attr) slog.Handler { return lc }
+func (lc *logCapture) WithGroup(_ string) slog.Handler      { return lc }
+
+// findEntry returns the first log entry matching the given level and message.
+func (lc *logCapture) findEntry(level slog.Level, msg string) (logEntry, bool) {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	for _, e := range lc.entries {
+		if e.level == level && e.msg == msg {
+			return e, true
+		}
+	}
+	return logEntry{}, false
+}
+
+// hasLevel reports whether any entry with the given level was logged.
+func (lc *logCapture) hasLevel(level slog.Level) bool {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	for _, e := range lc.entries {
+		if e.level == level {
+			return true
+		}
+	}
+	return false
+}
 
 // makeFakeRequest builds an httptest.Request with a fake TLS peer certificate CN.
 func makeFakeRequest(method, path, body, cn string) *http.Request {
@@ -256,16 +316,16 @@ func TestRunCommand(t *testing.T) {
 
 // TestIsAllowed tests the Server.isAllowed helper.
 func TestIsAllowed(t *testing.T) {
-	srv := New(Config{AllowedCommands: []string{"gt", "bd"}}, nil)
-	assert.True(t, srv.isAllowed("gt"))
-	assert.True(t, srv.isAllowed("bd"))
+	srv := New(Config{AllowedCommands: []string{"echo", "sh"}}, nil)
+	assert.True(t, srv.isAllowed("echo"))
+	assert.True(t, srv.isAllowed("sh"))
 	assert.False(t, srv.isAllowed("curl"))
 	assert.False(t, srv.isAllowed(""))
 
 	// Empty allowlist — no commands allowed.
 	empty := New(Config{}, nil)
-	assert.False(t, empty.isAllowed("gt"))
 	assert.False(t, empty.isAllowed("echo"))
+	assert.False(t, empty.isAllowed("sh"))
 }
 
 // TestHandleExecBodyBytes tests that bodies close to the limit are handled correctly.
@@ -280,4 +340,100 @@ func TestHandleExecBodyBytes(t *testing.T) {
 		srv.handleExec(rec, req)
 		assert.Equal(t, http.StatusOK, rec.Code)
 	})
+}
+
+// TestSubcommandValidation tests the subcommand allowlist enforcement.
+func TestSubcommandValidation(t *testing.T) {
+	srv := New(Config{
+		AllowedCommands: []string{"echo", "sh"},
+		AllowedSubcommands: map[string][]string{
+			"echo": {"hello", "world"},
+		},
+	}, nil)
+
+	t.Run("subcommand not in allowlist returns 403", func(t *testing.T) {
+		body := `{"argv":["echo","forbidden"]}`
+		req := httptest.NewRequest("POST", "/v1/exec", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.handleExec(rec, req)
+		assert.Equal(t, http.StatusForbidden, rec.Code)
+		assert.Contains(t, rec.Body.String(), "subcommand not allowed")
+	})
+
+	t.Run("subcommand in allowlist returns 200", func(t *testing.T) {
+		body := `{"argv":["echo","hello"]}`
+		req := httptest.NewRequest("POST", "/v1/exec", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.handleExec(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("command with subcommand allowlist but no argv[1] returns 403", func(t *testing.T) {
+		body := `{"argv":["echo"]}`
+		req := httptest.NewRequest("POST", "/v1/exec", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.handleExec(rec, req)
+		assert.Equal(t, http.StatusForbidden, rec.Code)
+		assert.Contains(t, rec.Body.String(), "subcommand required")
+	})
+
+	t.Run("command with no subcommand allowlist entry passes subcommand check", func(t *testing.T) {
+		// "sh" has no entry in AllowedSubcommands, so any subcommand is allowed.
+		body := `{"argv":["sh","-c","exit 0"]}`
+		req := httptest.NewRequest("POST", "/v1/exec", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.handleExec(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+}
+
+// TestHandleExecAuditLog verifies that exec calls produce structured audit log records.
+func TestHandleExecAuditLog(t *testing.T) {
+	t.Run("success emits INFO record with identity and cmd fields", func(t *testing.T) {
+		lc := &logCapture{}
+		logger := slog.New(lc)
+		srv := New(Config{AllowedCommands: []string{"echo"}, Logger: logger}, nil)
+
+		req := makeFakeRequest("POST", "/v1/exec", `{"argv":["echo","hi"]}`, "gt-gastown-shiny")
+		rec := httptest.NewRecorder()
+		srv.handleExec(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		e, ok := lc.findEntry(slog.LevelInfo, "exec")
+		require.True(t, ok, "expected INFO 'exec' log record")
+		assert.Equal(t, "gastown/shiny", e.attrs["identity"])
+		assert.Equal(t, "echo", e.attrs["cmd"])
+	})
+
+	t.Run("non-zero exit emits WARN record", func(t *testing.T) {
+		lc := &logCapture{}
+		logger := slog.New(lc)
+		srv := New(Config{AllowedCommands: []string{"sh"}, Logger: logger}, nil)
+
+		body := `{"argv":["sh","-c","exit 7"]}`
+		req := httptest.NewRequest("POST", "/v1/exec", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.handleExec(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		e, ok := lc.findEntry(slog.LevelWarn, "exec failed")
+		require.True(t, ok, "expected WARN 'exec failed' log record")
+		assert.Equal(t, "sh", e.attrs["cmd"])
+	})
+}
+
+// TestBinaryResolution verifies that commands not found in PATH are removed from the allowlist.
+func TestBinaryResolution(t *testing.T) {
+	lc := &logCapture{}
+	logger := slog.New(lc)
+
+	srv := New(Config{
+		AllowedCommands: []string{"echo", "this-binary-does-not-exist-xyzzy-12345"},
+		Logger:          logger,
+	}, nil)
+
+	assert.True(t, srv.isAllowed("echo"), "echo should remain in allowlist")
+	assert.False(t, srv.isAllowed("this-binary-does-not-exist-xyzzy-12345"),
+		"non-existent binary should be removed from allowlist")
+	assert.True(t, lc.hasLevel(slog.LevelError), "expected error log for missing binary")
 }

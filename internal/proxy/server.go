@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,12 @@ import (
 type Config struct {
 	ListenAddr      string
 	AllowedCommands []string
+	// AllowedSubcommands maps each allowed command ("gt", "bd") to the set of
+	// subcommands that polecats may invoke. If a command has an entry here,
+	// argv[1] must appear in its list; absent argv[1] → 403.
+	// If a command has NO entry, subcommands are unrestricted for that command
+	// (safe for single-subcommand tools, but not intended for gt/bd).
+	AllowedSubcommands map[string][]string
 	// TownRoot is the path to the Gas Town root directory (e.g. ~/gt).
 	// Populated from the GT_TOWN env var or ~/gt by default.
 	TownRoot string
@@ -27,10 +34,12 @@ type Config struct {
 
 // Server is an mTLS HTTP proxy server.
 type Server struct {
-	cfg     Config
-	ca      *CA
-	allowed map[string]bool
-	log     *slog.Logger
+	cfg          Config
+	ca           *CA
+	allowed      map[string]bool
+	allowedSubs  map[string]map[string]bool
+	resolvedPaths map[string]string
+	log          *slog.Logger
 
 	lnMu sync.Mutex
 	ln   net.Listener
@@ -55,10 +64,34 @@ func New(cfg Config, ca *CA) *Server {
 		}
 		allowed[cmd] = true
 	}
+
+	// Resolve binary paths at startup to prevent PATH hijacking after startup.
+	resolvedPaths := make(map[string]string, len(allowed))
+	for cmd := range allowed {
+		path, err := exec.LookPath(cmd)
+		if err != nil {
+			l.Error("command not found in PATH — removing from allowlist", "cmd", cmd)
+			delete(allowed, cmd)
+			continue
+		}
+		resolvedPaths[cmd] = path
+	}
+
 	if len(allowed) == 0 {
 		l.Warn("AllowedCommands is empty — all exec requests will be denied")
 	}
-	return &Server{cfg: cfg, ca: ca, allowed: allowed, log: l}
+
+	// Build subcommand allowlists from config.
+	allowedSubs := make(map[string]map[string]bool, len(cfg.AllowedSubcommands))
+	for cmd, subs := range cfg.AllowedSubcommands {
+		m := make(map[string]bool, len(subs))
+		for _, sub := range subs {
+			m[sub] = true
+		}
+		allowedSubs[cmd] = m
+	}
+
+	return &Server{cfg: cfg, ca: ca, allowed: allowed, allowedSubs: allowedSubs, resolvedPaths: resolvedPaths, log: l}
 }
 
 // Addr returns the address the server is listening on.

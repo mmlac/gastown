@@ -51,14 +51,41 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	argv := req.Argv
+	// Validate argv[1] (subcommand) if this command has a subcommand allowlist.
+	if subs, ok := s.allowedSubs[cmd0]; ok {
+		if len(req.Argv) < 2 {
+			http.Error(w, "subcommand required", http.StatusForbidden)
+			return
+		}
+		sub := req.Argv[1]
+		if !subs[sub] {
+			http.Error(w, fmt.Sprintf("subcommand not allowed: %q %q", cmd0, sub), http.StatusForbidden)
+			return
+		}
+	}
+
+	// Build argv as a copy of req.Argv to avoid mutating the decoded request.
+	argv := append([]string(nil), req.Argv...)
 	// Inject --identity <rig>/<name> immediately after argv[0] so that
 	// "gt mail inbox --json --identity foo/bar" becomes well-formed.
 	if identity != "" {
 		argv = append([]string{argv[0], "--identity", identity}, argv[1:]...)
 	}
+	// Use the resolved absolute binary path to prevent PATH hijacking after startup.
+	if resolved, ok := s.resolvedPaths[cmd0]; ok {
+		argv[0] = resolved
+	}
 
 	out, errOut, exitCode := runCommand(r.Context(), argv)
+
+	// Audit log (do not log full argv — it may contain tokens or secrets).
+	if exitCode == 0 {
+		s.log.Info("exec", "identity", identity, "cmd", cmd0,
+			"sub", subForLog(req.Argv), "exit", exitCode)
+	} else {
+		s.log.Warn("exec failed", "identity", identity, "cmd", cmd0,
+			"sub", subForLog(req.Argv), "exit", exitCode)
+	}
 
 	// Issue 15: The handler always returns HTTP 200 even when the subprocess exits
 	// non-zero. This is intentional: the RPC call itself succeeded (the request was
@@ -71,6 +98,15 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		Stderr:   errOut,
 		ExitCode: exitCode,
 	})
+}
+
+// subForLog returns argv[1] if present, otherwise "".
+// Used for audit logging to capture the subcommand without logging full argv.
+func subForLog(argv []string) string {
+	if len(argv) >= 2 {
+		return argv[1]
+	}
+	return ""
 }
 
 // extractIdentity parses the client cert CN "gt-<rig>-<name>" into "<rig>/<name>".
