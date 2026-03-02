@@ -340,6 +340,28 @@ func TestHandleExecBodyBytes(t *testing.T) {
 		srv.handleExec(rec, req)
 		assert.Equal(t, http.StatusOK, rec.Code)
 	})
+
+	const maxBody = 1 << 20 // 1 MiB — must match exec.go
+	prefix := `{"argv":["echo","`
+	suffix := `"]}`
+
+	t.Run("body of exactly 1 MiB-1 byte succeeds", func(t *testing.T) {
+		fill := strings.Repeat("x", maxBody-1-len(prefix)-len(suffix))
+		body := prefix + fill + suffix
+		req := httptest.NewRequest("POST", "/v1/exec", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.handleExec(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("body of exactly 1 MiB+1 byte returns 400", func(t *testing.T) {
+		fill := strings.Repeat("x", maxBody+1-len(prefix)-len(suffix))
+		body := prefix + fill + suffix
+		req := httptest.NewRequest("POST", "/v1/exec", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.handleExec(rec, req)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
 }
 
 // TestSubcommandValidation tests the subcommand allowlist enforcement.
