@@ -128,6 +128,11 @@ func clientCN(r *http.Request) string {
 }
 
 func (s *Server) handleInfoRefs(w http.ResponseWriter, r *http.Request, repoPath, rig string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	service := r.URL.Query().Get("service")
 	if service != "git-upload-pack" && service != "git-receive-pack" {
 		http.Error(w, "unsupported service", http.StatusBadRequest)

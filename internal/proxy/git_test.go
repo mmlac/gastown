@@ -257,6 +257,14 @@ func TestHandleGitRouting(t *testing.T) {
 		assert.Equal(t, http.StatusNotFound, rec.Code)
 	})
 
+	t.Run("info/refs POST returns 405", func(t *testing.T) {
+		srv, _ := newGitServer(t)
+		req := httptest.NewRequest("POST", "/v1/git/testrip/info/refs?service=git-upload-pack", nil)
+		rec := httptest.NewRecorder()
+		srv.handleGit(rec, req)
+		assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+	})
+
 	t.Run("info/refs with unsupported service returns 400", func(t *testing.T) {
 		srv, _ := newGitServer(t)
 		req := httptest.NewRequest("GET", "/v1/git/testrip/info/refs?service=git-archive", nil)
