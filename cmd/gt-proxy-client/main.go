@@ -45,17 +45,7 @@ func main() {
 	caFile := os.Getenv("GT_PROXY_CA")
 
 	if proxyURL == "" || certFile == "" || keyFile == "" || caFile == "" {
-		// Print which variable is missing, then fall through to the real binary.
-		for _, kv := range []struct{ k, v string }{
-			{"GT_PROXY_URL", proxyURL},
-			{"GT_PROXY_CERT", certFile},
-			{"GT_PROXY_KEY", keyFile},
-			{"GT_PROXY_CA", caFile},
-		} {
-			if kv.v == "" {
-				fmt.Fprintf(os.Stderr, "gt-proxy-client: %s is not set, falling through to real binary\n", kv.k)
-			}
-		}
+		// One or more proxy env vars unset — not in sandboxed mode, exec the real binary silently.
 		execReal()
 		return
 	}
