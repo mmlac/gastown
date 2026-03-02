@@ -35,7 +35,7 @@ while read local_ref local_sha remote_ref remote_sha; do
   branch="${remote_ref#refs/heads/}"
 
   case "$branch" in
-    "${default_branch}"|beads-sync|polecat/*|integration/*)
+    "${default_branch}"|proxy|beads-sync|polecat/*|integration/*)
       # Allowed branches
       ;;
     *)
@@ -48,7 +48,8 @@ while read local_ref local_sha remote_ref remote_sha; do
         echo "Blocked push to: $branch"
         echo ""
         echo "Allowed branches:"
-        echo "  ${default_branch}        - Crew workers push here directly"
+        echo "  ${default_branch}        - Crew workers push here directly
+  proxy       - Feature branch for sandboxed execution work"
         echo "  polecat/*   - Polecat working branches"
         echo "  integration/* - Integration branches"
         echo "  beads-sync  - Beads synchronization"
