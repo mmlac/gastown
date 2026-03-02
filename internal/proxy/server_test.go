@@ -5,7 +5,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -17,29 +18,41 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// discardLogger returns a slog.Logger that discards all output (keeps test output clean).
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
 func TestNew(t *testing.T) {
 	t.Run("empty AllowedCommands logs warning and produces empty map", func(t *testing.T) {
 		// New() logs a warning but must not panic.
 		assert.NotPanics(t, func() {
-			srv := New(Config{}, nil)
+			srv := New(Config{Logger: discardLogger()}, nil)
 			assert.NotNil(t, srv)
 			assert.Empty(t, srv.allowed)
 		})
 	})
 
 	t.Run("AllowedCommands are stored in allowed map", func(t *testing.T) {
-		srv := New(Config{AllowedCommands: []string{"gt", "bd"}}, nil)
+		srv := New(Config{AllowedCommands: []string{"gt", "bd"}, Logger: discardLogger()}, nil)
 		assert.True(t, srv.allowed["gt"])
 		assert.True(t, srv.allowed["bd"])
 		assert.False(t, srv.allowed["curl"])
 	})
 
 	t.Run("isAllowed reflects allowed map", func(t *testing.T) {
-		srv := New(Config{AllowedCommands: []string{"gt", "bd"}}, nil)
+		srv := New(Config{AllowedCommands: []string{"gt", "bd"}, Logger: discardLogger()}, nil)
 		assert.True(t, srv.isAllowed("gt"))
 		assert.True(t, srv.isAllowed("bd"))
 		assert.False(t, srv.isAllowed("curl"))
 		assert.False(t, srv.isAllowed(""))
+	})
+
+	t.Run("AllowedCommands with path separators are rejected", func(t *testing.T) {
+		srv := New(Config{AllowedCommands: []string{"/usr/bin/gt", "bd", `C:\gt.exe`}, Logger: discardLogger()}, nil)
+		assert.False(t, srv.isAllowed("/usr/bin/gt"), "absolute path should be rejected")
+		assert.True(t, srv.isAllowed("bd"), "plain name should be accepted")
+		assert.False(t, srv.isAllowed(`C:\gt.exe`), "windows path should be rejected")
 	})
 }
 
@@ -95,16 +108,6 @@ func TestMinimalEnv(t *testing.T) {
 	})
 }
 
-// getFreePort finds an available TCP port by briefly listening on :0.
-func getFreePort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := l.Addr().(*net.TCPAddr).Port
-	require.NoError(t, l.Close())
-	return port
-}
-
 // waitForServer polls addr until a TCP connection succeeds or timeout elapses.
 func waitForServer(t *testing.T, addr string, timeout time.Duration) {
 	t.Helper()
@@ -125,13 +128,11 @@ func TestStartIntegration(t *testing.T) {
 	ca, err := GenerateCA(dir)
 	require.NoError(t, err)
 
-	port := getFreePort(t)
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-
 	srv := New(Config{
-		ListenAddr:      addr,
+		ListenAddr:      "127.0.0.1:0",
 		AllowedCommands: []string{"echo"},
 		TownRoot:        t.TempDir(),
+		Logger:          discardLogger(),
 	}, ca)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -142,6 +143,15 @@ func TestStartIntegration(t *testing.T) {
 		startErr <- srv.Start(ctx)
 	}()
 
+	// Wait until the listener is bound and the address is available via Addr().
+	var addr string
+	require.Eventually(t, func() bool {
+		if a := srv.Addr(); a != nil {
+			addr = a.String()
+			return true
+		}
+		return false
+	}, 5*time.Second, 10*time.Millisecond, "server Addr() should become non-nil after Start()")
 	waitForServer(t, addr, 5*time.Second)
 
 	// Build a CA pool and an authorised client cert.

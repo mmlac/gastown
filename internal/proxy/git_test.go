@@ -285,6 +285,32 @@ func TestHandleGitRouting(t *testing.T) {
 		srv.handleGit(rec, req)
 		assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 	})
+
+	t.Run("double-slash produces empty rig and returns 400", func(t *testing.T) {
+		// /v1/git//info/refs — rig segment is the empty string between the two slashes.
+		srv, _ := newGitServer(t)
+		req := httptest.NewRequest("GET", "/v1/git//info/refs?service=git-upload-pack", nil)
+		rec := httptest.NewRecorder()
+		srv.handleGit(rec, req)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("path traversal in rig name returns 400", func(t *testing.T) {
+		srv, _ := newGitServer(t)
+		// URL-encoded ".." traversal attempt.
+		req := httptest.NewRequest("GET", "/v1/git/..%2Fetc%2Fpasswd/info/refs?service=git-upload-pack", nil)
+		rec := httptest.NewRecorder()
+		srv.handleGit(rec, req)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("rig with invalid characters returns 400", func(t *testing.T) {
+		srv, _ := newGitServer(t)
+		req := httptest.NewRequest("GET", "/v1/git/rig@bad!/info/refs?service=git-upload-pack", nil)
+		rec := httptest.NewRecorder()
+		srv.handleGit(rec, req)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
 }
 
 // TestClientCN exercises all branches of the clientCN helper.

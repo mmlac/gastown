@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -34,8 +35,14 @@ func GenerateCA(dir string) (*CA, error) {
 		return nil, fmt.Errorf("generate ca key: %w", err)
 	}
 
+	// Issue 4: CA serial must be unique per RFC 5280; generate a random 128-bit value.
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, fmt.Errorf("generate ca serial: %w", err)
+	}
+
 	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
+		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: "GasTown CA"},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(10 * 365 * 24 * time.Hour),
@@ -57,11 +64,21 @@ func GenerateCA(dir string) (*CA, error) {
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 
-	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), certPEM, 0644); err != nil {
-		return nil, fmt.Errorf("write ca.crt: %w", err)
+	// Issue 10: Write each file to a *.tmp sibling then rename atomically so that a
+	// crash between writes never leaves ca.crt and ca.key in an inconsistent state.
+	certTmp := filepath.Join(dir, "ca.crt.tmp")
+	if err := os.WriteFile(certTmp, certPEM, 0644); err != nil {
+		return nil, fmt.Errorf("write ca.crt.tmp: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "ca.key"), keyPEM, 0600); err != nil {
-		return nil, fmt.Errorf("write ca.key: %w", err)
+	if err := os.Rename(certTmp, filepath.Join(dir, "ca.crt")); err != nil {
+		return nil, fmt.Errorf("rename ca.crt: %w", err)
+	}
+	keyTmp := filepath.Join(dir, "ca.key.tmp")
+	if err := os.WriteFile(keyTmp, keyPEM, 0600); err != nil {
+		return nil, fmt.Errorf("write ca.key.tmp: %w", err)
+	}
+	if err := os.Rename(keyTmp, filepath.Join(dir, "ca.key")); err != nil {
+		return nil, fmt.Errorf("rename ca.key: %w", err)
 	}
 
 	cert, err := x509.ParseCertificate(certDER)
@@ -78,7 +95,7 @@ func LoadOrGenerateCA(dir string) (*CA, error) {
 	keyPath := filepath.Join(dir, "ca.key")
 
 	certPEM, err := os.ReadFile(certPath)
-	if os.IsNotExist(err) {
+	if errors.Is(err, os.ErrNotExist) {
 		return GenerateCA(dir)
 	}
 	if err != nil {

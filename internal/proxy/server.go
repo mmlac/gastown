@@ -5,9 +5,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"log"
+	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,6 +21,8 @@ type Config struct {
 	// TownRoot is the path to the Gas Town root directory (e.g. ~/gt).
 	// Populated from the GT_TOWN env var or ~/gt by default.
 	TownRoot string
+	// Logger is the structured logger to use. nil uses slog.Default().
+	Logger *slog.Logger
 }
 
 // Server is an mTLS HTTP proxy server.
@@ -25,20 +30,47 @@ type Server struct {
 	cfg     Config
 	ca      *CA
 	allowed map[string]bool
+	log     *slog.Logger
+
+	lnMu sync.Mutex
+	ln   net.Listener
 }
 
 // New creates a new Server with the given config and CA.
 // It logs a warning if AllowedCommands is empty, since no commands would be
 // permitted — a safe default but almost certainly a misconfiguration.
+// Any AllowedCommands entries containing "/" or "\" are rejected and removed.
 func New(cfg Config, ca *CA) *Server {
+	l := cfg.Logger
+	if l == nil {
+		l = slog.Default()
+	}
+
 	allowed := make(map[string]bool, len(cfg.AllowedCommands))
 	for _, cmd := range cfg.AllowedCommands {
+		// Issue 12: AllowedCommands must be plain names, not paths.
+		if strings.ContainsAny(cmd, `/\`) {
+			l.Error("AllowedCommands entry contains path separator — ignoring", "entry", cmd)
+			continue
+		}
 		allowed[cmd] = true
 	}
 	if len(allowed) == 0 {
-		log.Printf("gt-proxy-server: WARNING: AllowedCommands is empty — all exec requests will be denied")
+		l.Warn("AllowedCommands is empty — all exec requests will be denied")
 	}
-	return &Server{cfg: cfg, ca: ca, allowed: allowed}
+	return &Server{cfg: cfg, ca: ca, allowed: allowed, log: l}
+}
+
+// Addr returns the address the server is listening on.
+// Valid only after Start() has progressed past the listen call (i.e. after
+// the first request is handled, or after waitForServer returns in tests).
+func (s *Server) Addr() net.Addr {
+	s.lnMu.Lock()
+	defer s.lnMu.Unlock()
+	if s.ln == nil {
+		return nil
+	}
+	return s.ln.Addr()
 }
 
 // Start begins listening and serving. Blocks until ctx is cancelled.
@@ -77,17 +109,29 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	tlsCfg.Certificates = []tls.Certificate{tlsCert}
 
+	// Issue 11: Use net.Listen + ServeTLS so we can expose the bound address via Addr().
+	ln, err := net.Listen("tcp", s.cfg.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
+	}
+	s.lnMu.Lock()
+	s.ln = ln
+	s.lnMu.Unlock()
+
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("gt-proxy-server: listening on %s (mTLS)", s.cfg.ListenAddr)
-		if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+		s.log.Info("gt-proxy-server: listening", "addr", ln.Addr(), "tls", "mTLS")
+		if err := srv.ServeTLS(ln, "", ""); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 	}()
 
 	select {
 	case <-ctx.Done():
-		return srv.Shutdown(context.Background())
+		// Issue 5: Give shutdown a reasonable deadline to drain in-flight requests.
+		shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutCtx)
 	case err := <-errCh:
 		return err
 	}
@@ -95,6 +139,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 // minimalEnv returns a minimal environment for git and gt/bd subprocesses,
 // containing only HOME and PATH to avoid leaking server credentials.
+// GIT_EXEC_PATH is intentionally omitted: the git binary resolves it
+// automatically from its own installation path, so passing HOME and PATH
+// is sufficient for git subcommands to locate git-core helpers.
 func minimalEnv() []string {
 	env := []string{}
 	for _, key := range []string{"HOME", "PATH"} {

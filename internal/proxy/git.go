@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+// rigNameRe matches valid rig names: alphanumeric, hyphens, and underscores only.
+var rigNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // handleGit serves git smart-HTTP protocol for upload-pack and receive-pack.
 // Routes:
@@ -28,6 +31,18 @@ func (s *Server) handleGit(w http.ResponseWriter, r *http.Request) {
 	}
 	rig := parts[0]
 	rest := parts[1]
+
+	// Issue 6: Reject empty rig segment (e.g. /v1/git//info/refs).
+	if rig == "" {
+		http.Error(w, "missing rig name", http.StatusBadRequest)
+		return
+	}
+
+	// Issue 1: Validate rig name to prevent path traversal attacks.
+	if !rigNameRe.MatchString(rig) {
+		http.Error(w, "invalid rig name", http.StatusBadRequest)
+		return
+	}
 
 	repoPath := filepath.Join(s.cfg.TownRoot, rig, ".repo.git")
 
@@ -65,12 +80,13 @@ func (s *Server) handleInfoRefs(w http.ResponseWriter, r *http.Request, repoPath
 	pktLine := fmt.Sprintf("# service=%s\n", service)
 	fmt.Fprintf(w, "%04x%s0000", len(pktLine)+4, pktLine)
 
+	var errBuf strings.Builder
 	cmd := exec.CommandContext(r.Context(), service, "--stateless-rpc", "--advertise-refs", repoPath)
 	cmd.Stdout = w
-	cmd.Stderr = log.Writer()
+	cmd.Stderr = &errBuf
 	cmd.Env = minimalEnv()
 	if err := cmd.Run(); err != nil {
-		log.Printf("git info/refs (%s %s): %v", service, rig, err)
+		s.log.Error("git info/refs failed", "service", service, "rig", rig, "err", err, "stderr", errBuf.String())
 	}
 }
 
@@ -90,33 +106,30 @@ func (s *Server) handlePack(w http.ResponseWriter, r *http.Request, repoPath, se
 	w.Header().Set("Content-Type", "application/x-"+service+"-result")
 	w.Header().Set("Cache-Control", "no-cache")
 
+	var errBuf strings.Builder
 	cmd := exec.CommandContext(r.Context(), service, "--stateless-rpc", repoPath)
 	cmd.Stdin = r.Body
 	cmd.Stdout = w
-	cmd.Stderr = log.Writer()
+	cmd.Stderr = &errBuf
 	cmd.Env = minimalEnv()
 	if err := cmd.Run(); err != nil {
-		log.Printf("git pack (%s %s): %v", service, rig, err)
+		s.log.Error("git pack failed", "service", service, "rig", rig, "err", err, "stderr", errBuf.String())
 	}
 }
 
 // authorizeReceivePack checks that the push only touches refs/heads/polecat/<cn-name>-*.
 // It reads the pkt-line stream to extract ref names, then rewinds the body.
 func (s *Server) authorizeReceivePack(w http.ResponseWriter, r *http.Request, clientCN string) bool {
-	// CN format: gt-<rig>-<name>; extract <name> using LastIndex.
-	cnName := ""
-	if strings.HasPrefix(clientCN, "gt-") {
-		rest := clientCN[3:]
-		idx := strings.LastIndex(rest, "-")
-		if idx >= 0 {
-			cnName = rest[idx+1:]
-		}
-	}
+	// Issue 8: Use the shared polecatName helper instead of reimplementing CN parsing.
+	cnName := polecatName(clientCN)
 	if cnName == "" {
 		http.Error(w, "cannot determine polecat name from cert CN", http.StatusForbidden)
 		return false
 	}
 
+	// Issue 3: Bound body reads to prevent a misbehaving client from exhausting memory.
+	// 32 MiB is ample for any valid ref advertisement; binary pack data is not read.
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "read body: "+err.Error(), http.StatusInternalServerError)
@@ -141,49 +154,50 @@ func validateReceivePackRefs(body []byte, cnName string) error {
 	// length field itself) followed by that many bytes of payload.  "0000" is a
 	// flush packet that terminates the ref list.  Any binary pack data that follows
 	// the flush packet is never read by this loop.
-	data := string(body)
+	//
+	// Issue 13: Work in []byte throughout to avoid copying binary pack data into a string.
+	allowed := "refs/heads/polecat/" + cnName + "-"
 	offset := 0
-	for offset < len(data) {
+	for offset < len(body) {
 		// Guard: need at least 4 bytes for the length field.
-		if offset+4 > len(data) {
+		if offset+4 > len(body) {
 			break
 		}
-		lenHex := data[offset : offset+4]
-		if lenHex == "0000" {
+		lenHex := body[offset : offset+4]
+		if bytes.Equal(lenHex, []byte("0000")) {
 			break // flush packet: end of ref list
 		}
 		var pktLen int
-		_, err := fmt.Sscanf(lenHex, "%x", &pktLen)
+		_, err := fmt.Sscanf(string(lenHex), "%x", &pktLen)
 		// pktLen < 4 would underflow the payload slice; treat as malformed and stop.
 		if err != nil || pktLen < 4 {
 			break
 		}
 		end := offset + pktLen
 		// Guard: truncated packet — length field claims more bytes than available.
-		if end > len(data) {
+		if end > len(body) {
 			break
 		}
 		// Payload starts after the 4-byte length prefix; always advances by pktLen
 		// (even when pktLen==4, the empty payload line is skipped below).
-		line := data[offset+4 : end]
+		line := body[offset+4 : end]
 		offset = end
 
 		// Each line: "<old-sha> <new-sha> <refname>\0[capabilities]\n"
 		// Strip the trailing newline, then truncate at the first NUL byte so that
 		// capability strings (e.g. "\0side-band-64k") do not pollute the ref name.
-		line = strings.TrimRight(line, "\n")
-		if idx := strings.IndexByte(line, 0); idx >= 0 {
+		line = bytes.TrimRight(line, "\n")
+		if idx := bytes.IndexByte(line, 0); idx >= 0 {
 			line = line[:idx]
 		}
-		parts := strings.Fields(line)
+		parts := bytes.Fields(line)
 		if len(parts) < 3 {
 			continue
 		}
-		ref := parts[2]
+		ref := string(parts[2])
 
 		// Only allow refs/heads/polecat/<cnName>-* (prefix form).
 		// Exact-name pushes (without timestamp suffix) are not permitted.
-		allowed := "refs/heads/polecat/" + cnName + "-"
 		if !strings.HasPrefix(ref, allowed) {
 			return fmt.Errorf("push to %q denied: only refs/heads/polecat/%s-* allowed", ref, cnName)
 		}

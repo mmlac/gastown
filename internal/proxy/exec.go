@@ -60,6 +60,11 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 	out, errOut, exitCode := runCommand(r.Context(), argv)
 
+	// Issue 15: The handler always returns HTTP 200 even when the subprocess exits
+	// non-zero. This is intentional: the RPC call itself succeeded (the request was
+	// well-formed, the command was allowed, and the subprocess ran). The subprocess's
+	// outcome is reported in the JSON body via exitCode. Callers must inspect exitCode
+	// rather than the HTTP status to determine whether the command succeeded.
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(execResponse{
 		Stdout:   out,
@@ -78,10 +83,10 @@ func extractIdentity(r *http.Request) string {
 	return cnToIdentity(cn)
 }
 
-// cnToIdentity converts a CN of the form "gt-<rig>-<name>" to "<rig>/<name>".
-// The last "-" is treated as the rig/name separator, so hyphenated rig names
-// (e.g. "gas-town") are handled correctly.
-func cnToIdentity(cn string) string {
+// polecatName extracts the polecat name from a CN of the form "gt-<rig>-<name>".
+// The last "-" is the rig/name separator, so hyphenated rig names are handled correctly.
+// Returns "" if the CN does not match the expected format or the name is empty.
+func polecatName(cn string) string {
 	if !strings.HasPrefix(cn, "gt-") {
 		return ""
 	}
@@ -90,9 +95,21 @@ func cnToIdentity(cn string) string {
 	if idx < 0 {
 		return ""
 	}
-	rig := rest[:idx]
-	name := rest[idx+1:]
-	if rig == "" || name == "" {
+	return rest[idx+1:]
+}
+
+// cnToIdentity converts a CN of the form "gt-<rig>-<name>" to "<rig>/<name>".
+// The last "-" is treated as the rig/name separator, so hyphenated rig names
+// (e.g. "gas-town") are handled correctly.
+func cnToIdentity(cn string) string {
+	name := polecatName(cn)
+	if name == "" {
+		return ""
+	}
+	// rig is everything between "gt-" and "-<name>".
+	rest := cn[3:] // strip "gt-"
+	rig := rest[:len(rest)-len(name)-1]
+	if rig == "" {
 		return ""
 	}
 	return rig + "/" + name

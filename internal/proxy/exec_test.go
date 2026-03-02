@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,6 +36,28 @@ func makeFakeRequest(method, path, body, cn string) *http.Request {
 		}
 	}
 	return req
+}
+
+func TestPolecatName(t *testing.T) {
+	cases := []struct {
+		cn   string
+		want string
+	}{
+		{"gt-gastown-furiosa", "furiosa"},
+		{"gt-gas-town-furiosa", "furiosa"}, // hyphenated rig
+		{"gt-gastown-", ""},                // empty name
+		{"gt--furiosa", "furiosa"},         // empty rig; name still extracted
+		{"noprefix-rig-name", ""},          // missing gt- prefix
+		{"gt-nodashinrest", ""},            // only one component after stripping gt-
+		{"", ""},                           // empty string
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.cn, func(t *testing.T) {
+			got := polecatName(tc.cn)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 func TestCnToIdentity(t *testing.T) {
@@ -135,13 +156,17 @@ func TestHandleExec(t *testing.T) {
 
 	t.Run("--identity flag is injected as argv[1] and argv[2] when CN is present", func(t *testing.T) {
 		// Write a tiny script that prints its first two positional args.
-		// argv becomes: [scriptPath, "--identity", "gastown/rust"]
+		// argv becomes: [scriptName, "--identity", "gastown/rust"]
 		// so $1="--identity" and $2="gastown/rust".
-		scriptPath := filepath.Join(t.TempDir(), "printargs.sh")
+		// The script is placed in a temp dir added to PATH so AllowedCommands
+		// can reference it by plain name (no path separator — issue 12).
+		scriptDir := t.TempDir()
+		scriptPath := filepath.Join(scriptDir, "printargs.sh")
 		require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf '%s %s' \"$1\" \"$2\"\n"), 0755))
+		t.Setenv("PATH", scriptDir+":"+os.Getenv("PATH"))
 
-		srv2 := New(Config{AllowedCommands: []string{scriptPath}}, nil)
-		body := fmt.Sprintf(`{"argv":[%q]}`, scriptPath)
+		srv2 := New(Config{AllowedCommands: []string{"printargs.sh"}}, nil)
+		body := `{"argv":["printargs.sh"]}`
 		req := makeFakeRequest("POST", "/v1/exec", body, "gt-gastown-rust")
 		rec := httptest.NewRecorder()
 		srv2.handleExec(rec, req)
