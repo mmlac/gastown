@@ -708,3 +708,110 @@ func TestHandleReceivePackIntegration(t *testing.T) {
 		assert.Error(t, err, "push to disallowed ref should fail, got output:\n%s", out)
 	})
 }
+
+// TestHandleGitContextCancellation verifies that cancelling the request context
+// kills the underlying git subprocess and causes the handler to return promptly.
+// Both handleInfoRefs and handlePack use exec.CommandContext(r.Context(), ...), so
+// context cancellation must propagate to the subprocess. Contrast: TestHandleExec
+// covers context cancellation for the exec handler.
+func TestHandleGitContextCancellation(t *testing.T) {
+	// Create stub git-upload-pack and git-receive-pack binaries that sleep
+	// for 10 seconds. They are intentionally slow so the test can cancel the
+	// context while the subprocess is running rather than after it exits.
+	scriptDir := t.TempDir()
+	for _, name := range []string{"git-upload-pack", "git-receive-pack"} {
+		path := filepath.Join(scriptDir, name)
+		// "exec" replaces the shell with sleep so there is only one process.
+		// Without exec, the shell forks sleep and sleep inherits the stdout
+		// pipe; cmd.Wait() then blocks until sleep exits even after the shell
+		// is killed, preventing prompt handler return on context cancellation.
+		require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\nexec sleep 10\n"), 0755))
+	}
+	// Prepend scriptDir so exec.CommandContext resolves our stubs first.
+	// minimalEnv() propagates os.Getenv("PATH") to subprocesses, so the
+	// stubs are also found when the subprocess itself resolves binaries.
+	t.Setenv("PATH", scriptDir+":"+os.Getenv("PATH"))
+
+	t.Run("handleInfoRefs subprocess killed on context cancel", func(t *testing.T) {
+		srv, _ := newGitServer(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		req := httptest.NewRequest("GET",
+			"/v1/git/testrip/info/refs?service=git-upload-pack", nil)
+		req = req.WithContext(ctx)
+		rec := httptest.NewRecorder()
+
+		done := make(chan struct{})
+		go func() {
+			srv.handleGit(rec, req)
+			close(done)
+		}()
+
+		// Give the subprocess time to start before cancelling.
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("handleInfoRefs did not return after context cancellation")
+		}
+	})
+
+	t.Run("handlePack upload-pack subprocess killed on context cancel", func(t *testing.T) {
+		srv, _ := newGitServer(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		req := httptest.NewRequest("POST",
+			"/v1/git/testrip/git-upload-pack",
+			bytes.NewReader([]byte("0000")))
+		req.Header.Set("Content-Type", "application/x-git-upload-pack-request")
+		req = req.WithContext(ctx)
+		rec := httptest.NewRecorder()
+
+		done := make(chan struct{})
+		go func() {
+			srv.handleGit(rec, req)
+			close(done)
+		}()
+
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("handlePack (upload-pack) did not return after context cancellation")
+		}
+	})
+
+	t.Run("handlePack receive-pack subprocess killed on context cancel", func(t *testing.T) {
+		srv, _ := newGitServer(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		body := receivePackBody("refs/heads/polecat/furiosa-abc123")
+		req := httptest.NewRequest("POST",
+			"/v1/git/testrip/git-receive-pack",
+			bytes.NewReader(body))
+		req = req.WithContext(ctx)
+		// Provide a valid mTLS CN so authorizeReceivePack passes before git runs.
+		req.TLS = &tls.ConnectionState{
+			PeerCertificates: []*x509.Certificate{
+				{Subject: pkix.Name{CommonName: "gt-testrip-furiosa"}},
+			},
+		}
+		rec := httptest.NewRecorder()
+
+		done := make(chan struct{})
+		go func() {
+			srv.handleGit(rec, req)
+			close(done)
+		}()
+
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("handlePack (receive-pack) did not return after context cancellation")
+		}
+	})
+}
