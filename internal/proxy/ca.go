@@ -108,9 +108,18 @@ func LoadOrGenerateCA(dir string) (*CA, error) {
 	return &CA{Cert: cert, CertPEM: certPEM, Key: key}, nil
 }
 
-// IssuePolecat issues a leaf certificate signed by the CA for a polecat.
+// IssueServer issues a leaf certificate signed by the CA for use as a TLS server cert.
+func (ca *CA) IssueServer(cn string, ttl time.Duration) (certPEM, keyPEM []byte, err error) {
+	return ca.issue(cn, ttl, x509.ExtKeyUsageServerAuth)
+}
+
+// IssuePolecat issues a leaf certificate signed by the CA for a polecat (client auth).
 // cn should be in the format "gt-<rig>-<name>" (e.g. "gt-gastown-furiosa").
 func (ca *CA) IssuePolecat(cn string, ttl time.Duration) (certPEM, keyPEM []byte, err error) {
+	return ca.issue(cn, ttl, x509.ExtKeyUsageClientAuth)
+}
+
+func (ca *CA) issue(cn string, ttl time.Duration, eku x509.ExtKeyUsage) (certPEM, keyPEM []byte, err error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate leaf key: %w", err)
@@ -127,7 +136,7 @@ func (ca *CA) IssuePolecat(cn string, ttl time.Duration) (certPEM, keyPEM []byte
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(ttl),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ExtKeyUsage:  []x509.ExtKeyUsage{eku},
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, ca.Cert, &key.PublicKey, ca.Key)

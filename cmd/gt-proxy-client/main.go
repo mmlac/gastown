@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"syscall"
 )
 
@@ -30,6 +31,9 @@ func main() {
 	proxyURL := os.Getenv("GT_PROXY_URL")
 	certFile := os.Getenv("GT_PROXY_CERT")
 	keyFile := os.Getenv("GT_PROXY_KEY")
+	// GT_PROXY_CA is the CA cert for the proxy's server TLS cert.
+	// This is the same CA cert as GIT_SSL_CAINFO (which git uses to trust the proxy),
+	// but passed separately so the Go HTTP client can also trust the proxy server cert.
 	caFile := os.Getenv("GT_PROXY_CA")
 
 	if proxyURL == "" || certFile == "" || keyFile == "" {
@@ -109,13 +113,7 @@ func main() {
 
 // toolNameFromArg0 extracts "gt" or "bd" from the argv[0] binary path.
 func toolNameFromArg0(arg0 string) string {
-	// Strip any directory prefix.
-	for i := len(arg0) - 1; i >= 0; i-- {
-		if arg0[i] == '/' || arg0[i] == '\\' {
-			return arg0[i+1:]
-		}
-	}
-	return arg0
+	return filepath.Base(arg0)
 }
 
 // execReal replaces the current process with the real binary.

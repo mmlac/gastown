@@ -21,15 +21,25 @@ func main() {
 		listen      = flag.String("listen", "0.0.0.0:9876", "address to listen on")
 		caDir       = flag.String("ca-dir", "", "directory for CA cert/key (default: ~/gt/.runtime/ca)")
 		allowedCmds = flag.String("allowed-cmds", "gt,bd", "comma-separated list of allowed commands")
+		townRoot    = flag.String("town-root", "", "Gas Town root directory (default: $GT_TOWN or ~/gt)")
 	)
 	flag.Parse()
 
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("cannot determine home dir: %v", err)
+	}
+
 	if *caDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			log.Fatalf("cannot determine home dir: %v", err)
-		}
 		*caDir = filepath.Join(home, "gt", ".runtime", "ca")
+	}
+
+	if *townRoot == "" {
+		if v := os.Getenv("GT_TOWN"); v != "" {
+			*townRoot = v
+		} else {
+			*townRoot = filepath.Join(home, "gt")
+		}
 	}
 
 	ca, err := proxy.LoadOrGenerateCA(*caDir)
@@ -45,8 +55,8 @@ func main() {
 
 	cfg := proxy.Config{
 		ListenAddr:      *listen,
-		CAFile:          filepath.Join(*caDir, "ca.crt"),
 		AllowedCommands: cmds,
+		TownRoot:        *townRoot,
 	}
 
 	srv := proxy.New(cfg, ca)
