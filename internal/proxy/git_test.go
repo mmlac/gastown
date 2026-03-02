@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -598,5 +600,111 @@ func TestHandleGitAuditLogIntegration(t *testing.T) {
 		require.True(t, ok, "expected INFO 'git fetch' log record")
 		assert.Equal(t, "gastown/furiosa", e.attrs["identity"])
 		assert.Equal(t, "testrip", e.attrs["rig"])
+	})
+}
+
+// TestHandleReceivePackIntegration performs a full end-to-end mTLS git push
+// through a live proxy server, verifying branch authorization with a real git binary.
+//
+// The test issues a polecat cert (CN "gt-gastown-raider" → polecat name "raider"),
+// starts the proxy with mTLS enabled, creates a local repo with a commit, then:
+//   - Asserts that a push to refs/heads/polecat/raider-* (allowed) succeeds.
+//   - Asserts that a push to refs/heads/main (disallowed) is rejected.
+func TestHandleReceivePackIntegration(t *testing.T) {
+	gitPath := requireGit(t)
+
+	// Generate the CA and issue a polecat client cert.
+	ca, err := GenerateCA(t.TempDir())
+	require.NoError(t, err)
+
+	// "raider" is the polecat name extracted from "gt-gastown-raider" by polecatName().
+	// Allowed refs are refs/heads/polecat/raider-*.
+	const polecatCN = "gt-gastown-raider"
+	clientCertPEM, clientKeyPEM, err := ca.IssuePolecat(polecatCN, time.Hour)
+	require.NoError(t, err)
+
+	// Write cert/key/CA to temp files so git can load them via http.ssl* config.
+	tmpCerts := t.TempDir()
+	certFile := filepath.Join(tmpCerts, "client.crt")
+	keyFile := filepath.Join(tmpCerts, "client.key")
+	caFile := filepath.Join(tmpCerts, "ca.crt")
+	require.NoError(t, os.WriteFile(certFile, clientCertPEM, 0600))
+	require.NoError(t, os.WriteFile(keyFile, clientKeyPEM, 0600))
+	require.NoError(t, os.WriteFile(caFile, ca.CertPEM, 0644))
+
+	// Start the mTLS proxy server.
+	townRoot := t.TempDir()
+	srv := New(Config{
+		ListenAddr: "127.0.0.1:0",
+		TownRoot:   townRoot,
+		Logger:     discardLogger(),
+	}, ca)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { srv.Start(ctx) }() //nolint:errcheck
+
+	var addr string
+	require.Eventually(t, func() bool {
+		if a := srv.Addr(); a != nil {
+			addr = a.String()
+			return true
+		}
+		return false
+	}, 5*time.Second, 10*time.Millisecond)
+	waitForServer(t, addr, 5*time.Second)
+
+	// Create the bare repo served by the proxy.
+	rig := makeBareRepo(t, gitPath, townRoot)
+	repoURL := "https://" + addr + "/v1/git/" + rig
+
+	// Build a local git repo with one commit to push.
+	localRepo := t.TempDir()
+	gitHome := t.TempDir()
+	baseEnv := append(os.Environ(),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"HOME="+gitHome,
+		"GIT_TERMINAL_PROMPT=0", // suppress any interactive credential prompts
+		"GIT_AUTHOR_NAME=Test Polecat",
+		"GIT_AUTHOR_EMAIL=test@gt.local",
+		"GIT_COMMITTER_NAME=Test Polecat",
+		"GIT_COMMITTER_EMAIL=test@gt.local",
+	)
+
+	runGit := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		cmd.Env = baseEnv
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+
+	runGit(localRepo, "init")
+	require.NoError(t, os.WriteFile(filepath.Join(localRepo, "README"), []byte("hello"), 0644))
+	runGit(localRepo, "add", "README")
+	runGit(localRepo, "commit", "-m", "initial")
+
+	// pushRef runs git push with mTLS client cert/key/CA configured via -c flags.
+	pushRef := func(refspec string) ([]byte, error) {
+		cmd := exec.Command(gitPath,
+			"-c", "http.sslCert="+certFile,
+			"-c", "http.sslKey="+keyFile,
+			"-c", "http.sslCAInfo="+caFile,
+			"push", repoURL, refspec,
+		)
+		cmd.Dir = localRepo
+		cmd.Env = baseEnv
+		return cmd.CombinedOutput()
+	}
+
+	t.Run("push to allowed polecat ref succeeds", func(t *testing.T) {
+		out, err := pushRef("HEAD:refs/heads/polecat/raider-testpush")
+		assert.NoError(t, err, "push to allowed ref should succeed:\n%s", out)
+	})
+
+	t.Run("push to disallowed ref is rejected", func(t *testing.T) {
+		out, err := pushRef("HEAD:refs/heads/main")
+		assert.Error(t, err, "push to disallowed ref should fail, got output:\n%s", out)
 	})
 }
