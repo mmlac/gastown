@@ -202,7 +202,12 @@ func (s *Server) authorizeReceivePack(w http.ResponseWriter, r *http.Request, cl
 	r.Body = http.MaxBytesReader(w, r.Body, 32<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "read body: "+err.Error(), http.StatusInternalServerError)
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "read body: "+err.Error(), http.StatusInternalServerError)
+		}
 		return false
 	}
 	r.Body.Close()

@@ -217,6 +217,17 @@ func TestAuthorizeReceivePack(t *testing.T) {
 		assert.False(t, ok)
 		assert.Equal(t, http.StatusInternalServerError, rec.Code)
 	})
+
+	t.Run("oversized body returns 413", func(t *testing.T) {
+		cn := "gt-gastown-furiosa"
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack", nil)
+		req.Body = errReadCloser{err: &http.MaxBytesError{Limit: 32 << 20}}
+
+		ok := srv.authorizeReceivePack(rec, req, cn)
+		assert.False(t, ok)
+		assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	})
 }
 
 // ---- handleGit routing ----
