@@ -7,6 +7,7 @@ import (
 	"crypto/x509/pkix"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -164,7 +165,7 @@ func TestAuthorizeReceivePack(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack",
 			bytes.NewReader(receivePackBody()))
-		ok := srv.authorizeReceivePack(rec, req, "notgt-rig-name")
+		ok, _ := srv.authorizeReceivePack(rec, req, "notgt-rig-name")
 		assert.False(t, ok)
 		assert.Equal(t, http.StatusForbidden, rec.Code)
 	})
@@ -173,7 +174,7 @@ func TestAuthorizeReceivePack(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack",
 			bytes.NewReader(receivePackBody()))
-		ok := srv.authorizeReceivePack(rec, req, "gt-")
+		ok, _ := srv.authorizeReceivePack(rec, req, "gt-")
 		assert.False(t, ok)
 		assert.Equal(t, http.StatusForbidden, rec.Code)
 	})
@@ -183,7 +184,7 @@ func TestAuthorizeReceivePack(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack",
 			bytes.NewReader(receivePackBody("refs/heads/polecat/furiosa-abc")))
-		ok := srv.authorizeReceivePack(rec, req, "gt--furiosa")
+		ok, _ := srv.authorizeReceivePack(rec, req, "gt--furiosa")
 		assert.False(t, ok)
 		assert.Equal(t, http.StatusForbidden, rec.Code)
 	})
@@ -195,26 +196,29 @@ func TestAuthorizeReceivePack(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack",
 			bytes.NewReader(body))
-		ok := srv.authorizeReceivePack(rec, req, cn)
+		ok, refs := srv.authorizeReceivePack(rec, req, cn)
 
 		require.True(t, ok)
+		assert.Equal(t, []string{"refs/heads/polecat/furiosa-abc123"}, refs)
 		// Verify body was rewound so git can re-read it.
 		rewound, err := io.ReadAll(req.Body)
 		require.NoError(t, err)
 		assert.Equal(t, body, rewound, "body should be rewound to its original content")
 	})
 
-	t.Run("valid CN with invalid refs returns 403", func(t *testing.T) {
+	t.Run("valid CN with invalid refs returns 403 and includes refs", func(t *testing.T) {
 		cn := "gt-gastown-furiosa"
 		body := receivePackBody("refs/heads/main")
 
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack",
 			bytes.NewReader(body))
-		ok := srv.authorizeReceivePack(rec, req, cn)
+		ok, refs := srv.authorizeReceivePack(rec, req, cn)
 
 		assert.False(t, ok)
 		assert.Equal(t, http.StatusForbidden, rec.Code)
+		// Refs are still returned even on denial (for audit logging).
+		assert.Equal(t, []string{"refs/heads/main"}, refs)
 	})
 
 	t.Run("body read error returns 500", func(t *testing.T) {
@@ -223,8 +227,9 @@ func TestAuthorizeReceivePack(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack", nil)
 		req.Body = errReadCloser{err: fmt.Errorf("simulated read error")}
 
-		ok := srv.authorizeReceivePack(rec, req, cn)
+		ok, refs := srv.authorizeReceivePack(rec, req, cn)
 		assert.False(t, ok)
+		assert.Nil(t, refs)
 		assert.Equal(t, http.StatusInternalServerError, rec.Code)
 	})
 
@@ -234,7 +239,7 @@ func TestAuthorizeReceivePack(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack", nil)
 		req.Body = errReadCloser{err: &http.MaxBytesError{Limit: 32 << 20}}
 
-		ok := srv.authorizeReceivePack(rec, req, cn)
+		ok, _ := srv.authorizeReceivePack(rec, req, cn)
 		assert.False(t, ok)
 		assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
 	})
@@ -491,5 +496,107 @@ func TestHandleGitMissingRepo(t *testing.T) {
 		w := httptest.NewRecorder()
 		srv.handleGit(w, req)
 		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+}
+
+// ---- git audit logging ----
+
+// newGitServerWithLog creates a Server backed by a log-capturing handler.
+func newGitServerWithLog(t *testing.T) (*Server, string, *logCapture) {
+	t.Helper()
+	lc := &logCapture{}
+	townRoot := t.TempDir()
+	srv := New(Config{TownRoot: townRoot, Logger: slog.New(lc)}, nil)
+	require.NoError(t, os.MkdirAll(filepath.Join(townRoot, "testrip", ".repo.git"), 0700))
+	return srv, townRoot, lc
+}
+
+// fakeGitRequest builds an httptest.Request with a TLS peer cert CN set.
+func fakeGitRequest(method, path string, body []byte, cn string) *http.Request {
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	if cn != "" {
+		req.TLS = &tls.ConnectionState{
+			PeerCertificates: []*x509.Certificate{
+				{Subject: pkix.Name{CommonName: cn}},
+			},
+		}
+	}
+	return req
+}
+
+// TestHandleGitAuditLog verifies that git operations produce structured audit log records.
+func TestHandleGitAuditLog(t *testing.T) {
+	t.Run("fetch info/refs emits INFO with identity and rig", func(t *testing.T) {
+		srv, _, lc := newGitServerWithLog(t)
+		req := fakeGitRequest("GET", "/v1/git/testrip/info/refs?service=git-upload-pack",
+			nil, "gt-gastown-furiosa")
+		srv.handleGit(httptest.NewRecorder(), req)
+
+		e, ok := lc.findEntry(slog.LevelInfo, "git info/refs")
+		require.True(t, ok, "expected INFO 'git info/refs' log record")
+		assert.Equal(t, "gastown/furiosa", e.attrs["identity"])
+		assert.Equal(t, "testrip", e.attrs["rig"])
+		assert.Equal(t, "fetch", e.attrs["op"])
+	})
+
+	t.Run("push info/refs emits INFO with op=push", func(t *testing.T) {
+		srv, _, lc := newGitServerWithLog(t)
+		req := fakeGitRequest("GET", "/v1/git/testrip/info/refs?service=git-receive-pack",
+			nil, "gt-gastown-furiosa")
+		srv.handleGit(httptest.NewRecorder(), req)
+
+		e, ok := lc.findEntry(slog.LevelInfo, "git info/refs")
+		require.True(t, ok, "expected INFO 'git info/refs' log record")
+		assert.Equal(t, "push", e.attrs["op"])
+	})
+
+	t.Run("push denied emits WARN with identity rig and refs", func(t *testing.T) {
+		srv, _, lc := newGitServerWithLog(t)
+		body := receivePackBody("refs/heads/main") // not allowed
+		req := fakeGitRequest("POST", "/v1/git/testrip/git-receive-pack",
+			body, "gt-gastown-furiosa")
+		rec := httptest.NewRecorder()
+		srv.handleGit(rec, req)
+
+		assert.Equal(t, http.StatusForbidden, rec.Code)
+		e, ok := lc.findEntry(slog.LevelWarn, "git push denied")
+		require.True(t, ok, "expected WARN 'git push denied' log record")
+		assert.Equal(t, "gastown/furiosa", e.attrs["identity"])
+		assert.Equal(t, "testrip", e.attrs["rig"])
+		assert.Contains(t, e.attrs["refs"], "refs/heads/main")
+	})
+
+	t.Run("push denied with missing CN emits WARN with empty identity", func(t *testing.T) {
+		srv, _, lc := newGitServerWithLog(t)
+		body := receivePackBody("refs/heads/polecat/furiosa-abc")
+		req := fakeGitRequest("POST", "/v1/git/testrip/git-receive-pack", body, "")
+		rec := httptest.NewRecorder()
+		srv.handleGit(rec, req)
+
+		assert.Equal(t, http.StatusForbidden, rec.Code)
+		_, ok := lc.findEntry(slog.LevelWarn, "git push denied")
+		assert.True(t, ok, "expected WARN 'git push denied' log record")
+	})
+}
+
+// TestHandleGitAuditLogIntegration tests audit log records for successful pack operations.
+func TestHandleGitAuditLogIntegration(t *testing.T) {
+	gitPath := requireGit(t)
+
+	t.Run("fetch emits INFO git fetch record", func(t *testing.T) {
+		lc := &logCapture{}
+		townRoot := t.TempDir()
+		srv := New(Config{TownRoot: townRoot, Logger: slog.New(lc)}, nil)
+		makeBareRepo(t, gitPath, townRoot)
+
+		req := fakeGitRequest("POST", "/v1/git/testrip/git-upload-pack",
+			[]byte("0000"), "gt-gastown-furiosa")
+		req.Header.Set("Content-Type", "application/x-git-upload-pack-request")
+		srv.handleGit(httptest.NewRecorder(), req)
+
+		e, ok := lc.findEntry(slog.LevelInfo, "git fetch")
+		require.True(t, ok, "expected INFO 'git fetch' log record")
+		assert.Equal(t, "gastown/furiosa", e.attrs["identity"])
+		assert.Equal(t, "testrip", e.attrs["rig"])
 	})
 }

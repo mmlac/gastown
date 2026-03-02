@@ -111,10 +111,9 @@ func (s *Server) handleGit(w http.ResponseWriter, r *http.Request) {
 	case rest == "info/refs":
 		s.handleInfoRefs(w, r, repoPath, rig)
 	case rest == "git-upload-pack":
-		s.handlePack(w, r, repoPath, "git-upload-pack", rig, "")
+		s.handlePack(w, r, repoPath, "git-upload-pack", rig, clientCN(r))
 	case rest == "git-receive-pack":
-		cn := clientCN(r)
-		s.handlePack(w, r, repoPath, "git-receive-pack", rig, cn)
+		s.handlePack(w, r, repoPath, "git-receive-pack", rig, clientCN(r))
 	default:
 		http.Error(w, "unknown git endpoint", http.StatusNotFound)
 	}
@@ -138,6 +137,13 @@ func (s *Server) handleInfoRefs(w http.ResponseWriter, r *http.Request, repoPath
 		http.Error(w, "unsupported service", http.StatusBadRequest)
 		return
 	}
+
+	identity := cnToIdentity(clientCN(r))
+	op := "fetch"
+	if service == "git-receive-pack" {
+		op = "push"
+	}
+	s.log.Info("git info/refs", "identity", identity, "rig", rig, "op", op)
 
 	// Caller (handleGit) has verified repoPath exists. Headers and the pkt-line
 	// service prefix are written now because the git smart-HTTP protocol requires
@@ -166,9 +172,15 @@ func (s *Server) handlePack(w http.ResponseWriter, r *http.Request, repoPath, se
 		return
 	}
 
+	identity := cnToIdentity(clientCN)
+
 	// For receive-pack: enforce CN-scoped branch authorization.
+	var refs []string
 	if service == "git-receive-pack" {
-		if !s.authorizeReceivePack(w, r, clientCN) {
+		var ok bool
+		ok, refs = s.authorizeReceivePack(w, r, clientCN)
+		if !ok {
+			s.log.Warn("git push denied", "identity", identity, "rig", rig, "refs", refs)
 			return
 		}
 	}
@@ -185,16 +197,25 @@ func (s *Server) handlePack(w http.ResponseWriter, r *http.Request, repoPath, se
 	if err := cmd.Run(); err != nil {
 		s.log.Error("git pack failed", "service", service, "rig", rig, "err", err, "stderr", errBuf.String())
 	}
+
+	// Audit log: record who performed the operation regardless of git subprocess outcome.
+	if service == "git-receive-pack" {
+		s.log.Info("git push", "identity", identity, "rig", rig, "refs", refs)
+	} else {
+		s.log.Info("git fetch", "identity", identity, "rig", rig)
+	}
 }
 
 // authorizeReceivePack checks that the push only touches refs/heads/polecat/<cn-name>-*.
 // It reads the pkt-line stream to extract ref names, then rewinds the body.
-func (s *Server) authorizeReceivePack(w http.ResponseWriter, r *http.Request, clientCN string) bool {
+// It returns (true, refs) on success, or (false, refs) on failure; refs may be
+// non-nil on failure when the body was read but contained a disallowed ref.
+func (s *Server) authorizeReceivePack(w http.ResponseWriter, r *http.Request, clientCN string) (bool, []string) {
 	// Issue 8: Use the shared polecatName helper instead of reimplementing CN parsing.
 	cnName := polecatName(clientCN)
 	if cnName == "" {
 		http.Error(w, "cannot determine polecat name from cert CN", http.StatusForbidden)
-		return false
+		return false, nil
 	}
 
 	// Issue 3: Bound body reads to prevent a misbehaving client from exhausting memory.
@@ -208,18 +229,61 @@ func (s *Server) authorizeReceivePack(w http.ResponseWriter, r *http.Request, cl
 		} else {
 			http.Error(w, "read body: "+err.Error(), http.StatusInternalServerError)
 		}
-		return false
+		return false, nil
 	}
 	r.Body.Close()
 
+	// Collect refs before validation so they are available for audit logging even
+	// when authorization is denied.
+	refs := collectReceivePackRefs(body)
+
 	if err := validateReceivePackRefs(body, cnName); err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
-		return false
+		return false, refs
 	}
 
 	// Use bytes.NewReader to safely re-wrap binary pack data.
 	r.Body = io.NopCloser(bytes.NewReader(body))
-	return true
+	return true, refs
+}
+
+// collectReceivePackRefs parses the git-receive-pack pkt-line stream and returns
+// all ref names found, without validating whether they are authorized.
+// Used solely for audit logging; validation is handled by validateReceivePackRefs.
+func collectReceivePackRefs(body []byte) []string {
+	var refs []string
+	offset := 0
+	for offset < len(body) {
+		if offset+4 > len(body) {
+			break
+		}
+		lenHex := body[offset : offset+4]
+		if bytes.Equal(lenHex, []byte("0000")) {
+			break
+		}
+		var pktLen int
+		_, err := fmt.Sscanf(string(lenHex), "%x", &pktLen)
+		if err != nil || pktLen < 4 {
+			break
+		}
+		end := offset + pktLen
+		if end > len(body) {
+			break
+		}
+		line := body[offset+4 : end]
+		offset = end
+
+		line = bytes.TrimRight(line, "\n")
+		if idx := bytes.IndexByte(line, 0); idx >= 0 {
+			line = line[:idx]
+		}
+		parts := bytes.Fields(line)
+		if len(parts) < 3 {
+			continue
+		}
+		refs = append(refs, string(parts[2]))
+	}
+	return refs
 }
 
 // validateReceivePackRefs parses the git-receive-pack pkt-line stream and validates
