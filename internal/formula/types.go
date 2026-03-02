@@ -31,7 +31,6 @@ type Formula struct {
 	Description string      `toml:"description"`
 	Type        FormulaType `toml:"type"`
 	Version     int         `toml:"version"`
-	Pour        bool        `toml:"pour"` // If true, steps are materialized as sub-wisps with checkpoint recovery. Default false (inline/root-only).
 	Agent       string      `toml:"agent"` // Default agent for all legs (GH#2118)
 
 	// Convoy-specific
