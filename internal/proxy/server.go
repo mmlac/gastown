@@ -53,6 +53,9 @@ type Config struct {
 	// ExecRateBurst is the maximum burst size for the per-client rate limiter.
 	// 0 uses the default (20).
 	ExecRateBurst int
+	// ExecTimeout is the maximum duration a single exec subprocess may run.
+	// 0 uses the default (60s). Use a negative value to disable the timeout.
+	ExecTimeout time.Duration
 }
 
 // Server is an mTLS HTTP proxy server.
@@ -67,6 +70,8 @@ type Server struct {
 
 	// execSem is a semaphore limiting global concurrent exec subprocesses.
 	execSem chan struct{}
+	// execTimeout is the per-command deadline; derived from Config.ExecTimeout.
+	execTimeout time.Duration
 	// rateLimiters holds a *rate.Limiter per client identity (cert CN).
 	rateLimiters sync.Map
 	rateLimit    rate.Limit
@@ -135,6 +140,10 @@ func New(cfg Config, ca *CA) *Server {
 	if rb <= 0 {
 		rb = 20
 	}
+	et := cfg.ExecTimeout
+	if et == 0 {
+		et = 60 * time.Second
+	}
 
 	return &Server{
 		cfg:           cfg,
@@ -145,6 +154,7 @@ func New(cfg Config, ca *CA) *Server {
 		log:           l,
 		denyList:      NewDenyList(),
 		execSem:       make(chan struct{}, maxConcurrent),
+		execTimeout:   et,
 		rateLimit:     rate.Limit(rl),
 		rateBurst:     rb,
 	}

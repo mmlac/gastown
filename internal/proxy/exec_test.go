@@ -521,6 +521,54 @@ func TestExecConcurrencyLimit(t *testing.T) {
 func TestExecDefaultLimits(t *testing.T) {
 	srv := New(Config{AllowedCommands: []string{"echo"}}, nil)
 	assert.Equal(t, 32, cap(srv.execSem), "default MaxConcurrentExec should be 32")
+	assert.Equal(t, 60*time.Second, srv.execTimeout, "default ExecTimeout should be 60s")
+}
+
+// TestExecTimeout verifies that a per-command timeout kills a slow subprocess.
+func TestExecTimeout(t *testing.T) {
+	srv := New(Config{
+		AllowedCommands: []string{"sleep"},
+		ExecTimeout:     100 * time.Millisecond,
+	}, nil)
+
+	body := `{"argv":["sleep","10"]}`
+	req := httptest.NewRequest("POST", "/v1/exec", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		srv.handleExec(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleExec did not return after ExecTimeout elapsed")
+	}
+	var resp execResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.NotZero(t, resp.ExitCode, "timed-out command should have non-zero exit code")
+}
+
+// TestExecTimeoutNegativeDisables verifies that a negative ExecTimeout passes
+// the context through unchanged (no deadline wrapping).
+func TestExecTimeoutNegativeDisables(t *testing.T) {
+	srv := New(Config{
+		AllowedCommands: []string{"echo"},
+		ExecTimeout:     -1,
+	}, nil)
+	assert.Equal(t, time.Duration(-1), srv.execTimeout)
+
+	// A quick command should still succeed when timeout is disabled.
+	body := `{"argv":["echo","ok"]}`
+	req := httptest.NewRequest("POST", "/v1/exec", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.handleExec(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp execResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.Equal(t, 0, resp.ExitCode)
 }
 
 // TestBinaryResolution verifies that commands not found in PATH are removed from the allowlist.

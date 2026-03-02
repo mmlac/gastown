@@ -99,7 +99,13 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, errOut, exitCode := runCommand(r.Context(), argv)
+	execCtx := r.Context()
+	if s.execTimeout > 0 {
+		var cancel context.CancelFunc
+		execCtx, cancel = context.WithTimeout(execCtx, s.execTimeout)
+		defer cancel()
+	}
+	out, errOut, exitCode := runCommand(execCtx, argv)
 
 	// Audit log (do not log full argv — it may contain tokens or secrets).
 	if exitCode == 0 {
