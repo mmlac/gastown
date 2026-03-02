@@ -214,6 +214,73 @@ func TestExtraSANHosts(t *testing.T) {
 	assert.True(t, found, "extra DNS SAN %q should appear in server cert DNSNames; got: %v", extraHost, serverCert.DNSNames)
 }
 
+// TestServerListenIPs exercises each branch of serverListenIPs directly.
+func TestServerListenIPs(t *testing.T) {
+	// containsIP reports whether any IP in ips equals the IP parsed from s.
+	containsIP := func(ips []net.IP, s string) bool {
+		target := net.ParseIP(s)
+		for _, ip := range ips {
+			if ip.Equal(target) {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("parse error returns loopback IPs", func(t *testing.T) {
+		// "not-an-addr" has no port — SplitHostPort fails.
+		ips := serverListenIPs("not-an-addr")
+		assert.Len(t, ips, 2, "parse error should return exactly [127.0.0.1, ::1]")
+		assert.True(t, containsIP(ips, "127.0.0.1"))
+		assert.True(t, containsIP(ips, "::1"))
+	})
+
+	t.Run("loopback IPv4 listen addr returns loopback IPs", func(t *testing.T) {
+		ips := serverListenIPs("127.0.0.1:1234")
+		assert.Len(t, ips, 2, "loopback addr should return exactly [127.0.0.1, ::1]")
+		assert.True(t, containsIP(ips, "127.0.0.1"))
+		assert.True(t, containsIP(ips, "::1"))
+	})
+
+	t.Run("loopback IPv6 listen addr returns loopback IPs", func(t *testing.T) {
+		ips := serverListenIPs("[::1]:1234")
+		assert.Len(t, ips, 2, "IPv6 loopback addr should return exactly [127.0.0.1, ::1]")
+		assert.True(t, containsIP(ips, "127.0.0.1"))
+		assert.True(t, containsIP(ips, "::1"))
+	})
+
+	t.Run("specific non-loopback IP includes that IP and both loopbacks", func(t *testing.T) {
+		// 192.0.2.1 is TEST-NET-1 (RFC 5737) — documentation-only, never routed.
+		ips := serverListenIPs("192.0.2.1:1234")
+		assert.Len(t, ips, 3, "specific IP should return exactly [ip, 127.0.0.1, ::1]")
+		assert.True(t, containsIP(ips, "192.0.2.1"), "should contain the specific IP")
+		assert.True(t, containsIP(ips, "127.0.0.1"))
+		assert.True(t, containsIP(ips, "::1"))
+	})
+
+	t.Run("0.0.0.0 enumerates interfaces and always includes loopbacks", func(t *testing.T) {
+		ips := serverListenIPs("0.0.0.0:1234")
+		assert.GreaterOrEqual(t, len(ips), 2, "0.0.0.0 should return at least [127.0.0.1, ::1]")
+		assert.True(t, containsIP(ips, "127.0.0.1"))
+		assert.True(t, containsIP(ips, "::1"))
+	})
+
+	t.Run("IPv6 unspecified enumerates interfaces and always includes loopbacks", func(t *testing.T) {
+		ips := serverListenIPs("[::]:1234")
+		assert.GreaterOrEqual(t, len(ips), 2, "[::] should return at least [127.0.0.1, ::1]")
+		assert.True(t, containsIP(ips, "127.0.0.1"))
+		assert.True(t, containsIP(ips, "::1"))
+	})
+
+	t.Run("hostname returns loopback IPs", func(t *testing.T) {
+		// net.ParseIP("myhostname") is nil → hostname branch returns loopback only.
+		ips := serverListenIPs("myhostname:1234")
+		assert.Len(t, ips, 2, "hostname should return exactly [127.0.0.1, ::1]")
+		assert.True(t, containsIP(ips, "127.0.0.1"))
+		assert.True(t, containsIP(ips, "::1"))
+	})
+}
+
 // waitForServer polls addr until a TCP connection succeeds or timeout elapses.
 func waitForServer(t *testing.T, addr string, timeout time.Duration) {
 	t.Helper()
