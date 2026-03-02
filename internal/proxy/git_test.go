@@ -638,11 +638,12 @@ func TestHandleReceivePackIntegration(t *testing.T) {
 
 	// Start the mTLS proxy server.
 	townRoot := t.TempDir()
-	srv := New(Config{
+	srv, err := New(Config{
 		ListenAddr: "127.0.0.1:0",
 		TownRoot:   townRoot,
 		Logger:     discardLogger(),
 	}, ca)
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
