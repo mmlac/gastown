@@ -305,27 +305,29 @@ func (s *Server) Start(ctx context.Context) error {
 
 // serverListenIPs returns the IP addresses that should be included as IP SANs in the
 // server certificate. It parses the host portion of listenAddr and:
-//   - If it is a specific non-loopback IP, returns [that IP, 127.0.0.1].
-//   - If it is 0.0.0.0 (unspecified), enumerates all non-loopback IPv4 interface
-//     addresses and prepends 127.0.0.1.
-//   - Returns [127.0.0.1] at minimum on any parse or enumeration error.
+//   - If it is a specific non-loopback IP, returns [that IP, 127.0.0.1, ::1].
+//   - If it is 0.0.0.0 or :: (unspecified), enumerates all non-loopback, non-link-local
+//     IPv4 and IPv6 interface addresses and prepends 127.0.0.1 and ::1.
+//   - Returns [127.0.0.1, ::1] at minimum on any parse or enumeration error.
 func serverListenIPs(listenAddr string) []net.IP {
-	loopback := net.ParseIP("127.0.0.1")
+	loopback4 := net.ParseIP("127.0.0.1")
+	loopback6 := net.ParseIP("::1")
 
 	host, _, err := net.SplitHostPort(listenAddr)
 	if err != nil {
-		return []net.IP{loopback}
+		return []net.IP{loopback4, loopback6}
 	}
 
 	ip := net.ParseIP(host)
 	if ip == nil {
 		// hostname or empty — just use loopback
-		return []net.IP{loopback}
+		return []net.IP{loopback4, loopback6}
 	}
 
 	if ip.IsUnspecified() {
-		// 0.0.0.0 — include loopback plus all non-loopback IPv4 interface addresses.
-		ips := []net.IP{loopback}
+		// 0.0.0.0 or :: — include both loopbacks plus all non-loopback, non-link-local
+		// interface addresses (both IPv4 and IPv6).
+		ips := []net.IP{loopback4, loopback6}
 		ifaces, err := net.Interfaces()
 		if err != nil {
 			return ips
@@ -343,11 +345,13 @@ func serverListenIPs(listenAddr string) []net.IP {
 				case *net.IPAddr:
 					ifaceIP = v.IP
 				}
-				if ifaceIP == nil || ifaceIP.IsLoopback() {
+				if ifaceIP == nil || ifaceIP.IsLoopback() || ifaceIP.IsLinkLocalUnicast() {
 					continue
 				}
 				if ip4 := ifaceIP.To4(); ip4 != nil {
 					ips = append(ips, ip4)
+				} else {
+					ips = append(ips, ifaceIP)
 				}
 			}
 		}
@@ -355,10 +359,10 @@ func serverListenIPs(listenAddr string) []net.IP {
 	}
 
 	if ip.IsLoopback() {
-		return []net.IP{loopback}
+		return []net.IP{loopback4, loopback6}
 	}
-	// Specific non-loopback IP: include both that IP and loopback for local connections.
-	return []net.IP{ip, loopback}
+	// Specific non-loopback IP: include both that IP and loopbacks for local connections.
+	return []net.IP{ip, loopback4, loopback6}
 }
 
 // denyCertRequest is the JSON body for POST /v1/admin/deny-cert.
