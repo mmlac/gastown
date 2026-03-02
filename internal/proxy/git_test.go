@@ -105,17 +105,21 @@ func TestValidateReceivePackRefs(t *testing.T) {
 	t.Run("malformed pkt-line length stops parsing without panic", func(t *testing.T) {
 		// Only 2 bytes where 4 are needed for the length field.
 		body := []byte("00")
+		var err error
 		assert.NotPanics(t, func() {
-			_ = validateReceivePackRefs(body, polecat)
+			err = validateReceivePackRefs(body, polecat)
 		})
+		require.Error(t, err, "truncated length field must be rejected (fail-closed)")
 	})
 
 	t.Run("truncated pkt-line body stops parsing without panic", func(t *testing.T) {
 		// Length says 16 bytes but only "hello" (5 bytes payload) is present.
 		body := []byte("0010hello")
+		var err error
 		assert.NotPanics(t, func() {
-			_ = validateReceivePackRefs(body, polecat)
+			err = validateReceivePackRefs(body, polecat)
 		})
+		require.Error(t, err, "truncated pkt-line body must be rejected (fail-closed)")
 	})
 
 	t.Run("pkt-line with NUL-separated capabilities parses ref correctly", func(t *testing.T) {

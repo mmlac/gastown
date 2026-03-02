@@ -226,7 +226,7 @@ func validateReceivePackRefs(body []byte, cnName string) error {
 	for offset < len(body) {
 		// Guard: need at least 4 bytes for the length field.
 		if offset+4 > len(body) {
-			break
+			return fmt.Errorf("malformed pkt-line: truncated length field at offset %d", offset)
 		}
 		lenHex := body[offset : offset+4]
 		if bytes.Equal(lenHex, []byte("0000")) {
@@ -234,14 +234,14 @@ func validateReceivePackRefs(body []byte, cnName string) error {
 		}
 		var pktLen int
 		_, err := fmt.Sscanf(string(lenHex), "%x", &pktLen)
-		// pktLen < 4 would underflow the payload slice; treat as malformed and stop.
+		// pktLen < 4 would underflow the payload slice; treat as malformed and reject.
 		if err != nil || pktLen < 4 {
-			break
+			return fmt.Errorf("malformed pkt-line: invalid length field %q at offset %d", lenHex, offset)
 		}
 		end := offset + pktLen
 		// Guard: truncated packet — length field claims more bytes than available.
 		if end > len(body) {
-			break
+			return fmt.Errorf("malformed pkt-line: truncated body at offset %d (need %d, have %d)", offset, pktLen, len(body)-offset)
 		}
 		// Payload starts after the 4-byte length prefix; always advances by pktLen
 		// (even when pktLen==4, the empty payload line is skipped below).
