@@ -85,9 +85,12 @@ gt-proxy-server: listening  addr=0.0.0.0:9876  tls=mTLS
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--listen` | `0.0.0.0:9876` | TCP address to listen on |
+| `--admin-listen` | `127.0.0.1:9877` | Address for the local admin HTTP server; set to `""` to disable |
 | `--ca-dir` | `~/gt/.runtime/ca` | Directory that stores `ca.crt` and `ca.key` |
 | `--allowed-cmds` | `gt,bd` | Comma-separated list of binary names containers may invoke |
+| `--allowed-subcmds` | *(auto-discovered)* | Semicolon-separated subcommand allowlists per binary, e.g. `gt:prime,hook,done;bd:create,update` |
 | `--town-root` | `$GT_TOWN` or `~/gt` | Gas Town root directory; used to locate bare repos |
+| `--config` | `~/gt/.runtime/proxy/config.json` | Path to a JSON config file; file values are overridden by explicit CLI flags |
 
 ### Environment variables
 
@@ -95,11 +98,14 @@ gt-proxy-server: listening  addr=0.0.0.0:9876  tls=mTLS
 |----------|-------------|
 | `GT_TOWN` | Overrides the town root directory (same as `--town-root`) |
 
-### Allowed commands
+### Allowed commands and subcommands
 
 Only the binary names listed in `--allowed-cmds` can be called via `/v1/exec`.
 The default `gt,bd` is appropriate for production.  Entries must be plain names
 (no `/` or `\`); path-separator entries are logged and dropped at startup.
+
+Binary paths are resolved once at startup to prevent PATH-hijacking after the
+server is running.
 
 If you want to restrict further, pass a subset:
 
@@ -108,13 +114,29 @@ If you want to restrict further, pass a subset:
 gt-proxy-server --allowed-cmds gt
 ```
 
-The recommended subcommands that polecats actually need (enforced by a future
-allowlist layer inside exec.go):
+Subcommand filtering is enforced on every `/v1/exec` request.  If a command has
+an entry in `--allowed-subcmds`, `argv[1]` must appear in that list or the
+request is rejected with HTTP 403.  If a command has no entry, all subcommands
+are allowed for that command (not recommended for `gt` or `bd`).
+
+The default subcommand allowlists are:
 
 | Binary | Subcommands |
 |--------|-------------|
 | `gt` | `prime`, `hook`, `done`, `mail`, `nudge`, `mol`, `status`, `handoff`, `version`, `convoy`, `sling` |
 | `bd` | `create`, `update`, `close`, `show`, `list`, `ready`, `dep`, `export`, `prime`, `stats`, `blocked`, `doctor` |
+
+#### Auto-discovery via `gt proxy-subcmds`
+
+At startup the server runs `gt proxy-subcmds` to let the installed `gt` binary
+declare its own safe subcommand list.  If the command succeeds and produces
+non-empty output, that output replaces the built-in default above.  If it fails
+or returns empty output, the built-in default is used.
+
+This means upgrading `gt` on the host automatically propagates any newly-allowed
+subcommands to the proxy on the next restart, without requiring a manual config
+change.  You can always override the result by passing `--allowed-subcmds`
+explicitly.
 
 ### CA and certificate lifecycle
 
@@ -140,6 +162,21 @@ separately (see "Issuing polecat certificates" below).
 | WriteTimeout | 5 min | Generous for git push/fetch streams |
 | IdleTimeout | 2 min | Keep-alive connection idle |
 | Shutdown drain | 30 s | Grace period when the process receives SIGINT/SIGTERM |
+
+### Rate limiting and concurrency
+
+The server applies two independent protection layers to `/v1/exec` requests:
+
+| Limit | Default | Config field |
+|-------|---------|--------------|
+| Per-client sustained rate | 10 req/s | `exec_rate_limit` |
+| Per-client burst | 20 requests | `exec_rate_burst` |
+| Global concurrent subprocesses | 32 | `max_concurrent_exec` |
+| Per-command timeout | 60 s | `exec_timeout` |
+
+Clients are identified by their mTLS certificate CN.  A client that exceeds its
+rate limit receives HTTP 429; a server that is fully occupied returns HTTP 503.
+Defaults can be overridden in the JSON config file.
 
 ---
 
@@ -205,8 +242,7 @@ gt-proxy-server --listen 0.0.0.0:9876
 
 ### Step 2: Issue a polecat certificate
 
-Use the Go API or a small helper (a `gt` subcommand will wrap this in a future
-release):
+Use the Go API or a small helper:
 
 ```go
 ca, _ := proxy.LoadOrGenerateCA("~/gt/.runtime/ca")
@@ -268,21 +304,44 @@ git push origin HEAD # Should push to the polecat branch via the proxy
 
 ## Configuration file
 
-Additional server-side options can be set in a JSON config file.  By default
-the server reads `~/gt/.runtime/proxy/config.json` (a `--config` flag will be
-added in a future release).
+Server-side options can be set in a JSON config file.  The default path is
+`~/gt/.runtime/proxy/config.json`; override it with `--config`.  CLI flags
+always take precedence over file values.
 
 ```json
 {
-  "extra_san_ips":   ["10.0.1.5", "172.20.0.1"],
-  "extra_san_hosts": ["my-dev-vm.local", "proxy.corp.example.com"]
+  "listen_addr":        "0.0.0.0:9876",
+  "admin_listen_addr":  "127.0.0.1:9877",
+  "ca_dir":             "",
+  "town_root":          "",
+  "allowed_commands":   ["gt", "bd"],
+  "allowed_subcommands": {
+    "gt": ["prime", "hook", "done", "mail", "nudge", "mol", "status", "handoff", "version", "convoy", "sling"],
+    "bd": ["create", "update", "close", "show", "list", "ready", "dep", "export", "prime", "stats", "blocked", "doctor"]
+  },
+  "extra_san_ips":      ["10.0.1.5", "172.20.0.1"],
+  "extra_san_hosts":    ["my-dev-vm.local", "proxy.corp.example.com"],
+  "max_concurrent_exec": 32,
+  "exec_rate_limit":    10.0,
+  "exec_rate_burst":    20,
+  "exec_timeout":       "60s"
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `listen_addr` | `string` | TCP address for the mTLS server (default: `0.0.0.0:9876`) |
+| `admin_listen_addr` | `string` | TCP address for the local admin HTTP server (default: `127.0.0.1:9877`); set to `""` to disable |
+| `ca_dir` | `string` | Directory holding `ca.crt` and `ca.key` (default: `~/gt/.runtime/ca`) |
+| `town_root` | `string` | Gas Town root directory (default: `$GT_TOWN` or `~/gt`) |
+| `allowed_commands` | `[]string` | Binary names polecats may execute |
+| `allowed_subcommands` | `map[string][]string` | Per-command subcommand allowlists |
 | `extra_san_ips` | `[]string` | Additional IP addresses to include in the server certificate's SAN list |
 | `extra_san_hosts` | `[]string` | Additional hostnames (DNS names) to include in the server certificate's SAN list |
+| `max_concurrent_exec` | `int` | Maximum simultaneous exec subprocesses (default: 32) |
+| `exec_rate_limit` | `float64` | Sustained exec requests per second per client (default: 10) |
+| `exec_rate_burst` | `int` | Burst size for per-client rate limiter (default: 20) |
+| `exec_timeout` | `string` | Maximum duration for a single exec subprocess, e.g. `"60s"` (default: 60 s) |
 
 ### Local IPs vs external/NAT IPs
 
@@ -322,17 +381,50 @@ curl -s https://api.ipify.org
 | **Server identity** | Container verifies the host is legitimate | Server cert signed by the shared CA |
 | **Client identity** | Server verifies every request comes from a known polecat | Client cert signed by the same CA; CN format `gt-<rig>-<name>` required |
 | **Exec allowlist** | Containers can only call `gt` and `bd` (or the configured set) | `--allowed-cmds` checked on every `/v1/exec` request |
+| **Subcommand allowlist** | Polecats may only invoke permitted subcommands of `gt`/`bd` | `--allowed-subcmds` checked on every `/v1/exec` request; missing or disallowed subcommands → 403 |
 | **Subcommand injection** | Polecat identity is injected as `--identity <rig>/<name>` and cannot be overridden | Server derives identity from the client certificate, not from the request body |
 | **Branch scope** | A polecat can only push to `refs/heads/polecat/<name>-*` | pkt-line stream parsed and validated before `git-receive-pack` is invoked |
 | **Path traversal** | Rig names are validated against `[a-zA-Z0-9_-]+` | Rejects `../` and other traversal attempts |
 | **Body size limits** | `/v1/exec` body capped at 1 MiB; receive-pack ref list capped at 32 MiB | `http.MaxBytesReader` applied before reading |
 | **Env isolation** | `gt`/`bd`/`git` subprocesses only see `HOME` and `PATH` | Server never passes its own `GITHUB_TOKEN`, `GT_TOKEN`, or other credentials |
+| **Rate limiting** | Per-client exec rate limited (default: 10 req/s, burst 20) | `golang.org/x/time/rate` limiter per mTLS cert CN; HTTP 429 on excess |
+| **Concurrency cap** | Global exec subprocess limit (default: 32) | Semaphore; HTTP 503 when full |
+| **Certificate revocation** | Compromised cert serials can be denied at runtime | In-memory deny list checked at TLS handshake; updated via local admin API |
 
 ### What is not enforced
 
 - **Filesystem access from within the container** — the proxy only mediates `gt`/`bd` and git; a container with volume mounts can still read those files directly.
 - **Network egress from the container** — the proxy does not prevent containers from making outbound connections to GitHub or other services.
-- **Command-line arguments to `gt`/`bd`** — the server passes all arguments through; argument-level filtering (e.g. disallowing destructive subcommands) is the next planned hardening layer.
+
+---
+
+## Local admin server
+
+The server starts a second HTTP listener bound to `127.0.0.1:9877` (configurable
+via `--admin-listen`; set to `""` to disable).  This server has **no TLS** —
+it is intentionally local-only and relies on OS-level access control for
+security.
+
+### Admin endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/admin/deny-cert` | Add a certificate serial to the runtime deny list |
+
+### Revoking a certificate
+
+Send the certificate serial number as lowercase hex in the request body:
+
+```bash
+curl -s -X POST http://127.0.0.1:9877/v1/admin/deny-cert \
+  -H 'Content-Type: application/json' \
+  -d '{"serial": "3f2a1b"}'
+```
+
+Returns HTTP 204 on success.  The serial is added to an in-memory deny list;
+any future TLS handshake presenting that certificate is rejected immediately.
+The deny list is not persisted across restarts — if a cert must remain revoked
+after a restart, do not reissue it.
 
 ---
 
@@ -447,12 +539,20 @@ but for production always configure the correct SANs or use a hostname.
 
 ### Server endpoints
 
+**mTLS server (default: `0.0.0.0:9876`)**
+
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/v1/exec` | Execute a `gt` or `bd` command |
 | `GET` | `/v1/git/<rig>/info/refs?service=<svc>` | git smart-HTTP capability advertisement |
 | `POST` | `/v1/git/<rig>/git-upload-pack` | git fetch / clone |
 | `POST` | `/v1/git/<rig>/git-receive-pack` | git push (CN-scoped branch authorization) |
+
+**Local admin server (default: `127.0.0.1:9877`, no TLS)**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/admin/deny-cert` | Add a certificate serial to the runtime deny list |
 
 ### Certificate CN format
 
