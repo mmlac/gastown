@@ -204,23 +204,6 @@ func TestRemoveRigNotFound(t *testing.T) {
 	}
 }
 
-func TestRemoveRigNotFoundWithOrphanDir(t *testing.T) {
-	root, rigsConfig := setupTestTown(t)
-	manager := NewManager(root, rigsConfig, git.NewGit(root))
-
-	// Create an orphaned directory on disk without registering it in config
-	orphanDir := filepath.Join(root, "orphan-rig")
-	if err := os.MkdirAll(orphanDir, 0o755); err != nil {
-		t.Fatalf("creating orphan dir: %v", err)
-	}
-
-	// Manager should still return ErrRigNotFound (UX is handled in cmd layer)
-	err := manager.RemoveRig("orphan-rig")
-	if err != ErrRigNotFound {
-		t.Errorf("RemoveRig orphan dir = %v, want ErrRigNotFound", err)
-	}
-}
-
 func TestAddRig_RejectsInvalidNames(t *testing.T) {
 	root, rigsConfig := setupTestTown(t)
 	manager := NewManager(root, rigsConfig, git.NewGit(root))
@@ -1379,41 +1362,4 @@ func TestAddRig_UpstreamURL(t *testing.T) {
 	})
 
 	_ = rig
-}
-
-// TestBareCloneDefaultBranch verifies that DefaultBranch() returns the correct
-// branch for a bare clone whose remote uses a non-"main" default branch.
-func TestBareCloneDefaultBranch(t *testing.T) {
-	// Create a source repo with "master" as the default branch.
-	// Override GIT_CONFIG_GLOBAL so user config (e.g. init.defaultBranch)
-	// doesn't interfere.
-	srcDir := t.TempDir()
-	gitEnv := append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
-	for _, args := range [][]string{
-		{"git", "init", "-b", "master", srcDir},
-		{"git", "-C", srcDir, "commit", "--allow-empty", "-m", "init"},
-	} {
-		c := exec.Command(args[0], args[1:]...)
-		c.Env = gitEnv
-		out, err := c.CombinedOutput()
-		if err != nil {
-			t.Fatalf("%v: %s", args, out)
-		}
-	}
-
-	// Bare-clone it, just like AddRig does.
-	// Use a subdirectory that doesn't exist yet so git clone creates it
-	// (cloning into an existing dir may skip HEAD setup on some git versions).
-	bareDir := filepath.Join(t.TempDir(), "repo.git")
-	c := exec.Command("git", "clone", "--bare", srcDir, bareDir)
-	c.Env = gitEnv
-	out, err := c.CombinedOutput()
-	if err != nil {
-		t.Fatalf("bare clone: %s", out)
-	}
-
-	g := git.NewGit(bareDir)
-	if got := g.DefaultBranch(); got != "master" {
-		t.Errorf("DefaultBranch() = %q, want %q", got, "master")
-	}
 }

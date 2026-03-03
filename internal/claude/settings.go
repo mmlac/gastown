@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/steveyegge/gastown/internal/hookutil"
+	"github.com/steveyegge/gastown/internal/constants"
 )
 
 //go:embed config/*.json
@@ -28,10 +28,12 @@ const (
 
 // RoleTypeFor returns the RoleType for a given role name.
 func RoleTypeFor(role string) RoleType {
-	if hookutil.IsAutonomousRole(role) {
+	switch role {
+	case constants.RolePolecat, constants.RoleWitness, constants.RoleRefinery, constants.RoleDeacon, "boot":
 		return Autonomous
+	default:
+		return Interactive
 	}
-	return Interactive
 }
 
 // EnsureSettings ensures .claude/settings.json exists in the given directory.
