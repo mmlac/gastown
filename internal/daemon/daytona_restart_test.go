@@ -200,3 +200,134 @@ func TestRestartPolecatSession_LocalWhenNoRemoteBackend(t *testing.T) {
 		t.Errorf("expected local worktree error, got: %v", err)
 	}
 }
+
+// TestRestartDaytonaPolecatSession_MissingInstallationID verifies error when
+// town config exists but has no InstallationID.
+func TestRestartDaytonaPolecatSession_MissingInstallationID(t *testing.T) {
+	t.Parallel()
+
+	townRoot := t.TempDir()
+
+	// Create town config without InstallationID.
+	mayorDir := filepath.Join(townRoot, "mayor")
+	if err := os.MkdirAll(mayorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	townCfg := `{"type":"town","version":1,"name":"test","created_at":"2025-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(mayorDir, "town.json"), []byte(townCfg), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rigDir := filepath.Join(townRoot, "myrig")
+	if err := os.MkdirAll(rigDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	var logBuf strings.Builder
+	d := &Daemon{
+		config:  &Config{TownRoot: townRoot},
+		logger:  log.New(&logBuf, "", 0),
+		metrics: &daemonMetrics{},
+	}
+
+	err := d.restartDaytonaPolecatSession("myrig", "amber", "gt-myrig-amber", rigDir)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "InstallationID") {
+		t.Errorf("expected InstallationID error, got: %v", err)
+	}
+}
+
+// TestRestartDaytonaPolecatSession_WorkspaceNotFound verifies error when the
+// workspace doesn't exist in daytona's workspace list.
+func TestRestartDaytonaPolecatSession_ShortInstallationID(t *testing.T) {
+	t.Parallel()
+
+	townRoot := t.TempDir()
+
+	// Create town config with a short installation ID (< 8 chars).
+	mayorDir := filepath.Join(townRoot, "mayor")
+	if err := os.MkdirAll(mayorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	townCfg := `{"type":"town","version":1,"name":"test","installation_id":"abc","created_at":"2025-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(mayorDir, "town.json"), []byte(townCfg), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rigDir := filepath.Join(townRoot, "rig1")
+	if err := os.MkdirAll(rigDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	var logBuf strings.Builder
+	d := &Daemon{
+		config:  &Config{TownRoot: townRoot},
+		logger:  log.New(&logBuf, "", 0),
+		metrics: &daemonMetrics{},
+	}
+
+	// Will fail at ListOwned (daytona not installed), but verifies the short ID
+	// path doesn't truncate beyond the string length.
+	err := d.restartDaytonaPolecatSession("rig1", "onyx", "gt-rig1-onyx", rigDir)
+	if err == nil {
+		t.Fatal("expected error (no daytona CLI), got nil")
+	}
+	// Should contain "daytona" in error (from ListOwned failure),
+	// not "InstallationID" (which would mean the short ID check failed).
+	if strings.Contains(err.Error(), "InstallationID") {
+		t.Errorf("short installation ID should be accepted, got: %v", err)
+	}
+}
+
+// TestRestartDaytonaPolecatSession_DelegatesToDaytonaPath verifies that when
+// RemoteBackend is configured and town config has an InstallationID, the
+// restart function attempts to interact with daytona (fails in test env but
+// confirms the correct code path is executed).
+func TestRestartDaytonaPolecatSession_DelegatesToDaytonaPath(t *testing.T) {
+	t.Parallel()
+
+	townRoot := t.TempDir()
+
+	// Full town config with InstallationID.
+	mayorDir := filepath.Join(townRoot, "mayor")
+	if err := os.MkdirAll(mayorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	townCfg := `{"type":"town","version":1,"name":"test","installation_id":"abcdef12-3456-7890","created_at":"2025-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(mayorDir, "town.json"), []byte(townCfg), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create rig settings with RemoteBackend.
+	rigDir := filepath.Join(townRoot, "myrig")
+	if err := os.MkdirAll(rigDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rigDir, "settings.json"),
+		[]byte(`{"remote_backend":{"provider":"daytona"}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var logBuf strings.Builder
+	d := &Daemon{
+		config:  &Config{TownRoot: townRoot},
+		logger:  log.New(&logBuf, "", 0),
+		metrics: &daemonMetrics{},
+	}
+
+	err := d.restartDaytonaPolecatSession("myrig", "amber", "gt-myrig-amber", rigDir)
+	if err == nil {
+		t.Fatal("expected error (no daytona CLI), got nil")
+	}
+
+	// Error should be from the daytona ListOwned call, not from town config issues.
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "town config") || strings.Contains(errMsg, "InstallationID") {
+		t.Errorf("should pass config checks and fail at daytona interaction, got: %v", err)
+	}
+	if !strings.Contains(errMsg, "daytona") && !strings.Contains(errMsg, "workspace") {
+		t.Errorf("error should relate to daytona workspace operations, got: %v", err)
+	}
+}
