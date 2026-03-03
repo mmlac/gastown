@@ -46,6 +46,7 @@ type AgentFields struct {
 	NotificationLevel string // DND mode: verbose, normal, muted (default: normal)
 	Mode              string // Execution mode: "" (normal) or "ralph" (Ralph Wiggum loop)
 	DaytonaWorkspace  string // Daytona workspace ID for remote polecats (empty for local)
+	CertSerial        string // Proxy mTLS cert serial (lowercase hex) for revocation on cleanup
 	// Note: RoleBead field removed - role definitions are now config-based.
 	// See internal/config/roles/*.toml and config-based-roles.md.
 
@@ -119,6 +120,10 @@ func FormatAgentDescription(title string, fields *AgentFields) string {
 		lines = append(lines, fmt.Sprintf("daytona_workspace: %s", fields.DaytonaWorkspace))
 	}
 
+	if fields.CertSerial != "" {
+		lines = append(lines, fmt.Sprintf("cert_serial: %s", fields.CertSerial))
+	}
+
 	// Completion metadata fields (gt-x7t9)
 	if fields.ExitType != "" {
 		lines = append(lines, fmt.Sprintf("exit_type: %s", fields.ExitType))
@@ -181,6 +186,8 @@ func ParseAgentFields(description string) *AgentFields {
 			fields.Mode = value
 		case "daytona_workspace":
 			fields.DaytonaWorkspace = value
+		case "cert_serial":
+			fields.CertSerial = value
 		// Completion metadata fields (gt-x7t9)
 		case "exit_type":
 			fields.ExitType = value
@@ -542,6 +549,7 @@ type AgentFieldUpdates struct {
 	NotificationLevel *string
 	Mode              *string
 	DaytonaWorkspace  *string
+	CertSerial        *string
 	// Completion metadata fields (gt-x7t9)
 	ExitType       *string
 	MRID           *string
@@ -594,6 +602,9 @@ func (b *Beads) UpdateAgentDescriptionFields(id string, updates AgentFieldUpdate
 	if updates.DaytonaWorkspace != nil {
 		fields.DaytonaWorkspace = *updates.DaytonaWorkspace
 	}
+	if updates.CertSerial != nil {
+		fields.CertSerial = *updates.CertSerial
+	}
 	// Completion metadata fields (gt-x7t9)
 	if updates.ExitType != nil {
 		fields.ExitType = *updates.ExitType
@@ -634,6 +645,13 @@ func (b *Beads) UpdateAgentActiveMR(id string, activeMR string) error {
 // Pass empty string to reset to default (normal).
 func (b *Beads) UpdateAgentNotificationLevel(id string, level string) error {
 	return b.UpdateAgentDescriptionFields(id, AgentFieldUpdates{NotificationLevel: &level})
+}
+
+// UpdateAgentCertSerial updates the cert_serial field in an agent bead.
+// This stores the proxy mTLS certificate serial (lowercase hex) for revocation
+// during polecat cleanup. Pass empty string to clear.
+func (b *Beads) UpdateAgentCertSerial(id string, serial string) error {
+	return b.UpdateAgentDescriptionFields(id, AgentFieldUpdates{CertSerial: &serial})
 }
 
 // CompletionMetadata holds the fields written by gt done to record

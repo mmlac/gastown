@@ -17,6 +17,7 @@ import (
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/proxy"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/runtime"
 	"github.com/steveyegge/gastown/internal/session"
@@ -41,8 +42,10 @@ var (
 
 // SessionManager handles polecat session lifecycle.
 type SessionManager struct {
-	tmux *tmux.Tmux
-	rig  *rig.Rig
+	tmux       *tmux.Tmux
+	rig        *rig.Rig
+	proxyAdmin *proxy.AdminClient // nil when proxy is not running (local-only mode)
+	beads      *beads.Beads       // nil when beads unavailable; used for cert serial lookup
 }
 
 // NewSessionManager creates a new polecat session manager for a rig.
@@ -51,6 +54,14 @@ func NewSessionManager(t *tmux.Tmux, r *rig.Rig) *SessionManager {
 		tmux: t,
 		rig:  r,
 	}
+}
+
+// SetProxyAdmin sets the proxy admin client for mTLS cert lifecycle.
+// When set, session Stop revokes the polecat's cert to prevent further
+// proxy access after the session ends.
+func (m *SessionManager) SetProxyAdmin(client *proxy.AdminClient, b *beads.Beads) {
+	m.proxyAdmin = client
+	m.beads = b
 }
 
 // SessionStartOptions configures polecat session startup.
@@ -519,7 +530,33 @@ func (m *SessionManager) Stop(polecat string, force bool) error {
 		return fmt.Errorf("killing session: %w", err)
 	}
 
+	// Revoke the polecat's mTLS cert so it can no longer access the proxy.
+	// No-op if proxy admin is not configured or cert serial is not stored.
+	m.denyCertOnStop(polecat)
+
 	return nil
+}
+
+// denyCertOnStop revokes the polecat's mTLS cert via the proxy admin API.
+// Reads cert_serial from the agent bead and calls deny-cert.
+// No-op if proxyAdmin or beads is nil, or if the bead has no serial.
+func (m *SessionManager) denyCertOnStop(polecat string) {
+	if m.proxyAdmin == nil || m.beads == nil {
+		return
+	}
+
+	agentID := beads.PolecatBeadID(m.rig.Name, polecat)
+	_, fields, err := m.beads.GetAgentBead(agentID)
+	if err != nil || fields == nil || fields.CertSerial == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := m.proxyAdmin.DenyCert(ctx, fields.CertSerial); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not revoke proxy cert for %s: %v\n", polecat, err)
+	}
 }
 
 // IsRunning checks if a polecat session is active and healthy.

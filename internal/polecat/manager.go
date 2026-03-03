@@ -21,6 +21,7 @@ import (
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/proxy"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/runtime"
 	"github.com/steveyegge/gastown/internal/session"
@@ -119,11 +120,12 @@ func (e *UncommittedWorkError) Unwrap() error {
 
 // Manager handles polecat lifecycle.
 type Manager struct {
-	rig      *rig.Rig
-	git      *git.Git
-	beads    *beads.Beads
-	namePool *NamePool
-	tmux     *tmux.Tmux
+	rig        *rig.Rig
+	git        *git.Git
+	beads      *beads.Beads
+	namePool   *NamePool
+	tmux       *tmux.Tmux
+	proxyAdmin *proxy.AdminClient // nil when proxy is not running (local-only mode)
 }
 
 // NewManager creates a new polecat manager.
@@ -180,6 +182,13 @@ func NewManager(r *rig.Rig, g *git.Git, t *tmux.Tmux) *Manager {
 // GetNamePool returns the manager's name pool for external use (e.g., pool init).
 func (m *Manager) GetNamePool() *NamePool {
 	return m.namePool
+}
+
+// SetProxyAdmin sets the proxy admin client for mTLS cert lifecycle.
+// When set, polecat spawn issues a cert and cleanup revokes it.
+// Pass nil to disable proxy cert management (local-only mode).
+func (m *Manager) SetProxyAdmin(client *proxy.AdminClient) {
+	m.proxyAdmin = client
 }
 
 // lockPolecat acquires an exclusive file lock for a specific polecat.
@@ -791,6 +800,10 @@ func (m *Manager) addWithOptionsLocked(name string, opts AddOptions, polecatDir 
 		return nil, fmt.Errorf("agent bead required for polecat tracking: %w", err)
 	}
 
+	// Issue mTLS cert for this polecat via the proxy admin API.
+	// No-op if proxyAdmin is nil (proxy not running / local-only mode).
+	certSerial := m.issueCertForPolecat(name, agentID)
+
 	now := time.Now()
 	polecat := &Polecat{
 		Name:      name,
@@ -801,6 +814,7 @@ func (m *Manager) addWithOptionsLocked(name string, opts AddOptions, polecatDir 
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	_ = certSerial // stored in agent bead; used by cleanup
 
 	return polecat, nil
 }
@@ -1078,6 +1092,11 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 		}
 	}
 
+	// Revoke the polecat's mTLS cert before resetting the agent bead.
+	// Read cert_serial from the bead, then POST /v1/admin/deny-cert.
+	// No-op if proxyAdmin is nil or cert_serial is empty.
+	m.denyCertForPolecat(name)
+
 	// Reset agent bead FIRST, before any filesystem operations.
 	// This prevents a race where a concurrent sling allocates the same name,
 	// sets hook_bead, and then has it cleared by this cleanup. By resetting
@@ -1234,6 +1253,60 @@ func forceRemoveDir(dir string) error {
 
 	// Try removal again after fixing permissions
 	return os.RemoveAll(dir)
+}
+
+// issueCertForPolecat issues an mTLS client certificate for a polecat via the
+// proxy admin API and stores the serial in the agent bead. Returns the serial
+// (empty string if proxy is not running or cert issuance fails non-fatally).
+// Cert issuance failure is logged but does not block polecat creation — the
+// polecat can still operate in local mode without proxy access.
+func (m *Manager) issueCertForPolecat(name, agentID string) string {
+	if m.proxyAdmin == nil {
+		return ""
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := m.proxyAdmin.IssueCert(ctx, m.rig.Name, name, "720h")
+	if err != nil {
+		style.PrintWarning("could not issue proxy cert for %s: %v", name, err)
+		return ""
+	}
+
+	if result == nil || result.Serial == "" {
+		return ""
+	}
+
+	// Store the serial in the agent bead for revocation during cleanup.
+	if err := m.beads.UpdateAgentCertSerial(agentID, result.Serial); err != nil {
+		style.PrintWarning("could not store cert serial for %s: %v", name, err)
+	}
+
+	return result.Serial
+}
+
+// denyCertForPolecat revokes the mTLS certificate for a polecat by reading
+// the cert_serial from its agent bead and calling the proxy admin deny-cert
+// endpoint. No-op if proxyAdmin is nil, the bead has no serial, or the
+// proxy is unreachable. Errors are logged but do not block polecat removal.
+func (m *Manager) denyCertForPolecat(name string) {
+	if m.proxyAdmin == nil {
+		return
+	}
+
+	agentID := m.agentBeadID(name)
+	_, fields, err := m.beads.GetAgentBead(agentID)
+	if err != nil || fields == nil || fields.CertSerial == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := m.proxyAdmin.DenyCert(ctx, fields.CertSerial); err != nil {
+		style.PrintWarning("could not revoke proxy cert for %s (serial %s): %v", name, fields.CertSerial, err)
+	}
 }
 
 // AllocateName allocates a name from the name pool.
