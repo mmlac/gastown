@@ -19,6 +19,7 @@ import (
 
 var (
 	polecatDiscoverReconcile bool
+	polecatDiscoverDryRun    bool
 	polecatDiscoverJSON      bool
 )
 
@@ -38,10 +39,13 @@ Use --reconcile to automatically fix orphans:
   - Orphaned workspaces are stopped (preserving state for investigation)
   - Orphaned beads have their daytona_workspace label cleared
 
+Use --dry-run with --reconcile to preview what would happen without acting.
+
 Only works for rigs with remote_backend configured.
 
 Examples:
   gt polecat discover MyRig
+  gt polecat discover MyRig --reconcile --dry-run
   gt polecat discover MyRig --reconcile
   gt polecat discover MyRig --json`,
 	Args: cobra.ExactArgs(1),
@@ -56,6 +60,7 @@ type DiscoverResult struct {
 	OrphanWorkspaces  []DiscoverOrphan   `json:"orphan_workspaces,omitempty"`
 	OrphanBeads       []DiscoverOrphan   `json:"orphan_beads,omitempty"`
 	Reconciled        bool               `json:"reconciled"`
+	DryRun            bool               `json:"dry_run,omitempty"`
 	ReconcileActions  []ReconcileAction  `json:"reconcile_actions,omitempty"`
 }
 
@@ -85,6 +90,7 @@ type ReconcileAction struct {
 
 func init() {
 	polecatDiscoverCmd.Flags().BoolVar(&polecatDiscoverReconcile, "reconcile", false, "Automatically fix orphaned workspaces and beads")
+	polecatDiscoverCmd.Flags().BoolVar(&polecatDiscoverDryRun, "dry-run", false, "Preview reconcile actions without performing them (requires --reconcile)")
 	polecatDiscoverCmd.Flags().BoolVar(&polecatDiscoverJSON, "json", false, "Output as JSON")
 
 	polecatCmd.AddCommand(polecatDiscoverCmd)
@@ -138,10 +144,16 @@ func runPolecatDiscover(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Validate --dry-run requires --reconcile
+	if polecatDiscoverDryRun && !polecatDiscoverReconcile {
+		return fmt.Errorf("--dry-run requires --reconcile")
+	}
+
 	// Reconcile if requested
 	if polecatDiscoverReconcile {
 		result.Reconciled = true
-		reconcile(ctx, client, r, townRoot, result)
+		result.DryRun = polecatDiscoverDryRun
+		reconcile(ctx, client, r, townRoot, result, polecatDiscoverDryRun)
 	}
 
 	// Output
@@ -248,7 +260,7 @@ func isHiddenDir(name string) bool {
 	return len(name) > 0 && name[0] == '.'
 }
 
-func reconcile(ctx context.Context, client *daytona.Client, r *rig.Rig, townRoot string, result *DiscoverResult) {
+func reconcile(ctx context.Context, client *daytona.Client, r *rig.Rig, townRoot string, result *DiscoverResult, dryRun bool) {
 	bd := beads.New(r.Path)
 
 	// Stop orphaned workspaces
@@ -257,7 +269,9 @@ func reconcile(ctx context.Context, client *daytona.Client, r *rig.Rig, townRoot
 			Type:   "stop_workspace",
 			Target: orphan.WorkspaceName,
 		}
-		if err := client.Stop(ctx, orphan.WorkspaceName); err != nil {
+		if dryRun {
+			action.Success = true
+		} else if err := client.Stop(ctx, orphan.WorkspaceName); err != nil {
 			action.Error = err.Error()
 		} else {
 			action.Success = true
@@ -272,7 +286,9 @@ func reconcile(ctx context.Context, client *daytona.Client, r *rig.Rig, townRoot
 			Type:   "clear_bead",
 			Target: orphan.BeadID,
 		}
-		if err := bd.UpdateAgentDescriptionFields(orphan.BeadID, beads.AgentFieldUpdates{
+		if dryRun {
+			action.Success = true
+		} else if err := bd.UpdateAgentDescriptionFields(orphan.BeadID, beads.AgentFieldUpdates{
 			DaytonaWorkspace: &empty,
 		}); err != nil {
 			action.Error = err.Error()
@@ -325,17 +341,28 @@ func printDiscoverResult(result *DiscoverResult) {
 
 	// Reconciliation results
 	if result.Reconciled && len(result.ReconcileActions) > 0 {
-		fmt.Printf("%s Reconciliation actions:\n", style.Bold.Render("🔧"))
+		header := "🔧"
+		if result.DryRun {
+			header = "🔍"
+			fmt.Printf("%s Reconciliation preview (dry-run — no changes made):\n", style.Bold.Render(header))
+		} else {
+			fmt.Printf("%s Reconciliation actions:\n", style.Bold.Render(header))
+		}
 		for _, a := range result.ReconcileActions {
+			prefix := ""
+			if result.DryRun {
+				prefix = "would "
+			}
 			if a.Success {
-				fmt.Printf("  %s %s: %s\n", style.Success.Render("✓"), a.Type, a.Target)
+				fmt.Printf("  %s %s%s: %s\n", style.Success.Render("✓"), prefix, a.Type, a.Target)
 			} else {
-				fmt.Printf("  %s %s: %s — %s\n", style.Error.Render("✗"), a.Type, a.Target, a.Error)
+				fmt.Printf("  %s %s%s: %s — %s\n", style.Error.Render("✗"), prefix, a.Type, a.Target, a.Error)
 			}
 		}
 		fmt.Println()
 	} else if !result.Reconciled && (len(result.OrphanWorkspaces) > 0 || len(result.OrphanBeads) > 0) {
-		fmt.Printf("Run with %s to fix orphans.\n", style.Bold.Render("--reconcile"))
+		fmt.Printf("Run with %s to fix orphans (use %s to preview first).\n",
+			style.Bold.Render("--reconcile"), style.Bold.Render("--reconcile --dry-run"))
 	}
 }
 
