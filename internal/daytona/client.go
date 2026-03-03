@@ -1,0 +1,232 @@
+// Package daytona wraps the daytona CLI for workspace lifecycle management.
+// All daytona interactions go through Client to centralize argument handling,
+// workspace naming conventions, and multi-tenancy filtering.
+package daytona
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os/exec"
+	"strings"
+)
+
+// CommandRunner abstracts command execution for testing.
+type CommandRunner interface {
+	Run(ctx context.Context, name string, args ...string) (stdout, stderr string, exitCode int, err error)
+}
+
+// execRunner is the default CommandRunner that shells out to a real process.
+type execRunner struct{}
+
+func (r *execRunner) Run(ctx context.Context, name string, args ...string) (string, string, int, error) {
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // G204: callers validate args
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return outBuf.String(), errBuf.String(), -1, err
+		}
+	}
+	return outBuf.String(), errBuf.String(), exitCode, nil
+}
+
+// Workspace represents a daytona workspace visible to this installation.
+type Workspace struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	State   string `json:"state"`
+	Rig     string `json:"-"` // parsed from name
+	Polecat string `json:"-"` // parsed from name
+}
+
+// CreateOptions configures workspace creation.
+type CreateOptions struct {
+	Image   string            // container image override
+	Profile string            // devcontainer profile
+	Env     map[string]string // extra environment variables
+}
+
+// Client wraps the daytona CLI for workspace lifecycle and discovery.
+type Client struct {
+	installPrefix string // "gt-<installID-short>" — scopes workspaces to this installation
+	runner        CommandRunner
+}
+
+// NewClient creates a Client that scopes workspaces with the given prefix.
+// The installPrefix is typically "gt-<first-8-chars-of-installationID>".
+func NewClient(installPrefix string) *Client {
+	return &Client{
+		installPrefix: installPrefix,
+		runner:        &execRunner{},
+	}
+}
+
+// NewClientWithRunner creates a Client with a custom CommandRunner (for testing).
+func NewClientWithRunner(installPrefix string, runner CommandRunner) *Client {
+	return &Client{
+		installPrefix: installPrefix,
+		runner:        runner,
+	}
+}
+
+// WorkspaceName returns the deterministic workspace name for a rig+polecat pair.
+// Format: <installPrefix>-<rig>-<polecat>
+func (c *Client) WorkspaceName(rig, polecat string) string {
+	return c.installPrefix + "-" + rig + "-" + polecat
+}
+
+// ParseWorkspaceName extracts rig and polecat from a workspace name.
+// Returns ok=false if the name doesn't match this installation's prefix.
+func (c *Client) ParseWorkspaceName(name string) (rig, polecat string, ok bool) {
+	prefix := c.installPrefix + "-"
+	if !strings.HasPrefix(name, prefix) {
+		return "", "", false
+	}
+	rest := strings.TrimPrefix(name, prefix)
+	// rest should be "<rig>-<polecat>" — split on last hyphen since rig names
+	// could contain hyphens but polecat names are single words.
+	idx := strings.LastIndex(rest, "-")
+	if idx <= 0 || idx == len(rest)-1 {
+		return "", "", false
+	}
+	return rest[:idx], rest[idx+1:], true
+}
+
+// Create provisions a new daytona workspace from a repo/branch.
+func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts CreateOptions) error {
+	args := []string{"create", repoURL, "--name", name, "--branch", branch, "--yes"}
+	if opts.Image != "" {
+		args = append(args, "--image", opts.Image)
+	}
+	if opts.Profile != "" {
+		args = append(args, "--devcontainer-path", opts.Profile)
+	}
+	for k, v := range opts.Env {
+		args = append(args, "--env", k+"="+v)
+	}
+	_, stderr, exitCode, err := c.runner.Run(ctx, "daytona", args...)
+	if err != nil {
+		return fmt.Errorf("daytona create: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("daytona create failed (exit %d): %s", exitCode, firstLine(stderr))
+	}
+	return nil
+}
+
+// Start ensures a workspace is running.
+func (c *Client) Start(ctx context.Context, name string) error {
+	_, stderr, exitCode, err := c.runner.Run(ctx, "daytona", "start", name, "--yes")
+	if err != nil {
+		return fmt.Errorf("daytona start: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("daytona start failed (exit %d): %s", exitCode, firstLine(stderr))
+	}
+	return nil
+}
+
+// Stop pauses a workspace (preserves state for re-start).
+func (c *Client) Stop(ctx context.Context, name string) error {
+	_, stderr, exitCode, err := c.runner.Run(ctx, "daytona", "stop", name, "--yes")
+	if err != nil {
+		return fmt.Errorf("daytona stop: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("daytona stop failed (exit %d): %s", exitCode, firstLine(stderr))
+	}
+	return nil
+}
+
+// Delete permanently removes a workspace.
+func (c *Client) Delete(ctx context.Context, name string) error {
+	_, stderr, exitCode, err := c.runner.Run(ctx, "daytona", "delete", name, "--yes")
+	if err != nil {
+		return fmt.Errorf("daytona delete: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("daytona delete failed (exit %d): %s", exitCode, firstLine(stderr))
+	}
+	return nil
+}
+
+// Exec runs a command inside a workspace and returns stdout, stderr, and exit code.
+func (c *Client) Exec(ctx context.Context, name string, env map[string]string, cmd ...string) (string, string, int, error) {
+	args := []string{"exec", name}
+	for k, v := range env {
+		args = append(args, "--env", k+"="+v)
+	}
+	args = append(args, "--")
+	args = append(args, cmd...)
+	stdout, stderr, exitCode, err := c.runner.Run(ctx, "daytona", args...)
+	if err != nil {
+		return "", "", -1, fmt.Errorf("daytona exec: %w", err)
+	}
+	return stdout, stderr, exitCode, nil
+}
+
+// daytonaListEntry matches the JSON output of `daytona list -o json`.
+type daytonaListEntry struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
+// ListOwned returns all workspaces belonging to this installation (filtered by installPrefix).
+func (c *Client) ListOwned(ctx context.Context) ([]Workspace, error) {
+	stdout, stderr, exitCode, err := c.runner.Run(ctx, "daytona", "list", "-o", "json")
+	if err != nil {
+		return nil, fmt.Errorf("daytona list: %w", err)
+	}
+	if exitCode != 0 {
+		return nil, fmt.Errorf("daytona list failed (exit %d): %s", exitCode, firstLine(stderr))
+	}
+
+	var entries []daytonaListEntry
+	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
+		return nil, fmt.Errorf("daytona list: parse JSON: %w", err)
+	}
+
+	prefix := c.installPrefix + "-"
+	var owned []Workspace
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name, prefix) {
+			continue
+		}
+		ws := Workspace{
+			ID:    e.ID,
+			Name:  e.Name,
+			State: e.State,
+		}
+		if rig, polecat, ok := c.ParseWorkspaceName(e.Name); ok {
+			ws.Rig = rig
+			ws.Polecat = polecat
+		}
+		owned = append(owned, ws)
+	}
+	return owned, nil
+}
+
+// InstallPrefix returns the prefix used for workspace name scoping.
+func (c *Client) InstallPrefix() string {
+	return c.installPrefix
+}
+
+// firstLine returns the first non-empty line from s.
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return strings.TrimSpace(s)
+}
