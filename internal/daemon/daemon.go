@@ -24,6 +24,7 @@ import (
 	"github.com/steveyegge/gastown/internal/boot"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/daytona"
 	"github.com/steveyegge/gastown/internal/deacon"
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/events"
@@ -283,6 +284,10 @@ func (d *Daemon) Run() error {
 			d.logger.Printf("Warning: metadata repair: %v", e)
 		}
 	}
+
+	// Reconcile daytona workspaces for rigs with remote backends.
+	// Runs once at startup to detect orphaned workspaces/beads from unclean shutdowns.
+	d.reconcileDaytonaWorkspaces()
 
 	// Write PID file with nonce for ownership verification
 	if _, err := writePIDFile(d.config.PidFile, os.Getpid()); err != nil {
@@ -2145,4 +2150,157 @@ func (d *Daemon) dispatchQueuedWork() {
 	} else if len(out) > 0 {
 		d.logger.Printf("Scheduler dispatch: %s", string(out))
 	}
+}
+
+// reconcileDaytonaWorkspaces discovers and reconciles daytona workspaces
+// for all rigs with RemoteBackend configured. Called once at daemon startup
+// to handle orphans from unclean shutdowns.
+//
+// For each daytona-enabled rig:
+//  1. ListOwned to get all workspaces matching this installation
+//  2. Cross-reference with agent beads (polecat role with daytona_workspace)
+//  3. Orphaned workspaces (no bead) → stop + optionally delete
+//  4. Orphaned beads (no workspace) → reset bead daytona_workspace field
+//  5. Healthy matches → logged for visibility
+func (d *Daemon) reconcileDaytonaWorkspaces() {
+	// Load town config for installation ID.
+	townConfigPath := filepath.Join(d.config.TownRoot, "mayor", "town.json")
+	townCfg, err := config.LoadTownConfig(townConfigPath)
+	if err != nil {
+		d.logger.Printf("Warning: skipping daytona reconciliation: cannot load town config: %v", err)
+		return
+	}
+
+	shortID := townCfg.ShortInstallationID()
+	if shortID == "" {
+		d.logger.Printf("Warning: skipping daytona reconciliation: no installation ID configured")
+		return
+	}
+
+	rigs := d.getKnownRigs()
+	if len(rigs) == 0 {
+		return
+	}
+
+	reconciled := false
+	for _, rigName := range rigs {
+		// Load rig settings to check for RemoteBackend.
+		rigSettingsPath := filepath.Join(d.config.TownRoot, rigName, "settings.json")
+		rigSettings, err := config.LoadRigSettings(rigSettingsPath)
+		if err != nil {
+			// Settings file may not exist for some rigs — skip silently.
+			continue
+		}
+		if rigSettings.RemoteBackend == nil {
+			continue // Local rig, no daytona.
+		}
+
+		if !reconciled {
+			d.logger.Printf("Daytona workspace reconciliation starting")
+			reconciled = true
+		}
+
+		d.reconcileDaytonaRig(rigName, shortID, rigSettings.RemoteBackend)
+	}
+
+	if reconciled {
+		d.logger.Printf("Daytona workspace reconciliation complete")
+	}
+}
+
+// reconcileDaytonaRig performs workspace discovery and reconciliation for a single rig.
+func (d *Daemon) reconcileDaytonaRig(rigName, shortID string, backend *config.RemoteBackend) {
+	installPrefix := "gt-" + shortID
+	client := daytona.NewClient(installPrefix)
+
+	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
+	defer cancel()
+
+	// Get all workspaces owned by this installation.
+	workspaces, err := client.ListOwned(ctx)
+	if err != nil {
+		d.logger.Printf("Warning: daytona reconcile %s: list workspaces failed: %v", rigName, err)
+		return
+	}
+
+	// Get polecat agent beads with daytona_workspace set.
+	agentBeads := d.listDaytonaPolecatBeads(rigName)
+
+	// Run discovery.
+	report := daytona.DiscoverWorkspaces(client, rigName, workspaces, agentBeads)
+
+	d.logger.Printf("Daytona reconcile %s: healthy=%d orphaned_ws=%d orphaned_beads=%d",
+		rigName, report.Healthy, report.OrphanedWorkspaces, report.OrphanedBeads)
+
+	if report.OrphanedWorkspaces == 0 && report.OrphanedBeads == 0 {
+		return // Nothing to reconcile.
+	}
+
+	// Build bead resetter callback — clears daytona_workspace field via bd CLI.
+	beadResetter := func(beadID string) error {
+		resetCmd := exec.Command(d.bdPath, "agent", "update", beadID,
+			"--set", "daytona_workspace=") //nolint:gosec // G204: bd is a trusted internal tool
+		resetCmd.Dir = d.config.TownRoot
+		resetCmd.Env = os.Environ()
+		if out, err := resetCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("bd agent update %s: %w (output: %s)", beadID, err, string(out))
+		}
+		return nil
+	}
+
+	opts := daytona.ReconcileOptions{
+		AutoDelete: backend.AutoDelete,
+	}
+
+	result := daytona.Reconcile(ctx, client, report, opts, beadResetter, d.logger)
+
+	if len(result.Errors) > 0 {
+		d.logger.Printf("Daytona reconcile %s: %d errors occurred", rigName, len(result.Errors))
+	}
+}
+
+// listDaytonaPolecatBeads returns polecat agent beads for a rig that have
+// a daytona_workspace field set. Used for workspace reconciliation.
+func (d *Daemon) listDaytonaPolecatBeads(rigName string) []daytona.AgentBead {
+	var agents []struct {
+		ID          string   `json:"id"`
+		Labels      []string `json:"labels"`
+		Description string   `json:"description"`
+	}
+
+	if err := d.listAgentBeadsJSON(&agents); err != nil {
+		d.logger.Printf("Warning: daytona reconcile %s: failed to list agent beads: %v", rigName, err)
+		return nil
+	}
+
+	prefix := beads.GetPrefixForRig(d.config.TownRoot, rigName)
+	// Pattern: <prefix>-<rig>-polecat-<name>
+	beadPrefix := prefix + "-" + rigName + "-polecat-"
+
+	var result []daytona.AgentBead
+	for _, agent := range agents {
+		if !strings.HasPrefix(agent.ID, beadPrefix) {
+			continue
+		}
+
+		fields := beads.ParseAgentFields(agent.Description)
+		if fields.DaytonaWorkspace == "" {
+			continue // Local polecat, no daytona workspace.
+		}
+
+		// Extract polecat name from bead ID.
+		polecatName := strings.TrimPrefix(agent.ID, beadPrefix)
+		if polecatName == "" {
+			continue
+		}
+
+		result = append(result, daytona.AgentBead{
+			ID:                 agent.ID,
+			Polecat:            polecatName,
+			DaytonaWorkspaceID: fields.DaytonaWorkspace,
+			AgentState:         fields.AgentState,
+		})
+	}
+
+	return result
 }
