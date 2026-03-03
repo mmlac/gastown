@@ -1317,6 +1317,17 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 		}
 	}
 
+	// Read daytona workspace name from agent bead before the reset clears it.
+	// This determines whether to use remote (daytona) or local (worktree) cleanup.
+	var daytonaWS string
+	{
+		aid := m.agentBeadID(name)
+		_, aFields, aErr := m.beads.GetAgentBead(aid)
+		if aErr == nil && aFields != nil {
+			daytonaWS = aFields.DaytonaWorkspace
+		}
+	}
+
 	// Revoke the polecat's mTLS cert before resetting the agent bead.
 	// Read cert_serial from the bead, then POST /v1/admin/deny-cert.
 	// No-op if proxyAdmin is nil or cert_serial is empty.
@@ -1365,6 +1376,13 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 					ErrShellInWorktree, cwd, m.rig.Name, name)
 			}
 		}
+	}
+
+	// Remote polecats: daytona workspace cleanup instead of local worktree removal.
+	// Shared operations (safety checks, cert revocation, bead reset, work bead unassignment)
+	// have already completed above. Only filesystem/workspace cleanup diverges.
+	if daytonaWS != "" {
+		return m.removeDaytonaWorkspace(name, daytonaWS, polecatDir)
 	}
 
 	// Get repo base to remove the worktree properly
@@ -1419,6 +1437,43 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 	}
 
 	// Release name back to pool if it's a pooled name (non-fatal: state file update)
+	m.namePool.Release(name)
+	_ = m.namePool.Save()
+
+	return nil
+}
+
+// removeDaytonaWorkspace handles cleanup for remote polecats: deletes or stops the
+// daytona workspace, removes the marker directory, and releases the name back to pool.
+// Called from RemoveWithOptions after shared cleanup (cert revocation, bead reset,
+// work bead unassignment) is already done.
+func (m *Manager) removeDaytonaWorkspace(name, wsName, polecatDir string) error {
+	if m.daytonaClient != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		autoDelete := m.rigSettings != nil && m.rigSettings.RemoteBackend != nil && m.rigSettings.RemoteBackend.AutoDelete
+		if autoDelete {
+			if err := m.daytonaClient.Delete(ctx, wsName); err != nil {
+				style.PrintWarning("could not delete daytona workspace %s: %v", wsName, err)
+			}
+		} else {
+			// Default: stop workspace (preserves state for fast re-spawn)
+			if err := m.daytonaClient.Stop(ctx, wsName); err != nil {
+				style.PrintWarning("could not stop daytona workspace %s: %v", wsName, err)
+			}
+		}
+	}
+
+	// Remove marker directory (no worktree to remove for remote polecats).
+	_ = os.RemoveAll(polecatDir)
+
+	// Verify marker directory was removed.
+	if _, err := os.Stat(polecatDir); err == nil {
+		style.PrintWarning("incomplete removal for %s: marker directory %s still exists", name, polecatDir)
+	}
+
+	// Release name back to pool (non-fatal: state file update).
 	m.namePool.Release(name)
 	_ = m.namePool.Save()
 
