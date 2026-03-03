@@ -2,6 +2,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,9 +13,11 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/daytona"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/polecat"
+	"github.com/steveyegge/gastown/internal/proxy"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/tmux"
@@ -55,6 +58,7 @@ type SlingSpawnOptions struct {
 	HookBead   string // Bead ID to set as hook_bead at spawn time (atomic assignment)
 	Agent      string // Agent override for this spawn (e.g., "gemini", "codex", "claude-haiku")
 	BaseBranch string // Override base branch for polecat worktree (e.g., "develop", "release/v2")
+	Daytona    bool   // Force daytona remote mode (overrides rig config auto-detection)
 }
 
 // SpawnPolecatForSling creates a fresh polecat and optionally starts its session.
@@ -85,6 +89,46 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 	polecatGit := git.NewGit(r.Path)
 	t := tmux.NewTmux()
 	polecatMgr := polecat.NewManager(r, polecatGit, t)
+
+	// Daytona mode detection: explicit --daytona flag or auto-detect from rig config.
+	// When active, configure the polecat manager for remote mode and run preflight checks.
+	settingsPath := filepath.Join(r.Path, "settings", "config.json")
+	rigSettings, _ := config.LoadRigSettings(settingsPath)
+	useDaytona := opts.Daytona
+	if !useDaytona && rigSettings != nil && rigSettings.RemoteBackend != nil && rigSettings.RemoteBackend.Provider == "daytona" {
+		useDaytona = true
+	}
+	if useDaytona {
+		if err := runDaytonaPreflightChecks(townRoot, rigSettings); err != nil {
+			return nil, fmt.Errorf("daytona preflight failed: %w", err)
+		}
+		// Load town config for installation prefix
+		townConfigPath := filepath.Join(townRoot, "mayor", "town.json")
+		townConfig, err := config.LoadTownConfig(townConfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("loading town config for daytona: %w", err)
+		}
+		installPrefix := "gt-" + townConfig.ShortInstallationID()
+		daytonaClient := daytona.NewClient(installPrefix)
+
+		// Load proxy CA (required for mTLS cert issuance to remote polecats)
+		caDir := filepath.Join(townRoot, ".runtime", "ca")
+		ca, err := proxy.LoadOrGenerateCA(caDir)
+		if err != nil {
+			return nil, fmt.Errorf("loading proxy CA for daytona: %w", err)
+		}
+
+		// Ensure rig settings has RemoteBackend when --daytona flag forces it
+		if rigSettings == nil {
+			rigSettings = &config.RigSettings{}
+		}
+		if rigSettings.RemoteBackend == nil {
+			rigSettings.RemoteBackend = &config.RemoteBackend{Provider: "daytona"}
+		}
+
+		polecatMgr.SetDaytona(daytonaClient, ca, rigSettings)
+		fmt.Printf("  Daytona remote mode enabled (prefix: %s)\n", installPrefix)
+	}
 
 	// Pre-spawn Dolt health check (gt-94llt7): verify Dolt is reachable before
 	// allocating a polecat. Prevents orphaned polecats when Dolt is down.
@@ -457,6 +501,44 @@ func IsRigName(target string) (string, bool) {
 	}
 
 	return target, true
+}
+
+// runDaytonaPreflightChecks verifies the prerequisites for daytona remote mode:
+// 1. daytona CLI is installed and accessible
+// 2. proxy server is running (admin API reachable)
+// 3. proxy CA exists (required for mTLS cert issuance)
+func runDaytonaPreflightChecks(townRoot string, settings *config.RigSettings) error {
+	// 1. Verify daytona CLI is installed
+	if _, err := exec.LookPath("daytona"); err != nil {
+		return fmt.Errorf("daytona CLI not found in PATH\n" +
+			"Install: https://www.daytona.io/docs/installation/installation/\n" +
+			"Or remove remote_backend from rig settings to use local mode")
+	}
+
+	// 2. Verify proxy server is running (check admin API reachability)
+	adminAddr := "127.0.0.1:9877" // default admin listen address
+	adminClient := proxy.NewAdminClient(adminAddr)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := adminClient.Ping(ctx); err != nil {
+		return fmt.Errorf("proxy server not reachable at %s: %w\n"+
+			"Start the proxy: gt-proxy-server --town-root %s", adminAddr, err, townRoot)
+	}
+
+	// 3. Verify proxy CA exists
+	caDir := filepath.Join(townRoot, ".runtime", "ca")
+	certPath := filepath.Join(caDir, "ca.crt")
+	keyPath := filepath.Join(caDir, "ca.key")
+	if _, err := os.Stat(certPath); err != nil {
+		return fmt.Errorf("proxy CA certificate not found at %s\n"+
+			"The proxy server creates the CA on startup. Start the proxy first: gt-proxy-server", certPath)
+	}
+	if _, err := os.Stat(keyPath); err != nil {
+		return fmt.Errorf("proxy CA key not found at %s\n"+
+			"The proxy server creates the CA on startup. Start the proxy first: gt-proxy-server", keyPath)
+	}
+
+	return nil
 }
 
 // verifyWorktreeExists checks that a git worktree was actually created at the given path

@@ -61,6 +61,7 @@ Spawning Options (when target is a rig):
   gt sling gp-abc greenplace --create               # Create polecat if missing
   gt sling gp-abc greenplace --force                # Ignore unread mail
   gt sling gp-abc greenplace --account work         # Use specific Claude account
+  gt sling gp-abc greenplace --daytona              # Force daytona remote mode
 
 Natural Language Args:
   gt sling gt-abc --args "patch release"
@@ -130,6 +131,7 @@ var (
 	slingBaseBranch    string // --base-branch: override base branch for polecat worktree
 	slingRalph         bool   // --ralph: enable Ralph Wiggum loop mode for multi-step workflows
 	slingFormula       string // --formula: override formula for dispatch (default: mol-polecat-work)
+	slingDaytona       bool   // --daytona: force daytona remote mode for polecat spawn
 )
 
 func init() {
@@ -156,6 +158,7 @@ func init() {
 	slingCmd.Flags().StringVar(&slingBaseBranch, "base-branch", "", "Override base branch for polecat worktree (e.g., 'develop', 'release/v2')")
 	slingCmd.Flags().BoolVar(&slingRalph, "ralph", false, "Enable Ralph Wiggum loop mode (fresh context per step, for multi-step workflows)")
 	slingCmd.Flags().StringVar(&slingFormula, "formula", "", "Formula to apply (default: mol-polecat-work for polecat targets)")
+	slingCmd.Flags().BoolVar(&slingDaytona, "daytona", false, "Force daytona remote mode for polecat spawn (auto-detected from rig config when not set)")
 
 	slingCmd.AddCommand(slingRespawnResetCmd)
 	rootCmd.AddCommand(slingCmd)
@@ -348,6 +351,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 				Agent:       slingAgent,
 				HookRawBead: slingHookRawBead,
 				Ralph:       slingRalph,
+				Daytona:     slingDaytona,
 			})
 		}
 	}
@@ -387,6 +391,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 			Agent:       slingAgent,
 			HookRawBead: slingHookRawBead,
 			Ralph:       slingRalph,
+			Daytona:     slingDaytona,
 		})
 	}
 
@@ -423,6 +428,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 				Agent:       slingAgent,
 				HookRawBead: slingHookRawBead,
 				Ralph:       slingRalph,
+				Daytona:     slingDaytona,
 			})
 		}
 		// Non-rig target in deferred mode — reject to prevent bypassing capacity control
@@ -654,6 +660,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		BeadID:     beadID,
 		TownRoot:   townRoot,
 		BaseBranch: slingBaseBranch,
+		Daytona:    slingDaytona,
 	})
 	if err != nil {
 		return err
