@@ -78,26 +78,28 @@ func NewClientWithRunner(installPrefix string, runner CommandRunner) *Client {
 }
 
 // WorkspaceName returns the deterministic workspace name for a rig+polecat pair.
-// Format: <installPrefix>-<rig>-<polecat>
+// Format: <installPrefix>-<rig>--<polecat>
+// The double-hyphen delimiter allows both rig and polecat names to contain
+// single hyphens (e.g., rig "my-rig", polecat "bullet-farmer").
 func (c *Client) WorkspaceName(rig, polecat string) string {
-	return c.installPrefix + "-" + rig + "-" + polecat
+	return c.installPrefix + "-" + rig + "--" + polecat
 }
 
 // ParseWorkspaceName extracts rig and polecat from a workspace name.
-// Returns ok=false if the name doesn't match this installation's prefix.
+// Returns ok=false if the name doesn't match this installation's prefix
+// or doesn't contain the "--" rig/polecat delimiter.
 func (c *Client) ParseWorkspaceName(name string) (rig, polecat string, ok bool) {
 	prefix := c.installPrefix + "-"
 	if !strings.HasPrefix(name, prefix) {
 		return "", "", false
 	}
 	rest := strings.TrimPrefix(name, prefix)
-	// rest should be "<rig>-<polecat>" — split on last hyphen since rig names
-	// could contain hyphens but polecat names are single words.
-	idx := strings.LastIndex(rest, "-")
-	if idx <= 0 || idx == len(rest)-1 {
+	// rest should be "<rig>--<polecat>" — split on double-hyphen delimiter.
+	idx := strings.Index(rest, "--")
+	if idx <= 0 || idx >= len(rest)-2 {
 		return "", "", false
 	}
-	return rest[:idx], rest[idx+1:], true
+	return rest[:idx], rest[idx+2:], true
 }
 
 // Create provisions a new daytona workspace from a repo/branch.
