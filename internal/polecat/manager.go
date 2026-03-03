@@ -1334,14 +1334,16 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 		}
 	}
 
-	// Read daytona workspace name from agent bead before the reset clears it.
-	// This determines whether to use remote (daytona) or local (worktree) cleanup.
-	var daytonaWS string
+	// Read daytona workspace name and branch from agent bead before the reset
+	// clears it. daytonaWS determines remote vs local cleanup; polecatBranch
+	// is needed to delete the branch from .repo.git (gtd-0ly).
+	var daytonaWS, polecatBranch string
 	{
 		aid := m.agentBeadID(name)
 		_, aFields, aErr := m.beads.GetAgentBead(aid)
 		if aErr == nil && aFields != nil {
 			daytonaWS = aFields.DaytonaWorkspace
+			polecatBranch = aFields.Branch
 		}
 	}
 
@@ -1399,7 +1401,7 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 	// Shared operations (safety checks, cert revocation, bead reset, work bead unassignment)
 	// have already completed above. Only filesystem/workspace cleanup diverges.
 	if daytonaWS != "" {
-		return m.removeDaytonaWorkspace(name, daytonaWS, polecatDir)
+		return m.removeDaytonaWorkspace(name, daytonaWS, polecatDir, polecatBranch)
 	}
 
 	// Get repo base to remove the worktree properly
@@ -1446,6 +1448,10 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 	// Prune any stale worktree entries (non-fatal: cleanup only)
 	_ = repoGit.WorktreePrune()
 
+	// Delete polecat branches from .repo.git (gtd-0ly).
+	// git-worktree-remove does not delete the branch itself, so it accumulates.
+	m.cleanupPolecatBranches(name, polecatBranch)
+
 	// Verify removal succeeded (fixes #618)
 	// The above removal attempts may fail silently on permissions, symlinks, or busy files
 	if err := verifyRemovalComplete(polecatDir, clonePath); err != nil {
@@ -1461,10 +1467,11 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 }
 
 // removeDaytonaWorkspace handles cleanup for remote polecats: deletes or stops the
-// daytona workspace, removes the marker directory, and releases the name back to pool.
+// daytona workspace, removes the marker directory, deletes the polecat branch from
+// .repo.git, and releases the name back to pool.
 // Called from RemoveWithOptions after shared cleanup (cert revocation, bead reset,
 // work bead unassignment) is already done.
-func (m *Manager) removeDaytonaWorkspace(name, wsName, polecatDir string) error {
+func (m *Manager) removeDaytonaWorkspace(name, wsName, polecatDir, branchName string) error {
 	if m.daytonaClient != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -1482,6 +1489,11 @@ func (m *Manager) removeDaytonaWorkspace(name, wsName, polecatDir string) error 
 		}
 	}
 
+	// Delete the polecat's branch from .repo.git (gtd-0ly).
+	// Remote polecats don't have a local worktree, so git-worktree-remove never
+	// runs and the branch created at spawn time accumulates as an orphan.
+	m.cleanupPolecatBranches(name, branchName)
+
 	// Remove marker directory (no worktree to remove for remote polecats).
 	_ = os.RemoveAll(polecatDir)
 
@@ -1495,6 +1507,46 @@ func (m *Manager) removeDaytonaWorkspace(name, wsName, polecatDir string) error 
 	_ = m.namePool.Save()
 
 	return nil
+}
+
+// cleanupPolecatBranches deletes polecat branches from .repo.git.
+// If branchName is known (from agent bead), it deletes that specific branch.
+// As a fallback/safety net, it also scans for any branches matching the
+// polecat/<name>/* and polecat/<name>-* patterns to catch orphans from
+// previous rounds or template-based naming.
+func (m *Manager) cleanupPolecatBranches(name, branchName string) {
+	repoGit, err := m.repoBase()
+	if err != nil {
+		return // No repo base — nothing to clean up
+	}
+
+	deleted := make(map[string]bool)
+
+	// Delete the known branch first (most common case).
+	if branchName != "" {
+		if err := repoGit.DeleteBranch(branchName, true); err == nil {
+			deleted[branchName] = true
+		}
+	}
+
+	// Sweep for any remaining branches matching polecat/<name>/* or polecat/<name>-*
+	// to catch orphans from previous rounds or naming patterns.
+	for _, pattern := range []string{
+		fmt.Sprintf("polecat/%s/*", name),
+		fmt.Sprintf("polecat/%s-*", name),
+	} {
+		branches, err := repoGit.ListBranches(pattern)
+		if err != nil {
+			continue
+		}
+		for _, b := range branches {
+			if b == "" || deleted[b] {
+				continue
+			}
+			_ = repoGit.DeleteBranch(b, true)
+			deleted[b] = true
+		}
+	}
 }
 
 // verifyRemovalComplete checks that polecat directories were actually removed.
