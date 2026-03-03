@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/steveyegge/gastown/internal/constants"
 )
 
@@ -36,6 +37,7 @@ var (
 )
 
 // LoadTownConfig loads and validates a town configuration file.
+// If InstallationID is empty, a new UUID v4 is generated and persisted.
 func LoadTownConfig(path string) (*TownConfig, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: path is from trusted config location
 	if err != nil {
@@ -52,6 +54,13 @@ func LoadTownConfig(path string) (*TownConfig, error) {
 
 	if err := validateTownConfig(&config); err != nil {
 		return nil, err
+	}
+
+	if config.InstallationID == "" {
+		config.InstallationID = uuid.New().String()
+		if err := SaveTownConfig(path, &config); err != nil {
+			return nil, fmt.Errorf("persisting installation ID: %w", err)
+		}
 	}
 
 	return &config, nil
