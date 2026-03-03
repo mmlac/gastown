@@ -228,11 +228,22 @@ func validateRigSettings(c *RigSettings) error {
 			return err
 		}
 	}
+	if c.RemoteBackend != nil {
+		if c.RemoteBackend.Provider == "" {
+			return fmt.Errorf("%w: provider is required", ErrInvalidRemoteBackend)
+		}
+		if c.RemoteBackend.Provider != "daytona" {
+			return fmt.Errorf("%w: unsupported provider '%s' (only 'daytona' is supported)", ErrInvalidRemoteBackend, c.RemoteBackend.Provider)
+		}
+	}
 	return nil
 }
 
 // ErrInvalidOnConflict indicates an invalid on_conflict strategy.
 var ErrInvalidOnConflict = errors.New("invalid on_conflict strategy")
+
+// ErrInvalidRemoteBackend indicates an invalid remote_backend configuration.
+var ErrInvalidRemoteBackend = errors.New("invalid remote_backend configuration")
 
 // validateMergeQueueConfig validates a MergeQueueConfig.
 func validateMergeQueueConfig(c *MergeQueueConfig) error {

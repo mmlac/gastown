@@ -461,6 +461,37 @@ func TestRigSettingsValidation(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "valid remote_backend",
+			settings: &RigSettings{
+				Type:    "rig-settings",
+				Version: 1,
+				RemoteBackend: &RemoteBackend{
+					Provider: "daytona",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "remote_backend missing provider",
+			settings: &RigSettings{
+				Type:    "rig-settings",
+				Version: 1,
+				RemoteBackend: &RemoteBackend{},
+			},
+			wantErr: true,
+		},
+		{
+			name: "remote_backend unsupported provider",
+			settings: &RigSettings{
+				Type:    "rig-settings",
+				Version: 1,
+				RemoteBackend: &RemoteBackend{
+					Provider: "dyatona",
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
