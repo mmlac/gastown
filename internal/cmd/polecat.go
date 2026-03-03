@@ -387,6 +387,8 @@ type PolecatListItem struct {
 	SessionRunning bool          `json:"session_running"`
 	Zombie         bool          `json:"zombie,omitempty"`
 	SessionName    string        `json:"session_name,omitempty"`
+	Backend        string        `json:"backend"`
+	WorkspaceName  string        `json:"workspace_name,omitempty"`
 }
 
 // getPolecatManager creates a polecat manager for the given rig.
@@ -444,12 +446,20 @@ func runPolecatList(cmd *cobra.Command, args []string) error {
 		knownNames := make(map[string]bool)
 		for _, p := range polecats {
 			running, _ := polecatMgr.IsRunning(p.Name)
+			backend := "local"
+			workspaceName := ""
+			if p.DaytonaWorkspaceID != "" {
+				backend = "daytona"
+				workspaceName = p.DaytonaWorkspaceID
+			}
 			allPolecats = append(allPolecats, PolecatListItem{
 				Rig:            r.Name,
 				Name:           p.Name,
 				State:          p.State,
 				Issue:          p.Issue,
 				SessionRunning: running,
+				Backend:        backend,
+				WorkspaceName:  workspaceName,
 			})
 			knownNames[p.Name] = true
 		}
@@ -471,6 +481,7 @@ func runPolecatList(cmd *cobra.Command, args []string) error {
 					SessionRunning: true,
 					Zombie:         true,
 					SessionName:    sessionName,
+					Backend:        "local",
 				})
 			}
 		}
@@ -522,9 +533,18 @@ func runPolecatList(cmd *cobra.Command, args []string) error {
 			stateStr = style.Dim.Render(stateStr)
 		}
 
-		fmt.Printf("  %s %s/%s  %s\n", sessionStatus, p.Rig, p.Name, stateStr)
+		// Backend indicator
+		backendStr := style.Dim.Render(p.Backend)
+		if p.Backend == "daytona" {
+			backendStr = style.Info.Render(p.Backend)
+		}
+
+		fmt.Printf("  %s %s/%s  %s  %s\n", sessionStatus, p.Rig, p.Name, stateStr, backendStr)
 		if p.Issue != "" {
 			fmt.Printf("    %s\n", style.Dim.Render(p.Issue))
+		}
+		if p.WorkspaceName != "" {
+			fmt.Printf("    %s\n", style.Dim.Render("workspace: "+p.WorkspaceName))
 		}
 		if p.Zombie && p.SessionName != "" {
 			fmt.Printf("    %s\n", style.Dim.Render("session: "+p.SessionName+" (no worktree)"))
