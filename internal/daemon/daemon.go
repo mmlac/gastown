@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1933,14 +1934,22 @@ func (d *Daemon) emitMassDeathEvent() {
 }
 
 // restartPolecatSession restarts a crashed polecat session.
+// For daytona polecats (rigs with RemoteBackend), it ensures the remote
+// workspace is running and wraps the agent command in daytona exec.
 func (d *Daemon) restartPolecatSession(rigName, polecatName, sessionName string) error {
 	// Check rig operational state before auto-restarting
 	if operational, reason := d.isRigOperational(rigName); !operational {
 		return fmt.Errorf("cannot restart polecat: %s", reason)
 	}
 
-	// Calculate rig path for agent config resolution
+	// Check if this rig uses a remote backend (daytona).
 	rigPath := filepath.Join(d.config.TownRoot, rigName)
+	rigSettingsPath := filepath.Join(rigPath, "settings.json")
+	if rigSettings, err := config.LoadRigSettings(rigSettingsPath); err == nil && rigSettings.RemoteBackend != nil {
+		return d.restartDaytonaPolecatSession(rigName, polecatName, sessionName, rigPath)
+	}
+
+	// --- Local polecat restart (existing logic) ---
 
 	// Determine working directory (handle both new and old structures)
 	// New structure: polecats/<name>/<rigname>/
@@ -2032,6 +2041,159 @@ func (d *Daemon) restartPolecatSession(rigName, polecatName, sessionName string)
 	_ = d.tmux.AcceptStartupDialogs(sessionName)
 
 	return nil
+}
+
+// restartDaytonaPolecatSession restarts a crashed polecat that runs in a
+// daytona workspace. If the workspace is stopped, it starts it first,
+// then creates a tmux session running daytona exec to reconnect.
+func (d *Daemon) restartDaytonaPolecatSession(rigName, polecatName, sessionName, rigPath string) error {
+	// Load town config for installation ID (workspace naming prefix).
+	townConfigPath := filepath.Join(d.config.TownRoot, "mayor", "town.json")
+	townCfg, err := config.LoadTownConfig(townConfigPath)
+	if err != nil {
+		return fmt.Errorf("loading town config for daytona restart: %w", err)
+	}
+	if townCfg.InstallationID == "" {
+		return fmt.Errorf("no InstallationID in town config, cannot determine workspace name")
+	}
+	shortID := townCfg.InstallationID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+	installPrefix := "gt-" + shortID
+	client := daytona.NewClient(installPrefix)
+	wsName := client.WorkspaceName(rigName, polecatName)
+
+	// Check workspace state and start if stopped.
+	ctx, cancel := context.WithTimeout(d.ctx, 120*time.Second)
+	defer cancel()
+
+	workspaces, err := client.ListOwned(ctx)
+	if err != nil {
+		return fmt.Errorf("listing daytona workspaces for restart: %w", err)
+	}
+
+	var wsState string
+	wsFound := false
+	for _, ws := range workspaces {
+		if ws.Name == wsName {
+			wsState = ws.State
+			wsFound = true
+			break
+		}
+	}
+
+	if !wsFound {
+		return fmt.Errorf("daytona workspace %s not found for polecat %s/%s", wsName, rigName, polecatName)
+	}
+
+	if wsState == "stopped" {
+		d.logger.Printf("Starting stopped daytona workspace %s for polecat %s/%s", wsName, rigName, polecatName)
+		if err := client.Start(ctx, wsName); err != nil {
+			return fmt.Errorf("starting daytona workspace %s: %w", wsName, err)
+		}
+		d.logger.Printf("Daytona workspace %s started successfully", wsName)
+	}
+
+	// Generate a fresh run ID for telemetry correlation.
+	runID := uuid.New().String()
+
+	// Build environment variables (same as local polecats).
+	envVars := config.AgentEnv(config.AgentEnvConfig{
+		Role:        "polecat",
+		Rig:         rigName,
+		AgentName:   polecatName,
+		TownRoot:    d.config.TownRoot,
+		SessionName: sessionName,
+	})
+	envVars["GT_RUN"] = runID
+
+	// Resolve agent config for command and process name detection.
+	rc := config.ResolveRoleAgentConfig("polecat", d.config.TownRoot, rigPath)
+
+	// Build the daytona exec command that wraps the agent inside the workspace.
+	// Format: exec daytona exec <ws> --env K=V ... -- <agent-cmd>
+	startCmd := d.buildDaytonaExecCommand(wsName, envVars, rc)
+
+	// Use the marker directory as tmux working directory.
+	// Daytona polecats have marker dirs (no worktree) at polecats/<name>/.
+	workDir := filepath.Join(rigPath, "polecats", polecatName)
+	if _, err := os.Stat(workDir); os.IsNotExist(err) {
+		workDir = rigPath // fallback to rig root
+	}
+
+	// Create tmux session with daytona exec as initial process.
+	if err := d.tmux.EnsureSessionFreshWithCommand(sessionName, workDir, startCmd); err != nil {
+		if errors.Is(err, tmux.ErrSessionRunning) {
+			d.logger.Printf("Session %s already running with healthy agent, skipping restart", sessionName)
+			return nil
+		}
+		return fmt.Errorf("creating daytona session: %w", err)
+	}
+
+	// Record polecat spawn metric.
+	d.metrics.recordPolecatSpawn(d.ctx, rigName)
+
+	// Set environment variables in tmux session table.
+	for k, v := range envVars {
+		_ = d.tmux.SetEnvironment(sessionName, k, v)
+	}
+
+	if rc.ResolvedAgent != "" {
+		_ = d.tmux.SetEnvironment(sessionName, "GT_AGENT", rc.ResolvedAgent)
+	}
+
+	// Process names: include "daytona" so liveness detection recognises the
+	// daytona exec process as the live agent connection (design doc §5.2).
+	processNames := config.ResolveProcessNames(rc.ResolvedAgent, rc.Command)
+	processNames = append(processNames, "daytona")
+	_ = d.tmux.SetEnvironment(sessionName, "GT_PROCESS_NAMES", strings.Join(processNames, ","))
+
+	if paneID, err := d.tmux.GetPaneID(sessionName); err == nil {
+		_ = d.tmux.SetEnvironment(sessionName, "GT_PANE_ID", paneID)
+	}
+
+	// Apply theme and pane-died hook.
+	theme := tmux.AssignTheme(rigName)
+	_ = d.tmux.ConfigureGasTownSession(sessionName, theme, rigName, polecatName, "polecat")
+
+	agentID := fmt.Sprintf("%s/%s", rigName, polecatName)
+	_ = d.tmux.SetPaneDiedHook(sessionName, agentID)
+
+	// Wait for the agent to start inside the container.
+	if err := d.tmux.WaitForCommand(sessionName, constants.SupportedShells, constants.ClaudeStartTimeout); err != nil {
+		// Non-fatal - agent might still start
+	}
+	_ = d.tmux.AcceptStartupDialogs(sessionName)
+
+	d.logger.Printf("Daytona polecat %s/%s restarted via workspace %s", rigName, polecatName, wsName)
+	return nil
+}
+
+// buildDaytonaExecCommand constructs the tmux pane command that runs the agent
+// inside a daytona workspace. The command uses exec to replace the shell so
+// that pane_current_command shows daytona (for liveness detection).
+//
+// Format: exec daytona exec <ws> --env K=V ... -- <agent-cmd>
+func (d *Daemon) buildDaytonaExecCommand(wsName string, envVars map[string]string, rc *config.RuntimeConfig) string {
+	var parts []string
+	parts = append(parts, "exec", "daytona", "exec", wsName)
+
+	// Pass environment variables via daytona exec --env flags.
+	// Sort keys for deterministic command output.
+	envKeys := make([]string, 0, len(envVars))
+	for k := range envVars {
+		envKeys = append(envKeys, k)
+	}
+	sort.Strings(envKeys)
+	for _, k := range envKeys {
+		parts = append(parts, "--env", fmt.Sprintf("%s=%s", k, config.ShellQuote(envVars[k])))
+	}
+
+	parts = append(parts, "--")
+	parts = append(parts, rc.BuildCommand())
+
+	return strings.Join(parts, " ")
 }
 
 // notifyWitnessOfCrashedPolecat notifies the witness when a polecat crash is detected.
