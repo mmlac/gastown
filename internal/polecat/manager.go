@@ -4,7 +4,9 @@ package polecat
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -937,6 +939,14 @@ func (m *Manager) addDaytonaLocked(name string, opts AddOptions, polecatDir stri
 		return nil, fmt.Errorf("issuing mTLS cert for %s: %w", certCN, err)
 	}
 
+	// Extract cert serial for later revocation (denyCertForPolecat reads it from the agent bead).
+	var certSerial string
+	if block, _ := pem.Decode(certPEM); block != nil {
+		if leaf, parseErr := x509.ParseCertificate(block.Bytes); parseErr == nil {
+			certSerial = leaf.SerialNumber.Text(16)
+		}
+	}
+
 	// --- Step 3: Create agent bead with daytona_workspace label ---
 	agentID := m.agentBeadID(name)
 	if err = m.createAgentBeadWithRetry(agentID, &beads.AgentFields{
@@ -948,6 +958,13 @@ func (m *Manager) addDaytonaLocked(name string, opts AddOptions, polecatDir stri
 	}); err != nil {
 		cleanupOnError()
 		return nil, fmt.Errorf("agent bead required for polecat tracking: %w", err)
+	}
+
+	// Store cert serial in agent bead so denyCertForPolecat can revoke it during removal.
+	if certSerial != "" {
+		if err := m.beads.UpdateAgentCertSerial(agentID, certSerial); err != nil {
+			style.PrintWarning("could not store cert serial for %s: %v", name, err)
+		}
 	}
 
 	// --- Step 4: Provision daytona workspace ---
