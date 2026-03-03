@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
@@ -1646,5 +1647,62 @@ func TestAllocateAndAdd_NoDuplicateNames(t *testing.T) {
 		if count > 1 {
 			t.Errorf("name %q allocated %d times — race condition (GH#2215)", name, count)
 		}
+	}
+}
+
+func TestIsRemoteMode(t *testing.T) {
+	r := &rig.Rig{Name: "testrig", Path: t.TempDir()}
+	m := NewManager(r, git.NewGit(r.Path), nil)
+
+	// Default: not remote
+	if m.isRemoteMode() {
+		t.Error("isRemoteMode() = true, want false for default manager")
+	}
+
+	// SetDaytona with nil RemoteBackend: still not remote
+	m.SetDaytona(nil, nil, &config.RigSettings{})
+	if m.isRemoteMode() {
+		t.Error("isRemoteMode() = true, want false when RemoteBackend is nil")
+	}
+
+	// SetDaytona with RemoteBackend: remote
+	m.SetDaytona(nil, nil, &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{Provider: "daytona"},
+	})
+	if !m.isRemoteMode() {
+		t.Error("isRemoteMode() = false, want true when RemoteBackend is set")
+	}
+}
+
+func TestBase64Encode(t *testing.T) {
+	input := []byte("-----BEGIN CERTIFICATE-----\nMIIBtest\n-----END CERTIFICATE-----\n")
+	encoded := base64Encode(input)
+	if encoded == "" {
+		t.Error("base64Encode returned empty string")
+	}
+	if strings.Contains(encoded, "\n") {
+		t.Error("base64Encode should not contain newlines")
+	}
+}
+
+func TestSetDaytona(t *testing.T) {
+	r := &rig.Rig{Name: "testrig", Path: t.TempDir()}
+	m := NewManager(r, git.NewGit(r.Path), nil)
+
+	if m.daytonaClient != nil {
+		t.Error("daytonaClient should be nil before SetDaytona")
+	}
+
+	settings := &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{
+			Provider:  "daytona",
+			Image:     "ubuntu:22.04",
+			ProxyAddr: "proxy.example.com:8443",
+		},
+	}
+	m.SetDaytona(nil, nil, settings)
+
+	if m.rigSettings != settings {
+		t.Error("rigSettings not set correctly")
 	}
 }
