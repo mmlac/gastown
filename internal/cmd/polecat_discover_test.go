@@ -103,6 +103,9 @@ func TestPolecatDiscoverCmdRegistered(t *testing.T) {
 			if cmd.Flag("reconcile") == nil {
 				t.Error("discover command missing --reconcile flag")
 			}
+			if cmd.Flag("dry-run") == nil {
+				t.Error("discover command missing --dry-run flag")
+			}
 			if cmd.Flag("json") == nil {
 				t.Error("discover command missing --json flag")
 			}
