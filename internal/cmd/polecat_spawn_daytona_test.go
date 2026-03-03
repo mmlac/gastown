@@ -25,6 +25,45 @@ func TestRunDaytonaPreflightChecks_MissingDaytonaCLI(t *testing.T) {
 	}
 }
 
+func TestRunDaytonaPreflightChecks_CustomAdminAddr(t *testing.T) {
+	// Skip if daytona is not installed
+	if _, err := lookPathDaytona(); err != nil {
+		t.Skip("daytona CLI not available")
+	}
+
+	settings := &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{
+			Provider:       "daytona",
+			ProxyAdminAddr: "10.0.0.5:9877",
+		},
+	}
+
+	err := runDaytonaPreflightChecks(t.TempDir(), settings)
+	if err == nil {
+		t.Fatal("expected error (proxy not reachable at custom addr)")
+	}
+	// Error message should reference the custom address, not 127.0.0.1
+	if !strings.Contains(err.Error(), "10.0.0.5:9877") {
+		t.Errorf("error = %q, want to contain custom address 10.0.0.5:9877", err.Error())
+	}
+}
+
+func TestRunDaytonaPreflightChecks_DefaultAdminAddr(t *testing.T) {
+	// Skip if daytona is not installed
+	if _, err := lookPathDaytona(); err != nil {
+		t.Skip("daytona CLI not available")
+	}
+
+	// nil settings should use default 127.0.0.1:9877
+	err := runDaytonaPreflightChecks(t.TempDir(), nil)
+	if err == nil {
+		t.Fatal("expected error (proxy not reachable)")
+	}
+	if !strings.Contains(err.Error(), "127.0.0.1:9877") {
+		t.Errorf("error = %q, want to contain default address 127.0.0.1:9877", err.Error())
+	}
+}
+
 func TestRunDaytonaPreflightChecks_MissingCA(t *testing.T) {
 	// Skip if daytona is not installed (CI environments)
 	if _, err := lookPathDaytona(); err != nil {

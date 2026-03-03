@@ -661,6 +661,11 @@ type RemoteBackend struct {
 	// ProxyAddr overrides the default proxy address for remote polecats.
 	ProxyAddr string `json:"proxy_addr,omitempty"`
 
+	// ProxyAdminAddr overrides the default proxy admin API address used for
+	// preflight checks and cert management. Defaults to "127.0.0.1:9877".
+	// Must be set in multi-machine setups where the proxy runs on a different host.
+	ProxyAdminAddr string `json:"proxy_admin_addr,omitempty"`
+
 	// Env provides extra environment variables injected into daytona containers.
 	Env map[string]string `json:"env,omitempty"`
 }

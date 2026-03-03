@@ -517,6 +517,9 @@ func runDaytonaPreflightChecks(townRoot string, settings *config.RigSettings) er
 
 	// 2. Verify proxy server is running (check admin API reachability)
 	adminAddr := "127.0.0.1:9877" // default admin listen address
+	if settings != nil && settings.RemoteBackend != nil && settings.RemoteBackend.ProxyAdminAddr != "" {
+		adminAddr = settings.RemoteBackend.ProxyAdminAddr
+	}
 	adminClient := proxy.NewAdminClient(adminAddr)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
