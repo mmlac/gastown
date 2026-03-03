@@ -2,10 +2,13 @@ package proxy
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -125,6 +128,64 @@ func TestAdminClient_DenyCert(t *testing.T) {
 		err := c.DenyCert(context.Background(), "deadbeef")
 		assert.Error(t, err)
 	})
+}
+
+// TestCertLifecycle_IssueExtractDeny verifies the full cert lifecycle:
+// 1. Issue a polecat cert via CA
+// 2. Extract the serial number (same as addDaytonaLocked does)
+// 3. Use that serial to deny the cert via AdminClient
+// This is an integration test of the cert issuance → storage → revocation path.
+func TestCertLifecycle_IssueExtractDeny(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := GenerateCA(dir)
+	require.NoError(t, err)
+
+	// Step 1: Issue polecat cert (same as addDaytonaLocked).
+	certCN := "gt-myrig-onyx"
+	certPEM, keyPEM, err := ca.IssuePolecat(certCN, 24*time.Hour)
+	require.NoError(t, err)
+	require.NotEmpty(t, certPEM)
+	require.NotEmpty(t, keyPEM)
+
+	// Step 2: Extract serial (same code path as addDaytonaLocked line 944-947).
+	var certSerial string
+	block, _ := pem.Decode(certPEM)
+	require.NotNil(t, block, "certPEM should decode")
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	certSerial = leaf.SerialNumber.Text(16)
+	require.NotEmpty(t, certSerial, "extracted serial should be non-empty")
+
+	// Step 3: Deny cert via AdminClient (mock server).
+	var deniedSerial string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/admin/deny-cert" {
+			var req denyCertRequest
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+			deniedSerial = req.Serial
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client := NewAdminClient(srv.Listener.Addr().String())
+	err = client.DenyCert(context.Background(), certSerial)
+	require.NoError(t, err)
+
+	// Verify the serial that was denied matches what was extracted.
+	assert.Equal(t, certSerial, deniedSerial,
+		"deny-cert should receive the same serial extracted from the issued cert")
+
+	// Verify the cert verifies against the CA (sanity check).
+	pool := x509.NewCertPool()
+	pool.AddCert(ca.Cert)
+	_, err = leaf.Verify(x509.VerifyOptions{
+		Roots:     pool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	})
+	assert.NoError(t, err, "issued cert should verify against CA")
 }
 
 func TestAdminClient_Ping(t *testing.T) {
