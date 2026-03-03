@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/daytona"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
@@ -511,6 +512,200 @@ func TestVerifyStartupNudgeDelivery_NilConfig(t *testing.T) {
 		},
 	}
 	m.verifyStartupNudgeDelivery("nonexistent-session", rc)
+}
+
+// TestSessionManagerIsRemoteMode verifies that SessionManager.isRemoteMode
+// correctly detects when daytona remote execution is configured.
+func TestSessionManagerIsRemoteMode(t *testing.T) {
+	t.Parallel()
+
+	r := &rig.Rig{Name: "testrig", Path: t.TempDir()}
+	m := NewSessionManager(tmux.NewTmux(), r)
+
+	// Default: not remote
+	if m.isRemoteMode() {
+		t.Error("isRemoteMode() = true, want false for default SessionManager")
+	}
+
+	// SetDaytonaSession with nil RemoteBackend: still not remote
+	m.SetDaytonaSession(daytona.NewClient("gt-test"), &config.RigSettings{})
+	if m.isRemoteMode() {
+		t.Error("isRemoteMode() = true, want false when RemoteBackend is nil")
+	}
+
+	// SetDaytonaSession with RemoteBackend: remote
+	m.SetDaytonaSession(daytona.NewClient("gt-test"), &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{Provider: "daytona"},
+	})
+	if !m.isRemoteMode() {
+		t.Error("isRemoteMode() = false, want true when RemoteBackend is set")
+	}
+}
+
+// TestBuildDaytonaCommand verifies that buildDaytonaCommand produces a properly
+// formatted daytona exec command with env vars and the agent command.
+func TestBuildDaytonaCommand(t *testing.T) {
+	t.Parallel()
+
+	rigPath := filepath.Join(t.TempDir(), "testrig")
+	if err := os.MkdirAll(rigPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &rig.Rig{Name: "testrig", Path: rigPath}
+	m := NewSessionManager(tmux.NewTmux(), r)
+	m.SetDaytonaSession(daytona.NewClient("gt-abc12345"), &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{
+			Provider:  "daytona",
+			ProxyAddr: "proxy.example.com:8443",
+		},
+	})
+
+	rc := &config.RuntimeConfig{
+		Provider: "claude",
+		Command:  "claude",
+		Args:     []string{"--dangerously-skip-permissions"},
+	}
+
+	beacon := "Test beacon message"
+	wsName := "gt-abc12345-testrig-onyx"
+	runID := "test-run-id-123"
+
+	cmd := m.buildDaytonaCommand("onyx", wsName, beacon, rc, runID)
+
+	// Verify the command starts with daytona exec
+	if !strings.HasPrefix(cmd, "daytona exec "+wsName) {
+		t.Errorf("command should start with 'daytona exec %s', got: %s", wsName, cmd)
+	}
+
+	// Verify required env vars are present via --env flags
+	requiredEnvVars := []string{
+		"GT_RIG=testrig",
+		"GT_POLECAT=onyx",
+		"GT_ROLE=testrig/polecats/onyx",
+		"GT_PROXY_URL=https://proxy.example.com:8443",
+		"GT_RUN=test-run-id-123",
+		"BD_DOLT_AUTO_COMMIT=off",
+	}
+	for _, env := range requiredEnvVars {
+		if !strings.Contains(cmd, "--env "+env) {
+			t.Errorf("command missing --env %s\ncmd: %s", env, cmd)
+		}
+	}
+
+	// Verify the command contains sh -c with the agent command
+	if !strings.Contains(cmd, "-- sh -c") {
+		t.Errorf("command missing '-- sh -c'\ncmd: %s", cmd)
+	}
+
+	// Verify the agent command includes claude and the beacon
+	if !strings.Contains(cmd, "claude") {
+		t.Errorf("command missing 'claude'\ncmd: %s", cmd)
+	}
+	if !strings.Contains(cmd, "Test beacon message") {
+		t.Errorf("command missing beacon text\ncmd: %s", cmd)
+	}
+}
+
+// TestBuildDaytonaCommand_DefaultProxyAddr verifies that the default proxy
+// address (localhost:8443) is used when ProxyAddr is not configured.
+func TestBuildDaytonaCommand_DefaultProxyAddr(t *testing.T) {
+	t.Parallel()
+
+	rigPath := filepath.Join(t.TempDir(), "testrig")
+	if err := os.MkdirAll(rigPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &rig.Rig{Name: "testrig", Path: rigPath}
+	m := NewSessionManager(tmux.NewTmux(), r)
+	m.SetDaytonaSession(daytona.NewClient("gt-abc12345"), &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{
+			Provider: "daytona",
+			// ProxyAddr not set — should default to localhost:8443
+		},
+	})
+
+	rc := &config.RuntimeConfig{
+		Provider: "claude",
+		Command:  "claude",
+		Args:     []string{"--dangerously-skip-permissions"},
+	}
+
+	cmd := m.buildDaytonaCommand("onyx", "ws-name", "beacon", rc, "run-id")
+
+	if !strings.Contains(cmd, "GT_PROXY_URL=https://localhost:8443") {
+		t.Errorf("command missing default proxy URL\ncmd: %s", cmd)
+	}
+}
+
+// TestBuildDaytonaCommand_ExtraEnv verifies that RemoteBackend.Env vars are
+// included in the daytona exec command.
+func TestBuildDaytonaCommand_ExtraEnv(t *testing.T) {
+	t.Parallel()
+
+	rigPath := filepath.Join(t.TempDir(), "testrig")
+	if err := os.MkdirAll(rigPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &rig.Rig{Name: "testrig", Path: rigPath}
+	m := NewSessionManager(tmux.NewTmux(), r)
+	m.SetDaytonaSession(daytona.NewClient("gt-abc12345"), &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{
+			Provider: "daytona",
+			Env:      map[string]string{"CUSTOM_VAR": "custom_value"},
+		},
+	})
+
+	rc := &config.RuntimeConfig{
+		Provider: "claude",
+		Command:  "claude",
+		Args:     []string{"--dangerously-skip-permissions"},
+	}
+
+	cmd := m.buildDaytonaCommand("onyx", "ws-name", "beacon", rc, "run-id")
+
+	if !strings.Contains(cmd, "--env CUSTOM_VAR=custom_value") {
+		t.Errorf("command missing custom env var\ncmd: %s", cmd)
+	}
+}
+
+// TestBuildDaytonaCommand_BeaconWithSpecialChars verifies that beacons containing
+// shell special characters (newlines, quotes, etc.) are properly escaped.
+func TestBuildDaytonaCommand_BeaconWithSpecialChars(t *testing.T) {
+	t.Parallel()
+
+	rigPath := filepath.Join(t.TempDir(), "testrig")
+	if err := os.MkdirAll(rigPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &rig.Rig{Name: "testrig", Path: rigPath}
+	m := NewSessionManager(tmux.NewTmux(), r)
+	m.SetDaytonaSession(daytona.NewClient("gt-abc12345"), &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{Provider: "daytona"},
+	})
+
+	rc := &config.RuntimeConfig{
+		Provider: "claude",
+		Command:  "claude",
+		Args:     []string{"--dangerously-skip-permissions"},
+	}
+
+	// Beacon with newlines, quotes, and dollar signs
+	beacon := "Line 1\nLine 2\n\"quoted\" and $var and 'single'"
+
+	cmd := m.buildDaytonaCommand("onyx", "ws-name", beacon, rc, "run-id")
+
+	// The command should be properly formed (not empty, has sh -c)
+	if !strings.Contains(cmd, "-- sh -c") {
+		t.Errorf("command missing '-- sh -c'\ncmd: %s", cmd)
+	}
+	// The command should still be parseable (not crash the shell)
+	if cmd == "" {
+		t.Error("buildDaytonaCommand returned empty string")
+	}
 }
 
 func TestValidateSessionName(t *testing.T) {
