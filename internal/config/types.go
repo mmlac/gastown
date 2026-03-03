@@ -631,6 +631,38 @@ type RigSettings struct {
 	// Takes precedence over RoleAgents["crew"] but is overridden by explicit --agent flags.
 	// Example: {"denali": "codex", "glacier": "gemini"}
 	WorkerAgents map[string]string `json:"worker_agents,omitempty"`
+
+	// RemoteBackend configures remote container execution for polecats.
+	// When non-nil, polecat lifecycle uses daytona instead of local worktrees.
+	// Per-rig granularity: some rigs can be local, others remote.
+	RemoteBackend *RemoteBackend `json:"remote_backend,omitempty"`
+}
+
+// RemoteBackend configures remote container execution for polecats via daytona.
+// When RigSettings.RemoteBackend is non-nil, the polecat lifecycle creates
+// daytona workspaces instead of local git worktrees.
+type RemoteBackend struct {
+	// Provider is the remote backend provider. Currently only "daytona" is supported.
+	Provider string `json:"provider"`
+
+	// Image overrides the default container image for daytona workspaces.
+	Image string `json:"image,omitempty"`
+
+	// Profile selects a devcontainer profile for workspace creation.
+	Profile string `json:"profile,omitempty"`
+
+	// AutoStop stops the daytona workspace when the polecat session ends.
+	AutoStop bool `json:"auto_stop,omitempty"`
+
+	// AutoDelete deletes the daytona workspace when the polecat is removed.
+	// If false, workspaces are stopped but preserved for faster re-spawn.
+	AutoDelete bool `json:"auto_delete,omitempty"`
+
+	// ProxyAddr overrides the default proxy address for remote polecats.
+	ProxyAddr string `json:"proxy_addr,omitempty"`
+
+	// Env provides extra environment variables injected into daytona containers.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // CrewConfig represents crew workspace settings for a rig.
