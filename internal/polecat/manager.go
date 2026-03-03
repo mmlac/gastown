@@ -4,6 +4,7 @@ package polecat
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/daytona"
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/proxy"
@@ -126,6 +128,11 @@ type Manager struct {
 	namePool   *NamePool
 	tmux       *tmux.Tmux
 	proxyAdmin *proxy.AdminClient // nil when proxy is not running (local-only mode)
+
+	// Optional daytona support — set via SetDaytona when RemoteBackend is configured.
+	daytonaClient *daytona.Client
+	proxyCA       *proxy.CA
+	rigSettings   *config.RigSettings
 }
 
 // NewManager creates a new polecat manager.
@@ -189,6 +196,19 @@ func (m *Manager) GetNamePool() *NamePool {
 // Pass nil to disable proxy cert management (local-only mode).
 func (m *Manager) SetProxyAdmin(client *proxy.AdminClient) {
 	m.proxyAdmin = client
+}
+
+// SetDaytona configures the manager for remote polecat mode via daytona.
+// Must be called before AllocateAndAdd when RigSettings.RemoteBackend is non-nil.
+func (m *Manager) SetDaytona(client *daytona.Client, ca *proxy.CA, settings *config.RigSettings) {
+	m.daytonaClient = client
+	m.proxyCA = ca
+	m.rigSettings = settings
+}
+
+// isRemoteMode returns true if the rig is configured for daytona remote execution.
+func (m *Manager) isRemoteMode() bool {
+	return m.rigSettings != nil && m.rigSettings.RemoteBackend != nil
 }
 
 // lockPolecat acquires an exclusive file lock for a specific polecat.
@@ -682,10 +702,14 @@ func (m *Manager) AllocateAndAdd(opts AddOptions) (string, *Polecat, error) {
 	// can reallocate this name because reconcilePoolInternal will see the directory.
 	_ = poolLock.Unlock()
 
-	// Continue with the rest of AddWithOptions under the polecat lock only.
-	// addWithOptionsLocked expects the polecat directory to already exist
-	// and the polecat lock to be held by the caller.
-	p, err := m.addWithOptionsLocked(name, opts, polecatDir)
+	// Fork: remote mode (daytona) vs local mode (worktree).
+	// Both paths run under polecat lock only.
+	var p *Polecat
+	if m.isRemoteMode() {
+		p, err = m.addDaytonaLocked(name, opts, polecatDir)
+	} else {
+		p, err = m.addWithOptionsLocked(name, opts, polecatDir)
+	}
 	_ = polecatLock.Unlock()
 	if err != nil {
 		return "", nil, err
@@ -817,6 +841,207 @@ func (m *Manager) addWithOptionsLocked(name string, opts AddOptions, polecatDir 
 	_ = certSerial // stored in agent bead; used by cleanup
 
 	return polecat, nil
+}
+
+// addDaytonaLocked provisions a remote polecat via daytona instead of a local worktree.
+// It follows the same contract as addWithOptionsLocked (caller holds polecat lock,
+// polecatDir already exists) but skips WorktreeAddFromRef and instead:
+//  1. Creates a branch in .repo.git for the polecat to push to
+//  2. Issues an mTLS client cert for proxy authentication
+//  3. Creates an agent bead with daytona_workspace label
+//  4. Provisions a daytona workspace (create, inject cert, post-create setup)
+//
+// Steps 2–4 are slow (30–120s) but run after pool lock release.
+func (m *Manager) addDaytonaLocked(name string, opts AddOptions, polecatDir string) (_ *Polecat, retErr error) {
+	defer func() { telemetry.RecordPolecatSpawn(context.Background(), name, retErr) }()
+
+	if m.daytonaClient == nil {
+		return nil, fmt.Errorf("daytona client not configured (call SetDaytona before AllocateAndAdd)")
+	}
+	if m.proxyCA == nil {
+		return nil, fmt.Errorf("proxy CA not configured (required for remote polecat mTLS)")
+	}
+
+	rb := m.rigSettings.RemoteBackend
+	branchName := m.buildBranchName(name, opts.HookBead)
+	wsName := m.daytonaClient.WorkspaceName(m.rig.Name, name)
+
+	// Track resources created for rollback on error.
+	var (
+		branchCreated    bool
+		workspaceCreated bool
+	)
+	cleanupOnError := func() {
+		aid := m.agentBeadID(name)
+		_ = m.beads.ResetAgentBeadForReuse(aid, "spawn rollback")
+
+		if workspaceCreated {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = m.daytonaClient.Delete(ctx, wsName)
+		}
+
+		if branchCreated {
+			if rg, repoErr := m.repoBase(); repoErr == nil {
+				_ = rg.DeleteBranch(branchName, true)
+			}
+		}
+
+		_ = os.RemoveAll(polecatDir)
+		m.namePool.Release(name)
+		_ = m.namePool.Save()
+	}
+
+	// --- Step 1: Create branch in .repo.git ---
+	repoGit, err := m.repoBase()
+	if err != nil {
+		cleanupOnError()
+		return nil, fmt.Errorf("finding repo base: %w", err)
+	}
+
+	if err := repoGit.Fetch("origin"); err != nil {
+		style.PrintWarning("could not fetch origin: %v", err)
+	}
+
+	var startPoint string
+	if opts.BaseBranch != "" {
+		startPoint = opts.BaseBranch
+	} else {
+		defaultBranch := "main"
+		if rigCfg, err := rig.LoadRigConfig(m.rig.Path); err == nil && rigCfg.DefaultBranch != "" {
+			defaultBranch = rigCfg.DefaultBranch
+		}
+		startPoint = fmt.Sprintf("origin/%s", defaultBranch)
+	}
+
+	if exists, err := repoGit.RefExists(startPoint); err != nil {
+		cleanupOnError()
+		return nil, fmt.Errorf("checking ref %s: %w", startPoint, err)
+	} else if !exists {
+		cleanupOnError()
+		return nil, fmt.Errorf("start point %s not found in bare repo", startPoint)
+	}
+
+	// Create branch without a worktree — remote polecat clones from the proxy.
+	if err := repoGit.CreateBranchFrom(branchName, startPoint); err != nil {
+		cleanupOnError()
+		return nil, fmt.Errorf("creating branch %s from %s: %w", branchName, startPoint, err)
+	}
+	branchCreated = true
+
+	// --- Step 2: Issue mTLS cert ---
+	certCN := fmt.Sprintf("gt-%s-%s", m.rig.Name, name)
+	certPEM, keyPEM, err := m.proxyCA.IssuePolecat(certCN, 24*time.Hour)
+	if err != nil {
+		cleanupOnError()
+		return nil, fmt.Errorf("issuing mTLS cert for %s: %w", certCN, err)
+	}
+
+	// --- Step 3: Create agent bead with daytona_workspace label ---
+	agentID := m.agentBeadID(name)
+	if err = m.createAgentBeadWithRetry(agentID, &beads.AgentFields{
+		RoleType:         "polecat",
+		Rig:              m.rig.Name,
+		AgentState:       "spawning",
+		HookBead:         opts.HookBead,
+		DaytonaWorkspace: wsName,
+	}); err != nil {
+		cleanupOnError()
+		return nil, fmt.Errorf("agent bead required for polecat tracking: %w", err)
+	}
+
+	// --- Step 4: Provision daytona workspace ---
+	// Determine the repo URL the workspace should clone from (via proxy).
+	proxyAddr := rb.ProxyAddr
+	if proxyAddr == "" {
+		proxyAddr = "localhost:8443" // default proxy address
+	}
+	repoURL := fmt.Sprintf("https://%s/v1/git/%s", proxyAddr, m.rig.Name)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	createOpts := daytona.CreateOptions{
+		Image:   rb.Image,
+		Profile: rb.Profile,
+		Env:     rb.Env,
+	}
+	if err := m.daytonaClient.Create(ctx, wsName, repoURL, branchName, createOpts); err != nil {
+		cleanupOnError()
+		return nil, fmt.Errorf("daytona create workspace %s: %w", wsName, err)
+	}
+	workspaceCreated = true
+
+	// Inject mTLS cert into the workspace for proxy authentication.
+	certDir := "/run/gt-proxy"
+	mkdirOut, mkdirErr, mkdirCode, err := m.daytonaClient.Exec(ctx, wsName, nil, "mkdir", "-p", certDir)
+	if err != nil || mkdirCode != 0 {
+		errMsg := mkdirErr
+		if errMsg == "" {
+			errMsg = mkdirOut
+		}
+		cleanupOnError()
+		return nil, fmt.Errorf("creating cert dir in workspace: exit=%d err=%v output=%s", mkdirCode, err, errMsg)
+	}
+
+	// Inject certs via base64-encoded shell commands (daytona exec doesn't support stdin piping).
+	for _, f := range []struct {
+		path string
+		data []byte
+	}{
+		{certDir + "/client.crt", certPEM},
+		{certDir + "/client.key", keyPEM},
+		{certDir + "/ca.crt", m.proxyCA.CertPEM},
+	} {
+		if err := m.writeFileInWorkspace(ctx, wsName, f.path, f.data); err != nil {
+			style.PrintWarning("could not inject %s: %v", f.path, err)
+		}
+	}
+
+	// Post-create setup: run gt prime inside the workspace.
+	_, stderr, code, err := m.daytonaClient.Exec(ctx, wsName, map[string]string{
+		"GT_RIG":     m.rig.Name,
+		"GT_POLECAT": name,
+	}, "gt", "prime", "--write-prime-md")
+	if err != nil || code != 0 {
+		style.PrintWarning("post-create gt prime failed (exit=%d): %v %s", code, err, stderr)
+	}
+
+	now := time.Now()
+	p := &Polecat{
+		Name:               name,
+		Rig:                m.rig.Name,
+		State:              StateWorking,
+		ClonePath:          polecatDir, // marker directory only — no worktree
+		Branch:             branchName,
+		DaytonaWorkspaceID: wsName,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}
+
+	return p, nil
+}
+
+// writeFileInWorkspace writes data to a file inside a daytona workspace using
+// a base64-encoded shell command (since daytona exec doesn't support stdin piping).
+func (m *Manager) writeFileInWorkspace(ctx context.Context, wsName, path string, data []byte) error {
+	// Use printf with escaped content via sh -c to write the file.
+	// Base64 encode to avoid shell escaping issues with binary/PEM data.
+	encoded := base64Encode(data)
+	cmd := fmt.Sprintf("echo '%s' | base64 -d > %s", encoded, path)
+	_, stderr, code, err := m.daytonaClient.Exec(ctx, wsName, nil, "sh", "-c", cmd)
+	if err != nil {
+		return fmt.Errorf("exec failed: %w", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("exit %d: %s", code, strings.TrimSpace(stderr))
+	}
+	return nil
+}
+
+// base64Encode returns the standard base64 encoding of data (no newlines).
+func base64Encode(data []byte) string {
+	return base64.StdEncoding.EncodeToString(data)
 }
 
 // AddWithOptions creates a new polecat with the specified options.
