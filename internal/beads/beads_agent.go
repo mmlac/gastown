@@ -45,6 +45,7 @@ type AgentFields struct {
 	ActiveMR          string // Currently active merge request bead ID (for traceability)
 	NotificationLevel string // DND mode: verbose, normal, muted (default: normal)
 	Mode              string // Execution mode: "" (normal) or "ralph" (Ralph Wiggum loop)
+	DaytonaWorkspace  string // Daytona workspace ID for remote polecats (empty for local)
 	// Note: RoleBead field removed - role definitions are now config-based.
 	// See internal/config/roles/*.toml and config-based-roles.md.
 
@@ -114,6 +115,10 @@ func FormatAgentDescription(title string, fields *AgentFields) string {
 		lines = append(lines, fmt.Sprintf("mode: %s", fields.Mode))
 	}
 
+	if fields.DaytonaWorkspace != "" {
+		lines = append(lines, fmt.Sprintf("daytona_workspace: %s", fields.DaytonaWorkspace))
+	}
+
 	// Completion metadata fields (gt-x7t9)
 	if fields.ExitType != "" {
 		lines = append(lines, fmt.Sprintf("exit_type: %s", fields.ExitType))
@@ -174,6 +179,8 @@ func ParseAgentFields(description string) *AgentFields {
 			fields.NotificationLevel = value
 		case "mode":
 			fields.Mode = value
+		case "daytona_workspace":
+			fields.DaytonaWorkspace = value
 		// Completion metadata fields (gt-x7t9)
 		case "exit_type":
 			fields.ExitType = value
@@ -420,6 +427,7 @@ func (b *Beads) ResetAgentBeadForReuse(id, reason string) error {
 	fields.ActiveMR = ""      // Clear active_mr
 	fields.CleanupStatus = "" // Clear cleanup_status
 	fields.AgentState = string(AgentStateNuked)
+	fields.DaytonaWorkspace = "" // Clear daytona workspace
 	// Clear completion metadata (gt-x7t9)
 	fields.ExitType = ""
 	fields.MRID = ""
@@ -533,6 +541,7 @@ type AgentFieldUpdates struct {
 	ActiveMR          *string
 	NotificationLevel *string
 	Mode              *string
+	DaytonaWorkspace  *string
 	// Completion metadata fields (gt-x7t9)
 	ExitType       *string
 	MRID           *string
@@ -581,6 +590,9 @@ func (b *Beads) UpdateAgentDescriptionFields(id string, updates AgentFieldUpdate
 	}
 	if updates.Mode != nil {
 		fields.Mode = *updates.Mode
+	}
+	if updates.DaytonaWorkspace != nil {
+		fields.DaytonaWorkspace = *updates.DaytonaWorkspace
 	}
 	// Completion metadata fields (gt-x7t9)
 	if updates.ExitType != nil {
