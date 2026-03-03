@@ -14,12 +14,22 @@ import (
 
 // TownConfig represents the main town identity (mayor/town.json).
 type TownConfig struct {
-	Type       string    `json:"type"`                  // "town"
-	Version    int       `json:"version"`               // schema version
-	Name       string    `json:"name"`                  // town identifier (internal)
-	Owner      string    `json:"owner,omitempty"`       // owner email (entity identity)
-	PublicName string    `json:"public_name,omitempty"` // public display name
-	CreatedAt  time.Time `json:"created_at"`
+	Type           string    `json:"type"`                      // "town"
+	Version        int       `json:"version"`                   // schema version
+	Name           string    `json:"name"`                      // town identifier (internal)
+	Owner          string    `json:"owner,omitempty"`           // owner email (entity identity)
+	PublicName     string    `json:"public_name,omitempty"`     // public display name
+	InstallationID string    `json:"installation_id,omitempty"` // unique UUID v4 per installation, auto-generated on first load
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// ShortInstallationID returns the first 8 characters of the InstallationID,
+// used for workspace naming: gt-<installID-short>-<rig>-<polecat>.
+func (c *TownConfig) ShortInstallationID() string {
+	if len(c.InstallationID) < 8 {
+		return c.InstallationID
+	}
+	return c.InstallationID[:8]
 }
 
 // MayorConfig represents town-level behavioral configuration (mayor/config.json).
