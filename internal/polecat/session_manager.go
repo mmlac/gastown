@@ -16,6 +16,7 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/daytona"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/proxy"
 	"github.com/steveyegge/gastown/internal/rig"
@@ -46,6 +47,10 @@ type SessionManager struct {
 	rig        *rig.Rig
 	proxyAdmin *proxy.AdminClient // nil when proxy is not running (local-only mode)
 	beads      *beads.Beads       // nil when beads unavailable; used for cert serial lookup
+
+	// Optional daytona support — set via SetDaytonaSession when RemoteBackend is configured.
+	daytonaClient *daytona.Client
+	rigSettings   *config.RigSettings
 }
 
 // NewSessionManager creates a new polecat session manager for a rig.
@@ -62,6 +67,19 @@ func NewSessionManager(t *tmux.Tmux, r *rig.Rig) *SessionManager {
 func (m *SessionManager) SetProxyAdmin(client *proxy.AdminClient, b *beads.Beads) {
 	m.proxyAdmin = client
 	m.beads = b
+}
+
+// SetDaytonaSession configures the session manager for remote polecat mode via daytona.
+// When set, Start wraps agent commands in `daytona exec` and adds "daytona" to
+// GT_PROCESS_NAMES for liveness detection.
+func (m *SessionManager) SetDaytonaSession(client *daytona.Client, settings *config.RigSettings) {
+	m.daytonaClient = client
+	m.rigSettings = settings
+}
+
+// isRemoteMode returns true if the rig is configured for daytona remote execution.
+func (m *SessionManager) isRemoteMode() bool {
+	return m.daytonaClient != nil && m.rigSettings != nil && m.rigSettings.RemoteBackend != nil
 }
 
 // SessionStartOptions configures polecat session startup.
@@ -219,10 +237,15 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 		}
 	}
 
-	// Determine working directory
+	// Determine working directory.
+	// Remote polecats have no local worktree — use the marker directory for tmux.
 	workDir := opts.WorkDir
 	if workDir == "" {
-		workDir = m.clonePath(polecat)
+		if m.isRemoteMode() {
+			workDir = m.polecatDir(polecat)
+		} else {
+			workDir = m.clonePath(polecat)
+		}
 	}
 
 	// Validate issue exists and isn't tombstoned BEFORE creating session.
@@ -255,9 +278,12 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 
 	// Ensure runtime settings exist in the shared polecats parent directory.
 	// Settings are passed to Claude Code via --settings flag.
-	polecatSettingsDir := config.RoleSettingsDir("polecat", m.rig.Path)
-	if err := runtime.EnsureSettingsForRole(polecatSettingsDir, workDir, "polecat", runtimeConfig); err != nil {
-		return fmt.Errorf("ensuring runtime settings: %w", err)
+	// Skip for remote mode — the container has its own settings from workspace creation.
+	if !m.isRemoteMode() {
+		polecatSettingsDir := config.RoleSettingsDir("polecat", m.rig.Path)
+		if err := runtime.EnsureSettingsForRole(polecatSettingsDir, workDir, "polecat", runtimeConfig); err != nil {
+			return fmt.Errorf("ensuring runtime settings: %w", err)
+		}
 	}
 
 	// Get fallback info to determine beacon content based on agent capabilities.
@@ -277,60 +303,83 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	}
 	beacon := session.FormatStartupBeacon(beaconConfig)
 
-	command := opts.Command
-	if command == "" {
-		var err error
-		command, err = config.BuildStartupCommandFromConfig(config.AgentEnvConfig{
-			Role:        "polecat",
-			Rig:         m.rig.Name,
-			AgentName:   polecat,
-			TownRoot:    townRoot,
-			Prompt:      beacon,
-			Issue:       opts.Issue,
-			Topic:       "assigned",
-			SessionName: sessionID,
-		}, m.rig.Path, beacon, "")
-		if err != nil {
-			return fmt.Errorf("building startup command: %w", err)
-		}
-	}
-	// Prepend runtime config dir env if needed
-	if runtimeConfig.Session != nil && runtimeConfig.Session.ConfigDirEnv != "" && opts.RuntimeConfigDir != "" {
-		command = config.PrependEnv(command, map[string]string{runtimeConfig.Session.ConfigDirEnv: opts.RuntimeConfigDir})
-	}
-
-	// Disable Dolt auto-commit for polecats to prevent manifest contention
-	// under concurrent load (gt-5cc2p). Changes merge at gt done time.
-	command = config.PrependEnv(command, map[string]string{"BD_DOLT_AUTO_COMMIT": "off"})
-
-	// FIX (ga-6s284): Prepend GT_RIG, GT_POLECAT, GT_ROLE to startup command
-	// so they're inherited by Kimi and other agents. Setting via tmux.SetEnvironment
-	// after session creation doesn't work for all agent types.
-	//
-	// GT_BRANCH and GT_POLECAT_PATH are critical for gt done's nuked-worktree fallback:
-	// when the polecat's cwd is deleted before gt done finishes, these env vars allow
-	// branch detection and path resolution without a working directory.
-	polecatGitBranch := ""
-	if g := git.NewGit(workDir); g != nil {
-		if b, err := g.CurrentBranch(); err == nil {
-			polecatGitBranch = b
-		}
-	}
 	// Generate the GASTA run ID — the root identifier for all telemetry emitted
 	// by this polecat session and its subprocesses (bd, mail, …).
 	runID := uuid.New().String()
-	envVarsToInject := map[string]string{
-		"GT_RIG":          m.rig.Name,
-		"GT_POLECAT":      polecat,
-		"GT_ROLE":         fmt.Sprintf("%s/polecats/%s", m.rig.Name, polecat),
-		"GT_POLECAT_PATH": workDir,
-		"GT_TOWN_ROOT":    townRoot,
-		"GT_RUN":          runID,
+
+	// Detect git branch for GT_BRANCH env var (used by gt done's nuked-worktree fallback).
+	// Remote polecats have no local worktree so this will be empty for them.
+	polecatGitBranch := ""
+	if !m.isRemoteMode() {
+		if g := git.NewGit(workDir); g != nil {
+			if b, err := g.CurrentBranch(); err == nil {
+				polecatGitBranch = b
+			}
+		}
 	}
-	if polecatGitBranch != "" {
-		envVarsToInject["GT_BRANCH"] = polecatGitBranch
+
+	var command string
+	if m.isRemoteMode() {
+		// --- Daytona remote mode ---
+		// Ensure workspace is running before creating tmux session.
+		wsName := m.daytonaClient.WorkspaceName(m.rig.Name, polecat)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		if err := m.daytonaClient.Start(ctx, wsName); err != nil {
+			cancel()
+			return fmt.Errorf("ensuring daytona workspace %s is running: %w", wsName, err)
+		}
+		cancel()
+
+		// Build daytona exec command that runs the agent inside the container.
+		command = m.buildDaytonaCommand(polecat, wsName, beacon, runtimeConfig, runID)
+	} else {
+		// --- Local mode ---
+		command = opts.Command
+		if command == "" {
+			var err error
+			command, err = config.BuildStartupCommandFromConfig(config.AgentEnvConfig{
+				Role:        "polecat",
+				Rig:         m.rig.Name,
+				AgentName:   polecat,
+				TownRoot:    townRoot,
+				Prompt:      beacon,
+				Issue:       opts.Issue,
+				Topic:       "assigned",
+				SessionName: sessionID,
+			}, m.rig.Path, beacon, "")
+			if err != nil {
+				return fmt.Errorf("building startup command: %w", err)
+			}
+		}
+		// Prepend runtime config dir env if needed
+		if runtimeConfig.Session != nil && runtimeConfig.Session.ConfigDirEnv != "" && opts.RuntimeConfigDir != "" {
+			command = config.PrependEnv(command, map[string]string{runtimeConfig.Session.ConfigDirEnv: opts.RuntimeConfigDir})
+		}
+
+		// Disable Dolt auto-commit for polecats to prevent manifest contention
+		// under concurrent load (gt-5cc2p). Changes merge at gt done time.
+		command = config.PrependEnv(command, map[string]string{"BD_DOLT_AUTO_COMMIT": "off"})
+
+		// FIX (ga-6s284): Prepend GT_RIG, GT_POLECAT, GT_ROLE to startup command
+		// so they're inherited by Kimi and other agents. Setting via tmux.SetEnvironment
+		// after session creation doesn't work for all agent types.
+		//
+		// GT_BRANCH and GT_POLECAT_PATH are critical for gt done's nuked-worktree fallback:
+		// when the polecat's cwd is deleted before gt done finishes, these env vars allow
+		// branch detection and path resolution without a working directory.
+		envVarsToInject := map[string]string{
+			"GT_RIG":          m.rig.Name,
+			"GT_POLECAT":      polecat,
+			"GT_ROLE":         fmt.Sprintf("%s/polecats/%s", m.rig.Name, polecat),
+			"GT_POLECAT_PATH": workDir,
+			"GT_TOWN_ROOT":    townRoot,
+			"GT_RUN":          runID,
+		}
+		if polecatGitBranch != "" {
+			envVarsToInject["GT_BRANCH"] = polecatGitBranch
+		}
+		command = config.PrependEnv(command, envVarsToInject)
 	}
-	command = config.PrependEnv(command, envVarsToInject)
 
 	// Create session with command directly to avoid send-keys race condition.
 	// See: https://github.com/anthropics/gastown/issues/280
@@ -383,6 +432,12 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	// shadow built-in preset names (e.g., custom "codex" running "opencode"),
 	// so we resolve process names from both agent name and actual command.
 	processNames := config.ResolveProcessNames(runtimeConfig.ResolvedAgent, runtimeConfig.Command)
+	// For daytona remote mode, the tmux pane runs "daytona exec" which tunnels
+	// stdin/stdout to the container. Liveness detection must see "daytona" as a
+	// live process in addition to the agent process names (design doc §5.2).
+	if m.isRemoteMode() {
+		processNames = append(processNames, "daytona")
+	}
 	debugSession("SetEnvironment GT_PROCESS_NAMES", m.tmux.SetEnvironment(sessionID, "GT_PROCESS_NAMES", strings.Join(processNames, ",")))
 
 	// Record agent's pane_id for ZFC-compliant liveness checks (gt-qmsx).
@@ -839,6 +894,63 @@ func (m *SessionManager) verifyStartupNudgeDelivery(sessionID string, rc *config
 		fmt.Fprintf(os.Stderr, "[startup-nudge] WARNING: agent %s still idle after %d nudge retries\n",
 			sessionID, constants.StartupNudgeMaxRetries)
 	}
+}
+
+// buildDaytonaCommand builds a `daytona exec` command string for running an agent
+// inside a daytona workspace. Env vars are passed via --env flags, and the agent
+// command runs directly inside the container (no host-local --settings paths).
+//
+// The resulting command string is used as the tmux pane command. The outer shell
+// (tmux's bash) parses it, launching `daytona exec` which tunnels stdin/stdout
+// to the container process.
+func (m *SessionManager) buildDaytonaCommand(polecat, wsName, beacon string, rc *config.RuntimeConfig, runID string) string {
+	rb := m.rigSettings.RemoteBackend
+	townRoot := filepath.Dir(m.rig.Path)
+
+	// Env vars for the container.
+	// These are passed via daytona exec --env flags so they're available in the
+	// container's process environment.
+	env := map[string]string{
+		"GT_RIG":              m.rig.Name,
+		"GT_POLECAT":         polecat,
+		"GT_ROLE":            fmt.Sprintf("%s/polecats/%s", m.rig.Name, polecat),
+		"GT_TOWN_ROOT":       townRoot,
+		"GT_RUN":             runID,
+		"BD_DOLT_AUTO_COMMIT": "off",
+	}
+
+	// Add proxy URL for mTLS proxy access from the container.
+	proxyAddr := rb.ProxyAddr
+	if proxyAddr == "" {
+		proxyAddr = "localhost:8443"
+	}
+	env["GT_PROXY_URL"] = fmt.Sprintf("https://%s", proxyAddr)
+
+	// Include any extra env from RemoteBackend config.
+	for k, v := range rb.Env {
+		env[k] = v
+	}
+
+	// Build: daytona exec <ws> --env K=V ... -- sh -c '<agent-command>'
+	// We use sh -c to handle the agent command with its prompt argument,
+	// which may contain shell special characters (newlines, quotes).
+	var parts []string
+	parts = append(parts, "daytona", "exec", wsName)
+	for k, v := range env {
+		parts = append(parts, "--env", fmt.Sprintf("%s=%s", k, v))
+	}
+	parts = append(parts, "--")
+
+	// Build the inner agent command using RuntimeConfig.
+	// This produces something like: claude --dangerously-skip-permissions "beacon"
+	agentCmd := rc.BuildCommandWithPrompt(beacon)
+
+	// Wrap in sh -c with proper shell quoting to preserve the beacon's special
+	// characters (newlines, quotes) through the double-shell interpretation
+	// (tmux shell → daytona exec → container shell).
+	parts = append(parts, "sh", "-c", config.ShellQuote(agentCmd))
+
+	return strings.Join(parts, " ")
 }
 
 // hookIssue pins an issue to a polecat's hook using bd update.
