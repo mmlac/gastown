@@ -1,6 +1,7 @@
 package polecat
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -706,6 +707,90 @@ func TestBuildDaytonaCommand_BeaconWithSpecialChars(t *testing.T) {
 	if cmd == "" {
 		t.Error("buildDaytonaCommand returned empty string")
 	}
+}
+
+// testDaytonaRunner records daytona CLI calls for verifying Stop behavior.
+type testDaytonaRunner struct {
+	calls []testDaytonaCall
+}
+
+type testDaytonaCall struct {
+	Name string
+	Args []string
+}
+
+func (r *testDaytonaRunner) Run(_ context.Context, name string, args ...string) (string, string, int, error) {
+	r.calls = append(r.calls, testDaytonaCall{Name: name, Args: args})
+	return "", "", 0, nil
+}
+
+// TestStopDaytonaWorkspaceOnStop_AutoStopTrue verifies that Stop calls
+// daytona stop when in remote mode with AutoStop=true.
+func TestStopDaytonaWorkspaceOnStop_AutoStopTrue(t *testing.T) {
+	t.Parallel()
+
+	runner := &testDaytonaRunner{}
+	client := daytona.NewClientWithRunner("gt-test1234", runner)
+
+	r := &rig.Rig{Name: "testrig", Path: t.TempDir()}
+	m := NewSessionManager(tmux.NewTmux(), r)
+	m.SetDaytonaSession(client, &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{
+			Provider: "daytona",
+			AutoStop: true,
+		},
+	})
+
+	m.stopDaytonaWorkspaceOnStop("onyx")
+
+	// Should have called daytona stop with the correct workspace name
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 daytona call, got %d", len(runner.calls))
+	}
+	call := runner.calls[0]
+	if call.Name != "daytona" {
+		t.Errorf("expected command 'daytona', got %q", call.Name)
+	}
+	wantArgs := []string{"stop", "gt-test1234-testrig-onyx", "--yes"}
+	if strings.Join(call.Args, " ") != strings.Join(wantArgs, " ") {
+		t.Errorf("args = %v, want %v", call.Args, wantArgs)
+	}
+}
+
+// TestStopDaytonaWorkspaceOnStop_AutoStopFalse verifies that Stop does NOT
+// call daytona stop when AutoStop=false.
+func TestStopDaytonaWorkspaceOnStop_AutoStopFalse(t *testing.T) {
+	t.Parallel()
+
+	runner := &testDaytonaRunner{}
+	client := daytona.NewClientWithRunner("gt-test1234", runner)
+
+	r := &rig.Rig{Name: "testrig", Path: t.TempDir()}
+	m := NewSessionManager(tmux.NewTmux(), r)
+	m.SetDaytonaSession(client, &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{
+			Provider: "daytona",
+			AutoStop: false,
+		},
+	})
+
+	m.stopDaytonaWorkspaceOnStop("onyx")
+
+	if len(runner.calls) != 0 {
+		t.Errorf("expected 0 daytona calls when AutoStop=false, got %d", len(runner.calls))
+	}
+}
+
+// TestStopDaytonaWorkspaceOnStop_LocalMode verifies that Stop does NOT call
+// daytona stop when not in remote mode (no daytona client configured).
+func TestStopDaytonaWorkspaceOnStop_LocalMode(t *testing.T) {
+	t.Parallel()
+
+	r := &rig.Rig{Name: "testrig", Path: t.TempDir()}
+	m := NewSessionManager(tmux.NewTmux(), r)
+
+	// Should be a no-op — no panic, no calls
+	m.stopDaytonaWorkspaceOnStop("onyx")
 }
 
 func TestValidateSessionName(t *testing.T) {
