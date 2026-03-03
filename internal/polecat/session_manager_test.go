@@ -569,7 +569,7 @@ func TestBuildDaytonaCommand(t *testing.T) {
 	}
 
 	beacon := "Test beacon message"
-	wsName := "gt-abc12345-testrig-onyx"
+	wsName := "gt-abc12345-testrig--onyx"
 	runID := "test-run-id-123"
 
 	cmd := m.buildDaytonaCommand("onyx", wsName, beacon, rc, runID)
@@ -751,7 +751,7 @@ func TestStopDaytonaWorkspaceOnStop_AutoStopTrue(t *testing.T) {
 	if call.Name != "daytona" {
 		t.Errorf("expected command 'daytona', got %q", call.Name)
 	}
-	wantArgs := []string{"stop", "gt-test1234-testrig-onyx", "--yes"}
+	wantArgs := []string{"stop", "gt-test1234-testrig--onyx", "--yes"}
 	if strings.Join(call.Args, " ") != strings.Join(wantArgs, " ") {
 		t.Errorf("args = %v, want %v", call.Args, wantArgs)
 	}

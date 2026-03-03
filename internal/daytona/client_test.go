@@ -43,7 +43,7 @@ func TestWorkspaceName(t *testing.T) {
 	c := NewClientWithRunner("gt-abc12345", &mockRunner{})
 
 	got := c.WorkspaceName("myrig", "onyx")
-	want := "gt-abc12345-myrig-onyx"
+	want := "gt-abc12345-myrig--onyx"
 	if got != want {
 		t.Errorf("WorkspaceName() = %q, want %q", got, want)
 	}
@@ -61,31 +61,55 @@ func TestParseWorkspaceName(t *testing.T) {
 	}{
 		{
 			name:        "valid simple",
-			input:       "gt-abc12345-myrig-onyx",
+			input:       "gt-abc12345-myrig--onyx",
 			wantRig:     "myrig",
 			wantPolecat: "onyx",
 			wantOK:      true,
 		},
 		{
 			name:        "rig with hyphen",
-			input:       "gt-abc12345-my-rig-onyx",
+			input:       "gt-abc12345-my-rig--onyx",
 			wantRig:     "my-rig",
 			wantPolecat: "onyx",
 			wantOK:      true,
 		},
 		{
+			name:        "polecat with hyphen",
+			input:       "gt-abc12345-myrig--bullet-farmer",
+			wantRig:     "myrig",
+			wantPolecat: "bullet-farmer",
+			wantOK:      true,
+		},
+		{
+			name:        "both with hyphens",
+			input:       "gt-abc12345-my-rig--road-warrior",
+			wantRig:     "my-rig",
+			wantPolecat: "road-warrior",
+			wantOK:      true,
+		},
+		{
 			name:   "wrong prefix",
-			input:  "gt-other123-myrig-onyx",
+			input:  "gt-other123-myrig--onyx",
 			wantOK: false,
 		},
 		{
-			name:   "no polecat part",
+			name:   "no delimiter",
 			input:  "gt-abc12345-onlyrig",
+			wantOK: false,
+		},
+		{
+			name:   "single hyphen delimiter (old format)",
+			input:  "gt-abc12345-myrig-onyx",
 			wantOK: false,
 		},
 		{
 			name:   "empty after prefix",
 			input:  "gt-abc12345-",
+			wantOK: false,
+		},
+		{
+			name:   "empty polecat",
+			input:  "gt-abc12345-myrig--",
 			wantOK: false,
 		},
 		{
@@ -136,7 +160,7 @@ func TestCreate(t *testing.T) {
 	}
 	c := NewClientWithRunner("gt-abc12345", mock)
 
-	err := c.Create(context.Background(), "gt-abc12345-rig-onyx", "https://github.com/org/repo", "main", CreateOptions{
+	err := c.Create(context.Background(), "gt-abc12345-rig--onyx", "https://github.com/org/repo", "main", CreateOptions{
 		Image: "ubuntu:22.04",
 	})
 	if err != nil {
@@ -154,7 +178,7 @@ func TestCreate(t *testing.T) {
 	if !strings.Contains(args, "create") {
 		t.Errorf("args missing 'create': %s", args)
 	}
-	if !strings.Contains(args, "--name gt-abc12345-rig-onyx") {
+	if !strings.Contains(args, "--name gt-abc12345-rig--onyx") {
 		t.Errorf("args missing --name: %s", args)
 	}
 	if !strings.Contains(args, "--branch main") {
@@ -302,9 +326,9 @@ func TestExecNonZeroExit(t *testing.T) {
 
 func TestListOwned(t *testing.T) {
 	jsonOutput := `[
-		{"id": "ws1", "name": "gt-abc12345-myrig-onyx", "state": "running"},
-		{"id": "ws2", "name": "gt-abc12345-myrig-amber", "state": "stopped"},
-		{"id": "ws3", "name": "gt-other000-theirrig-pearl", "state": "running"},
+		{"id": "ws1", "name": "gt-abc12345-myrig--onyx", "state": "running"},
+		{"id": "ws2", "name": "gt-abc12345-myrig--amber", "state": "stopped"},
+		{"id": "ws3", "name": "gt-other000-theirrig--pearl", "state": "running"},
 		{"id": "ws4", "name": "unrelated-workspace", "state": "running"}
 	]`
 
@@ -326,7 +350,7 @@ func TestListOwned(t *testing.T) {
 	}
 
 	// Verify first workspace
-	if workspaces[0].Name != "gt-abc12345-myrig-onyx" {
+	if workspaces[0].Name != "gt-abc12345-myrig--onyx" {
 		t.Errorf("workspaces[0].Name = %q", workspaces[0].Name)
 	}
 	if workspaces[0].State != "running" {
@@ -340,7 +364,7 @@ func TestListOwned(t *testing.T) {
 	}
 
 	// Verify second workspace
-	if workspaces[1].Name != "gt-abc12345-myrig-amber" {
+	if workspaces[1].Name != "gt-abc12345-myrig--amber" {
 		t.Errorf("workspaces[1].Name = %q", workspaces[1].Name)
 	}
 	if workspaces[1].Polecat != "amber" {
