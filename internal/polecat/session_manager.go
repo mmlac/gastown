@@ -562,6 +562,8 @@ func (m *SessionManager) isSessionStale(sessionID string) bool {
 }
 
 // Stop terminates a polecat session.
+// For daytona remote mode, this also stops the workspace (if AutoStop is configured)
+// and revokes the polecat's mTLS cert to prevent further proxy access.
 func (m *SessionManager) Stop(polecat string, force bool) error {
 	sessionID := m.SessionName(polecat)
 
@@ -581,15 +583,37 @@ func (m *SessionManager) Stop(polecat string, force bool) error {
 
 	// Use KillSessionWithProcesses to ensure all descendant processes are killed.
 	// This prevents orphan bash processes from Claude's Bash tool surviving session termination.
+	// For daytona mode, killing the tmux session terminates the `daytona exec` connection.
 	if err := m.tmux.KillSessionWithProcesses(sessionID); err != nil {
 		return fmt.Errorf("killing session: %w", err)
 	}
+
+	// For daytona remote mode: stop the workspace if AutoStop is configured.
+	// This preserves workspace state for faster re-spawn on next session start.
+	// Runs after tmux kill so the exec connection is already severed.
+	m.stopDaytonaWorkspaceOnStop(polecat)
 
 	// Revoke the polecat's mTLS cert so it can no longer access the proxy.
 	// No-op if proxy admin is not configured or cert serial is not stored.
 	m.denyCertOnStop(polecat)
 
 	return nil
+}
+
+// stopDaytonaWorkspaceOnStop stops the daytona workspace when AutoStop is configured.
+// No-op if not in remote mode or AutoStop is false.
+func (m *SessionManager) stopDaytonaWorkspaceOnStop(polecat string) {
+	if !m.isRemoteMode() || !m.rigSettings.RemoteBackend.AutoStop {
+		return
+	}
+
+	wsName := m.daytonaClient.WorkspaceName(m.rig.Name, polecat)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if err := m.daytonaClient.Stop(ctx, wsName); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not stop daytona workspace %s: %v\n", wsName, err)
+	}
 }
 
 // denyCertOnStop revokes the polecat's mTLS cert via the proxy admin API.
