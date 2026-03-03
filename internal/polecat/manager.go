@@ -2038,12 +2038,13 @@ func (m *Manager) loadFromBeads(name string) (*Polecat, error) {
 	_, fields, agentErr := m.beads.GetAgentBead(agentID)
 	if agentErr == nil && fields != nil && fields.HookBead != "" {
 		return &Polecat{
-			Name:      name,
-			Rig:       m.rig.Name,
-			State:     StateWorking,
-			ClonePath: clonePath,
-			Branch:    branchName,
-			Issue:     fields.HookBead,
+			Name:               name,
+			Rig:                m.rig.Name,
+			State:              StateWorking,
+			ClonePath:          clonePath,
+			Branch:             branchName,
+			Issue:              fields.HookBead,
+			DaytonaWorkspaceID: fields.DaytonaWorkspace,
 		}, nil
 	}
 
@@ -2051,11 +2052,12 @@ func (m *Manager) loadFromBeads(name string) (*Polecat, error) {
 	// An idle polecat has no hook_bead and agent_state="idle".
 	if agentErr == nil && fields != nil && beads.AgentState(fields.AgentState) == beads.AgentStateIdle {
 		return &Polecat{
-			Name:      name,
-			Rig:       m.rig.Name,
-			State:     StateIdle,
-			ClonePath: clonePath,
-			Branch:    branchName,
+			Name:               name,
+			Rig:                m.rig.Name,
+			State:              StateIdle,
+			ClonePath:          clonePath,
+			Branch:             branchName,
+			DaytonaWorkspaceID: fields.DaytonaWorkspace,
 		}, nil
 	}
 
