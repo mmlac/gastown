@@ -739,6 +739,20 @@ func (m *Manager) AllocateAndAdd(opts AddOptions) (string, *Polecat, error) {
 	return name, p, nil
 }
 
+// resolveStartPoint determines the git ref to branch from for a new polecat.
+// If opts.BaseBranch is set, it is used directly; otherwise the rig's configured
+// default_branch (defaulting to "main") is prefixed with "origin/".
+func (m *Manager) resolveStartPoint(opts AddOptions) string {
+	if opts.BaseBranch != "" {
+		return opts.BaseBranch
+	}
+	defaultBranch := "main"
+	if rigCfg, err := rig.LoadRigConfig(m.rig.Path); err == nil && rigCfg.DefaultBranch != "" {
+		defaultBranch = rigCfg.DefaultBranch
+	}
+	return fmt.Sprintf("origin/%s", defaultBranch)
+}
+
 // addWithOptionsLocked performs the expensive parts of polecat creation
 // (worktree, beads, settings) after the directory has been created.
 // Caller MUST hold the polecat lock and have already created polecatDir.
@@ -776,16 +790,7 @@ func (m *Manager) addWithOptionsLocked(name string, opts AddOptions, polecatDir 
 		style.PrintWarning("could not fetch origin: %v", err)
 	}
 
-	var startPoint string
-	if opts.BaseBranch != "" {
-		startPoint = opts.BaseBranch
-	} else {
-		defaultBranch := "main"
-		if rigCfg, err := rig.LoadRigConfig(m.rig.Path); err == nil && rigCfg.DefaultBranch != "" {
-			defaultBranch = rigCfg.DefaultBranch
-		}
-		startPoint = fmt.Sprintf("origin/%s", defaultBranch)
-	}
+	startPoint := m.resolveStartPoint(opts)
 
 	if exists, err := repoGit.RefExists(startPoint); err != nil {
 		cleanupOnError()
@@ -865,6 +870,69 @@ func (m *Manager) addWithOptionsLocked(name string, opts AddOptions, polecatDir 
 	return polecat, nil
 }
 
+// issueDaytonaCert issues an mTLS client certificate for a remote polecat via the
+// proxy CA. Returns the PEM-encoded cert, key, and hex serial number. The serial is
+// extracted from the issued certificate for rollback revocation and agent bead storage.
+func (m *Manager) issueDaytonaCert(name string) (certPEM, keyPEM []byte, serial string, err error) {
+	certCN := fmt.Sprintf("gt-%s-%s", m.rig.Name, name)
+	certPEM, keyPEM, err = m.proxyCA.IssuePolecat(certCN, polecatCertTTL)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("issuing mTLS cert for %s: %w", certCN, err)
+	}
+
+	if block, _ := pem.Decode(certPEM); block != nil {
+		if leaf, parseErr := x509.ParseCertificate(block.Bytes); parseErr == nil {
+			serial = leaf.SerialNumber.Text(16)
+		}
+	}
+
+	return certPEM, keyPEM, serial, nil
+}
+
+// injectCertsIntoWorkspace creates the cert directory and writes the client cert,
+// key, and CA cert into a daytona workspace. Cert injection is fatal — without certs
+// the polecat cannot authenticate to the proxy.
+func (m *Manager) injectCertsIntoWorkspace(ctx context.Context, wsName string, certPEM, keyPEM []byte) error {
+	certDir := constants.DefaultRemoteCertDir
+	mkdirOut, mkdirErr, mkdirCode, err := m.daytonaClient.Exec(ctx, wsName, nil, "mkdir", "-p", certDir)
+	if err != nil || mkdirCode != 0 {
+		errMsg := mkdirErr
+		if errMsg == "" {
+			errMsg = mkdirOut
+		}
+		return fmt.Errorf("creating cert dir in workspace: exit=%d err=%v output=%s", mkdirCode, err, errMsg)
+	}
+
+	for _, f := range []struct {
+		path string
+		data []byte
+	}{
+		{certDir + "/client.crt", certPEM},
+		{certDir + "/client.key", keyPEM},
+		{certDir + "/ca.crt", m.proxyCA.CertPEM},
+	} {
+		if err := m.writeFileInWorkspace(ctx, wsName, f.path, f.data); err != nil {
+			return fmt.Errorf("injecting %s into workspace: %w", f.path, err)
+		}
+	}
+
+	return nil
+}
+
+// runDaytonaPostCreate runs gt prime inside the daytona workspace to set up role
+// context. This is fatal — without prime the polecat has no role context and cannot
+// operate.
+func (m *Manager) runDaytonaPostCreate(ctx context.Context, wsName, name string) error {
+	_, stderr, code, err := m.daytonaClient.Exec(ctx, wsName, map[string]string{
+		"GT_RIG":     m.rig.Name,
+		"GT_POLECAT": name,
+	}, "gt", "prime", "--write-prime-md")
+	if err != nil || code != 0 {
+		return fmt.Errorf("post-create gt prime failed (exit=%d): %v %s", code, err, stderr)
+	}
+	return nil
+}
+
 // addDaytona provisions a remote polecat via daytona instead of a local worktree.
 // It follows a similar contract to addWithOptionsLocked (polecatDir already exists)
 // but skips WorktreeAddFromRef and instead:
@@ -939,16 +1007,7 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 		style.PrintWarning("could not fetch origin: %v", err)
 	}
 
-	var startPoint string
-	if opts.BaseBranch != "" {
-		startPoint = opts.BaseBranch
-	} else {
-		defaultBranch := "main"
-		if rigCfg, err := rig.LoadRigConfig(m.rig.Path); err == nil && rigCfg.DefaultBranch != "" {
-			defaultBranch = rigCfg.DefaultBranch
-		}
-		startPoint = fmt.Sprintf("origin/%s", defaultBranch)
-	}
+	startPoint := m.resolveStartPoint(opts)
 
 	if exists, err := repoGit.RefExists(startPoint); err != nil {
 		cleanupOnError()
@@ -966,19 +1025,12 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 	branchCreated = true
 
 	// --- Step 2: Issue mTLS cert ---
-	certCN := fmt.Sprintf("gt-%s-%s", m.rig.Name, name)
-	certPEM, keyPEM, err := m.proxyCA.IssuePolecat(certCN, polecatCertTTL)
+	certPEM, keyPEM, serial, err := m.issueDaytonaCert(name)
 	if err != nil {
 		cleanupOnError()
-		return nil, fmt.Errorf("issuing mTLS cert for %s: %w", certCN, err)
+		return nil, err
 	}
-
-	// Extract cert serial for rollback revocation and agent bead storage.
-	if block, _ := pem.Decode(certPEM); block != nil {
-		if leaf, parseErr := x509.ParseCertificate(block.Bytes); parseErr == nil {
-			certSerial = leaf.SerialNumber.Text(16)
-		}
-	}
+	certSerial = serial
 
 	// --- Step 3: Create agent bead with daytona_workspace label ---
 	agentID := m.agentBeadID(name)
@@ -1030,44 +1082,16 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 	}
 	workspaceCreated = true
 
-	// Inject mTLS cert into the workspace for proxy authentication.
-	certDir := constants.DefaultRemoteCertDir
-	mkdirOut, mkdirErr, mkdirCode, err := m.daytonaClient.Exec(ctx, wsName, nil, "mkdir", "-p", certDir)
-	if err != nil || mkdirCode != 0 {
-		errMsg := mkdirErr
-		if errMsg == "" {
-			errMsg = mkdirOut
-		}
+	// Inject mTLS certs into the workspace for proxy authentication.
+	if err := m.injectCertsIntoWorkspace(ctx, wsName, certPEM, keyPEM); err != nil {
 		cleanupOnError()
-		return nil, fmt.Errorf("creating cert dir in workspace: exit=%d err=%v output=%s", mkdirCode, err, errMsg)
-	}
-
-	// Inject certs via base64-encoded shell commands (daytona exec doesn't support stdin piping).
-	// Cert injection is FATAL — without certs the polecat cannot authenticate to the proxy
-	// and every git operation will fail with a cryptic mTLS error.
-	for _, f := range []struct {
-		path string
-		data []byte
-	}{
-		{certDir + "/client.crt", certPEM},
-		{certDir + "/client.key", keyPEM},
-		{certDir + "/ca.crt", m.proxyCA.CertPEM},
-	} {
-		if err := m.writeFileInWorkspace(ctx, wsName, f.path, f.data); err != nil {
-			cleanupOnError()
-			return nil, fmt.Errorf("injecting %s into workspace: %w", f.path, err)
-		}
+		return nil, err
 	}
 
 	// Post-create setup: run gt prime inside the workspace.
-	// This is FATAL — without prime the polecat has no role context and cannot operate.
-	_, stderr, code, err := m.daytonaClient.Exec(ctx, wsName, map[string]string{
-		"GT_RIG":     m.rig.Name,
-		"GT_POLECAT": name,
-	}, "gt", "prime", "--write-prime-md")
-	if err != nil || code != 0 {
+	if err := m.runDaytonaPostCreate(ctx, wsName, name); err != nil {
 		cleanupOnError()
-		return nil, fmt.Errorf("post-create gt prime failed (exit=%d): %v %s", code, err, stderr)
+		return nil, err
 	}
 
 	now := time.Now()
