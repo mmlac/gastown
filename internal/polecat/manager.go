@@ -227,7 +227,7 @@ func (m *Manager) SetDaytona(client *daytona.Client, ca *proxy.CA, settings *con
 
 // isRemoteMode returns true if the rig is configured for daytona remote execution.
 func (m *Manager) isRemoteMode() bool {
-	return m.rigSettings != nil && m.rigSettings.RemoteBackend != nil
+	return m.daytonaClient != nil && m.rigSettings != nil && m.rigSettings.RemoteBackend != nil
 }
 
 // lockPolecat acquires an exclusive file lock for a specific polecat.
@@ -1072,9 +1072,9 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 	defer cancel()
 
 	createOpts := daytona.CreateOptions{
-		Image:   rb.Image,
-		Profile: rb.Profile,
-		Env:     rb.Env,
+		Image:            rb.Image,
+		DevcontainerPath: rb.Profile,
+		Env:              rb.Env,
 	}
 	if err := m.daytonaClient.Create(ctx, wsName, repoURL, branchName, createOpts); err != nil {
 		cleanupOnError()
@@ -1101,7 +1101,7 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 		State:              StateWorking,
 		ClonePath:          polecatDir, // marker directory only — no worktree
 		Branch:             branchName,
-		DaytonaWorkspaceID: wsName,
+		DaytonaWorkspaceName: wsName,
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
@@ -2541,7 +2541,7 @@ func (m *Manager) loadFromBeads(name string) (*Polecat, error) {
 			ClonePath:          clonePath,
 			Branch:             branchName,
 			Issue:              fields.HookBead,
-			DaytonaWorkspaceID: fields.DaytonaWorkspace,
+			DaytonaWorkspaceName: fields.DaytonaWorkspace,
 		}, nil
 	}
 
@@ -2554,7 +2554,7 @@ func (m *Manager) loadFromBeads(name string) (*Polecat, error) {
 			State:              StateIdle,
 			ClonePath:          clonePath,
 			Branch:             branchName,
-			DaytonaWorkspaceID: fields.DaytonaWorkspace,
+			DaytonaWorkspaceName: fields.DaytonaWorkspace,
 		}, nil
 	}
 

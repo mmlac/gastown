@@ -55,7 +55,7 @@ type ReconcileReport struct {
 type AgentBead struct {
 	ID                 string // agent bead ID (e.g., "gtd-GasTownDaytona-polecat-garnet")
 	Polecat            string // polecat name
-	DaytonaWorkspaceID string // workspace name from bead description field
+	DaytonaWorkspaceName string // workspace name from bead description field
 	AgentState         string // agent_state field (spawning, working, idle, etc.)
 	CertSerial         string // proxy mTLS cert serial (lowercase hex) for revocation on cleanup
 }
@@ -67,7 +67,7 @@ type AgentBead struct {
 //   - client: daytona client scoped to this installation
 //   - rigName: the rig to reconcile
 //   - workspaces: all workspaces from ListOwned, pre-filtered to this rig
-//   - beads: all polecat agent beads for this rig that have a DaytonaWorkspaceID
+//   - beads: all polecat agent beads for this rig that have a DaytonaWorkspaceName
 func DiscoverWorkspaces(client *Client, rigName string, workspaces []Workspace, beads []AgentBead) *ReconcileReport {
 	report := &ReconcileReport{Rig: rigName}
 
@@ -118,7 +118,7 @@ func DiscoverWorkspaces(client *Client, rigName string, workspaces []Workspace, 
 			// concurrently and may not have appeared in ListOwned yet.
 			// This prevents a race where reconcile runs between agent bead
 			// creation (step 3) and workspace provisioning (step 4) in
-			// addDaytonaLocked, which would misclassify the bead as orphaned
+			// addDaytona, which would misclassify the bead as orphaned
 			// and clear its daytona_workspace reference.
 			if bead.AgentState == "spawning" {
 				report.SpawningSkipped++

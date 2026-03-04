@@ -49,7 +49,7 @@ type SessionManager struct {
 	proxyAdmin *proxy.AdminClient // nil when proxy is not running (local-only mode)
 	beads      *beads.Beads       // nil when beads unavailable; used for cert serial lookup
 
-	// Optional daytona support — set via SetDaytonaSession when RemoteBackend is configured.
+	// Optional daytona support — set via SetDaytona when RemoteBackend is configured.
 	daytonaClient *daytona.Client
 	rigSettings   *config.RigSettings
 }
@@ -86,10 +86,10 @@ func (m *SessionManager) SetProxyAdmin(client *proxy.AdminClient, b *beads.Beads
 	m.beads = b
 }
 
-// SetDaytonaSession configures the session manager for remote polecat mode via daytona.
+// SetDaytona configures the session manager for remote polecat mode via daytona.
 // When set, Start wraps agent commands in `daytona exec` and adds "daytona" to
 // GT_PROCESS_NAMES for liveness detection.
-func (m *SessionManager) SetDaytonaSession(client *daytona.Client, settings *config.RigSettings) {
+func (m *SessionManager) SetDaytona(client *daytona.Client, settings *config.RigSettings) {
 	m.daytonaClient = client
 	m.rigSettings = settings
 }

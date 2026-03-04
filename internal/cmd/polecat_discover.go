@@ -63,7 +63,7 @@ type DiscoverResult struct {
 	OrphanBeads      []DiscoverOrphan  `json:"orphan_beads,omitempty"`
 	Reconciled       bool              `json:"reconciled"`
 	DryRun           bool              `json:"dry_run,omitempty"`
-	ReconcileActions []ReconcileAction `json:"reconcile_actions,omitempty"`
+	ReconcileActions []ReconcileActionEntry `json:"reconcile_actions,omitempty"`
 }
 
 // DiscoverMatch represents a workspace with a matching agent bead.
@@ -82,8 +82,8 @@ type DiscoverOrphan struct {
 	BeadID         string `json:"bead_id,omitempty"`
 }
 
-// ReconcileAction records what reconciliation did (for display/JSON output).
-type ReconcileAction struct {
+// ReconcileActionEntry records what reconciliation did (for display/JSON output).
+type ReconcileActionEntry struct {
 	Type    string `json:"type"`    // "stop_workspace" or "clear_bead"
 	Target  string `json:"target"`  // workspace name or bead ID
 	Success bool   `json:"success"`
@@ -118,8 +118,8 @@ func runPolecatDiscover(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("rig %s does not have remote_backend configured — discovery only applies to daytona-backed rigs", rigName)
 	}
 
-	if settings.RemoteBackend.Provider != "daytona" {
-		return fmt.Errorf("unsupported remote backend provider: %s (only 'daytona' is supported)", settings.RemoteBackend.Provider)
+	if err := settings.RemoteBackend.Validate(); err != nil {
+		return err
 	}
 
 	// Load town config for installation prefix
@@ -213,7 +213,7 @@ func gatherPolecatAgentBeads(r *rig.Rig, rigName string) []daytona.AgentBead {
 		result = append(result, daytona.AgentBead{
 			ID:                 beadID,
 			Polecat:            name,
-			DaytonaWorkspaceID: fields.DaytonaWorkspace,
+			DaytonaWorkspaceName: fields.DaytonaWorkspace,
 			AgentState:         fields.AgentState,
 			CertSerial:         fields.CertSerial,
 		})
@@ -257,19 +257,19 @@ func reportToDiscoverResult(report *daytona.ReconcileReport, installPrefix strin
 // buildReconcileActions builds display actions from the reconcile report and result.
 // For dry-run, all actions are marked as success. For actual runs, errors from
 // daytona.Reconcile are matched to actions by target name.
-func buildReconcileActions(report *daytona.ReconcileReport, reconcileResult *daytona.ReconcileResult, dryRun bool) []ReconcileAction {
-	var actions []ReconcileAction
+func buildReconcileActions(report *daytona.ReconcileReport, reconcileResult *daytona.ReconcileResult, dryRun bool) []ReconcileActionEntry {
+	var actions []ReconcileActionEntry
 
 	for _, item := range report.Results {
 		switch item.Action {
 		case daytona.ActionOrphanedWorkspace:
-			actions = append(actions, ReconcileAction{
+			actions = append(actions, ReconcileActionEntry{
 				Type:    "stop_workspace",
 				Target:  item.Workspace.Name,
 				Success: true,
 			})
 		case daytona.ActionOrphanedBead:
-			actions = append(actions, ReconcileAction{
+			actions = append(actions, ReconcileActionEntry{
 				Type:    "clear_bead",
 				Target:  item.BeadID,
 				Success: true,
