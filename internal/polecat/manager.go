@@ -1073,7 +1073,7 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 
 	createOpts := daytona.CreateOptions{
 		Image:            rb.Image,
-		DevcontainerPath: rb.Profile,
+		Dockerfile: rb.Dockerfile,
 		Env:              rb.Env,
 	}
 	if err := m.daytonaClient.Create(ctx, wsName, repoURL, branchName, createOpts); err != nil {

@@ -650,8 +650,9 @@ type RemoteBackend struct {
 	// Image overrides the default container image for daytona workspaces.
 	Image string `json:"image,omitempty"`
 
-	// Profile selects a devcontainer profile for workspace creation.
-	Profile string `json:"profile,omitempty"`
+	// Dockerfile specifies a path to a Dockerfile for daytona sandbox snapshots.
+	// Maps to the --dockerfile flag on `daytona create`.
+	Dockerfile string `json:"dockerfile,omitempty"`
 
 	// AutoStop stops the daytona workspace when the polecat session ends.
 	AutoStop bool `json:"auto_stop,omitempty"`

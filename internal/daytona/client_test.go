@@ -621,23 +621,23 @@ func TestRunnerError(t *testing.T) {
 	}
 }
 
-func TestCreateWithEnvAndDevcontainerPath(t *testing.T) {
+func TestCreateWithEnvAndDockerfile(t *testing.T) {
 	mock := &mockRunner{
 		defaultResponse: mockResponse{exitCode: 0},
 	}
 	c := NewClientWithRunner("gt-abc12345", mock)
 
 	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{
-		DevcontainerPath: ".devcontainer/go",
-		Env:              map[string]string{"KEY": "val"},
+		Dockerfile: ".devcontainer/Dockerfile",
+		Env:        map[string]string{"KEY": "val"},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 
 	args := strings.Join(mock.calls[0].Args, " ")
-	if !strings.Contains(args, "--devcontainer-path .devcontainer/go") {
-		t.Errorf("args missing --devcontainer-path: %s", args)
+	if !strings.Contains(args, "--dockerfile .devcontainer/Dockerfile") {
+		t.Errorf("args missing --dockerfile: %s", args)
 	}
 	if !strings.Contains(args, "--env KEY=val") {
 		t.Errorf("args missing --env: %s", args)
