@@ -920,15 +920,16 @@ func (m *Manager) injectCertsIntoWorkspace(ctx context.Context, wsName string, c
 }
 
 // runDaytonaPostCreate runs gt prime inside the daytona workspace to set up role
-// context. If gt is not installed in the sandbox (exit 127), this is logged as
-// a warning but not fatal — session startup hooks will handle priming.
+// context. The sandbox image symlinks gt-proxy-client as /usr/local/bin/gt and
+// /usr/local/bin/bd, so gt prime is forwarded through the proxy. Exit 127 is
+// tolerated as a fallback in case the sandbox image is missing the symlink.
 func (m *Manager) runDaytonaPostCreate(ctx context.Context, wsName, name string) error {
 	_, stderr, code, err := m.daytonaClient.Exec(ctx, wsName, map[string]string{
 		"GT_RIG":     m.rig.Name,
 		"GT_POLECAT": name,
 	}, "gt", "prime", "--write-prime-md")
 	if code == 127 {
-		// gt not found in sandbox — not fatal, session startup will handle it
+		// gt symlink missing from sandbox image — not fatal, session startup will handle it
 		return nil
 	}
 	if err != nil || code != 0 {
