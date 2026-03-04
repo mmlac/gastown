@@ -672,6 +672,15 @@ type RemoteBackend struct {
 	Env map[string]string `json:"env,omitempty"`
 }
 
+// Validate checks that RemoteBackend has a supported provider.
+// Currently only "daytona" is supported.
+func (rb *RemoteBackend) Validate() error {
+	if rb.Provider != "daytona" {
+		return fmt.Errorf("unsupported remote backend provider %q (supported: daytona)", rb.Provider)
+	}
+	return nil
+}
+
 // CrewConfig represents crew workspace settings for a rig.
 type CrewConfig struct {
 	// Startup is a natural language instruction for which crew to start on boot.

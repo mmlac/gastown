@@ -232,8 +232,8 @@ func validateRigSettings(c *RigSettings) error {
 		if c.RemoteBackend.Provider == "" {
 			return fmt.Errorf("%w: provider is required", ErrInvalidRemoteBackend)
 		}
-		if c.RemoteBackend.Provider != "daytona" {
-			return fmt.Errorf("%w: unsupported provider '%s' (only 'daytona' is supported)", ErrInvalidRemoteBackend, c.RemoteBackend.Provider)
+		if err := c.RemoteBackend.Validate(); err != nil {
+			return fmt.Errorf("%w: %s", ErrInvalidRemoteBackend, err)
 		}
 	}
 	return nil

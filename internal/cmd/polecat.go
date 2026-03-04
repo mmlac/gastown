@@ -468,9 +468,9 @@ func runPolecatList(cmd *cobra.Command, args []string) error {
 			running, _ := polecatMgr.IsRunning(p.Name)
 			backend := "local"
 			workspaceName := ""
-			if p.DaytonaWorkspaceID != "" {
+			if p.DaytonaWorkspaceName != "" {
 				backend = "daytona"
-				workspaceName = p.DaytonaWorkspaceID
+				workspaceName = p.DaytonaWorkspaceName
 			}
 			allPolecats = append(allPolecats, PolecatListItem{
 				Rig:            r.Name,

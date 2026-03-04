@@ -528,14 +528,14 @@ func TestSessionManagerIsRemoteMode(t *testing.T) {
 		t.Error("isRemoteMode() = true, want false for default SessionManager")
 	}
 
-	// SetDaytonaSession with nil RemoteBackend: still not remote
-	m.SetDaytonaSession(daytona.NewClient("gt-test"), &config.RigSettings{})
+	// SetDaytona with nil RemoteBackend: still not remote
+	m.SetDaytona(daytona.NewClient("gt-test"), &config.RigSettings{})
 	if m.isRemoteMode() {
 		t.Error("isRemoteMode() = true, want false when RemoteBackend is nil")
 	}
 
-	// SetDaytonaSession with RemoteBackend: remote
-	m.SetDaytonaSession(daytona.NewClient("gt-test"), &config.RigSettings{
+	// SetDaytona with RemoteBackend: remote
+	m.SetDaytona(daytona.NewClient("gt-test"), &config.RigSettings{
 		RemoteBackend: &config.RemoteBackend{Provider: "daytona"},
 	})
 	if !m.isRemoteMode() {
@@ -555,7 +555,7 @@ func TestBuildDaytonaCommand(t *testing.T) {
 
 	r := &rig.Rig{Name: "testrig", Path: rigPath}
 	m := NewSessionManager(tmux.NewTmux(), r)
-	m.SetDaytonaSession(daytona.NewClient("gt-abc12345"), &config.RigSettings{
+	m.SetDaytona(daytona.NewClient("gt-abc12345"), &config.RigSettings{
 		RemoteBackend: &config.RemoteBackend{
 			Provider:  "daytona",
 			ProxyAddr: "proxy.example.com:8443",
@@ -620,7 +620,7 @@ func TestBuildDaytonaCommand_DefaultProxyAddr(t *testing.T) {
 
 	r := &rig.Rig{Name: "testrig", Path: rigPath}
 	m := NewSessionManager(tmux.NewTmux(), r)
-	m.SetDaytonaSession(daytona.NewClient("gt-abc12345"), &config.RigSettings{
+	m.SetDaytona(daytona.NewClient("gt-abc12345"), &config.RigSettings{
 		RemoteBackend: &config.RemoteBackend{
 			Provider: "daytona",
 			// ProxyAddr not set — should default to localhost:8443
@@ -652,7 +652,7 @@ func TestBuildDaytonaCommand_ExtraEnv(t *testing.T) {
 
 	r := &rig.Rig{Name: "testrig", Path: rigPath}
 	m := NewSessionManager(tmux.NewTmux(), r)
-	m.SetDaytonaSession(daytona.NewClient("gt-abc12345"), &config.RigSettings{
+	m.SetDaytona(daytona.NewClient("gt-abc12345"), &config.RigSettings{
 		RemoteBackend: &config.RemoteBackend{
 			Provider: "daytona",
 			Env:      map[string]string{"CUSTOM_VAR": "custom_value"},
@@ -684,7 +684,7 @@ func TestBuildDaytonaCommand_EnvValueShellQuoting(t *testing.T) {
 
 	r := &rig.Rig{Name: "testrig", Path: rigPath}
 	m := NewSessionManager(tmux.NewTmux(), r)
-	m.SetDaytonaSession(daytona.NewClient("gt-abc12345"), &config.RigSettings{
+	m.SetDaytona(daytona.NewClient("gt-abc12345"), &config.RigSettings{
 		RemoteBackend: &config.RemoteBackend{
 			Provider: "daytona",
 			Env: map[string]string{
@@ -734,7 +734,7 @@ func TestBuildDaytonaCommand_BeaconWithSpecialChars(t *testing.T) {
 
 	r := &rig.Rig{Name: "testrig", Path: rigPath}
 	m := NewSessionManager(tmux.NewTmux(), r)
-	m.SetDaytonaSession(daytona.NewClient("gt-abc12345"), &config.RigSettings{
+	m.SetDaytona(daytona.NewClient("gt-abc12345"), &config.RigSettings{
 		RemoteBackend: &config.RemoteBackend{Provider: "daytona"},
 	})
 
@@ -807,7 +807,7 @@ func TestStopDaytonaWorkspaceOnStop_AutoStopTrue(t *testing.T) {
 
 	r := &rig.Rig{Name: "testrig", Path: t.TempDir()}
 	m := NewSessionManager(tmux.NewTmux(), r)
-	m.SetDaytonaSession(client, &config.RigSettings{
+	m.SetDaytona(client, &config.RigSettings{
 		RemoteBackend: &config.RemoteBackend{
 			Provider: "daytona",
 			AutoStop: true,
@@ -840,7 +840,7 @@ func TestStopDaytonaWorkspaceOnStop_AutoStopFalse(t *testing.T) {
 
 	r := &rig.Rig{Name: "testrig", Path: t.TempDir()}
 	m := NewSessionManager(tmux.NewTmux(), r)
-	m.SetDaytonaSession(client, &config.RigSettings{
+	m.SetDaytona(client, &config.RigSettings{
 		RemoteBackend: &config.RemoteBackend{
 			Provider: "daytona",
 			AutoStop: false,

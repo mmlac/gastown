@@ -34,9 +34,9 @@ When `RigSettings.RemoteBackend != nil`, the polecat lifecycle uses daytona inst
 
 **Files**: [internal/config/types.go](internal/config/types.go) (add struct + field on `RigSettings`)
 
-**Step 1.3 — `DaytonaWorkspaceID` on `Polecat`**
+**Step 1.3 — `DaytonaWorkspaceName` on `Polecat`**
 
-Add `DaytonaWorkspaceID string` to the `Polecat` struct ([internal/polecat/types.go](internal/polecat/types.go)). Empty for local polecats. Persisted via agent bead label `daytona_workspace`.
+Add `DaytonaWorkspaceName string` to the `Polecat` struct ([internal/polecat/types.go](internal/polecat/types.go)). Empty for local polecats. Persisted via agent bead label `daytona_workspace`.
 
 ---
 
@@ -183,7 +183,7 @@ No new patrol loop — the existing heartbeat handles it.
 |------|--------|
 | [internal/config/types.go](internal/config/types.go) | Add `InstallationID` to `TownConfig`, `RemoteBackend` struct + field on `RigSettings` |
 | [internal/config/loader.go](internal/config/loader.go) | Auto-generate InstallationID on first load |
-| [internal/polecat/types.go](internal/polecat/types.go) | Add `DaytonaWorkspaceID` to `Polecat` |
+| [internal/polecat/types.go](internal/polecat/types.go) | Add `DaytonaWorkspaceName` to `Polecat` |
 | [internal/polecat/manager.go](internal/polecat/manager.go) | Fork `AllocateAndAdd` and `RemoveWithOptions` for daytona |
 | [internal/polecat/session_manager.go](internal/polecat/session_manager.go) | Fork `Start` and `Stop` for daytona |
 | `internal/daytona/client.go` | **New**: daytona CLI wrapper |

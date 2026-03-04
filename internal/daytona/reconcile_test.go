@@ -19,8 +19,8 @@ func TestDiscoverWorkspaces_AllHealthy(t *testing.T) {
 		{ID: "ws2", Name: "gt-abc12345-myrig-amber", State: "stopped", Rig: "myrig", Polecat: "amber"},
 	}
 	beads := []AgentBead{
-		{ID: "gtd-myrig-polecat-onyx", Polecat: "onyx", DaytonaWorkspaceID: "gt-abc12345-myrig-onyx"},
-		{ID: "gtd-myrig-polecat-amber", Polecat: "amber", DaytonaWorkspaceID: "gt-abc12345-myrig-amber"},
+		{ID: "gtd-myrig-polecat-onyx", Polecat: "onyx", DaytonaWorkspaceName: "gt-abc12345-myrig-onyx"},
+		{ID: "gtd-myrig-polecat-amber", Polecat: "amber", DaytonaWorkspaceName: "gt-abc12345-myrig-amber"},
 	}
 
 	report := DiscoverWorkspaces(client, "myrig", workspaces, beads)
@@ -48,7 +48,7 @@ func TestDiscoverWorkspaces_OrphanedWorkspace(t *testing.T) {
 		{ID: "ws2", Name: "gt-abc12345-myrig-ghost", State: "running", Rig: "myrig", Polecat: "ghost"},
 	}
 	beads := []AgentBead{
-		{ID: "gtd-myrig-polecat-onyx", Polecat: "onyx", DaytonaWorkspaceID: "gt-abc12345-myrig-onyx"},
+		{ID: "gtd-myrig-polecat-onyx", Polecat: "onyx", DaytonaWorkspaceName: "gt-abc12345-myrig-onyx"},
 	}
 
 	report := DiscoverWorkspaces(client, "myrig", workspaces, beads)
@@ -87,8 +87,8 @@ func TestDiscoverWorkspaces_OrphanedBead(t *testing.T) {
 		{ID: "ws1", Name: "gt-abc12345-myrig-onyx", State: "running", Rig: "myrig", Polecat: "onyx"},
 	}
 	beads := []AgentBead{
-		{ID: "gtd-myrig-polecat-onyx", Polecat: "onyx", DaytonaWorkspaceID: "gt-abc12345-myrig-onyx"},
-		{ID: "gtd-myrig-polecat-vanished", Polecat: "vanished", DaytonaWorkspaceID: "gt-abc12345-myrig-vanished", CertSerial: "abc123"},
+		{ID: "gtd-myrig-polecat-onyx", Polecat: "onyx", DaytonaWorkspaceName: "gt-abc12345-myrig-onyx"},
+		{ID: "gtd-myrig-polecat-vanished", Polecat: "vanished", DaytonaWorkspaceName: "gt-abc12345-myrig-vanished", CertSerial: "abc123"},
 	}
 
 	report := DiscoverWorkspaces(client, "myrig", workspaces, beads)
@@ -144,7 +144,7 @@ func TestDiscoverWorkspaces_FiltersToRig(t *testing.T) {
 		{ID: "ws2", Name: "gt-abc12345-otherrig-pearl", State: "running", Rig: "otherrig", Polecat: "pearl"},
 	}
 	beads := []AgentBead{
-		{ID: "gtd-myrig-polecat-onyx", Polecat: "onyx", DaytonaWorkspaceID: "gt-abc12345-myrig-onyx"},
+		{ID: "gtd-myrig-polecat-onyx", Polecat: "onyx", DaytonaWorkspaceName: "gt-abc12345-myrig-onyx"},
 	}
 
 	report := DiscoverWorkspaces(client, "myrig", workspaces, beads)
@@ -168,9 +168,9 @@ func TestDiscoverWorkspaces_Mixed(t *testing.T) {
 		{ID: "ws3", Name: "gt-abc12345-rig-orphan", State: "running", Rig: "rig", Polecat: "orphan"},
 	}
 	beads := []AgentBead{
-		{ID: "gtd-rig-polecat-alpha", Polecat: "alpha", DaytonaWorkspaceID: "gt-abc12345-rig-alpha"},
-		{ID: "gtd-rig-polecat-beta", Polecat: "beta", DaytonaWorkspaceID: "gt-abc12345-rig-beta"},
-		{ID: "gtd-rig-polecat-gone", Polecat: "gone", DaytonaWorkspaceID: "gt-abc12345-rig-gone"},
+		{ID: "gtd-rig-polecat-alpha", Polecat: "alpha", DaytonaWorkspaceName: "gt-abc12345-rig-alpha"},
+		{ID: "gtd-rig-polecat-beta", Polecat: "beta", DaytonaWorkspaceName: "gt-abc12345-rig-beta"},
+		{ID: "gtd-rig-polecat-gone", Polecat: "gone", DaytonaWorkspaceName: "gt-abc12345-rig-gone"},
 	}
 
 	report := DiscoverWorkspaces(client, "rig", workspaces, beads)
@@ -600,8 +600,8 @@ func TestDiscoverWorkspaces_SkipsSpawningBeads(t *testing.T) {
 		{ID: "ws1", Name: "gt-abc12345-myrig-onyx", State: "running", Rig: "myrig", Polecat: "onyx"},
 	}
 	beads := []AgentBead{
-		{ID: "gtd-myrig-polecat-onyx", Polecat: "onyx", DaytonaWorkspaceID: "gt-abc12345-myrig-onyx"},
-		{ID: "gtd-myrig-polecat-newbie", Polecat: "newbie", DaytonaWorkspaceID: "gt-abc12345-myrig-newbie", AgentState: "spawning"},
+		{ID: "gtd-myrig-polecat-onyx", Polecat: "onyx", DaytonaWorkspaceName: "gt-abc12345-myrig-onyx"},
+		{ID: "gtd-myrig-polecat-newbie", Polecat: "newbie", DaytonaWorkspaceName: "gt-abc12345-myrig-newbie", AgentState: "spawning"},
 	}
 
 	report := DiscoverWorkspaces(client, "myrig", workspaces, beads)
@@ -631,7 +631,7 @@ func TestDiscoverWorkspaces_NonSpawningBeadStillOrphaned(t *testing.T) {
 	// Bead with non-spawning state and missing workspace should still be orphaned.
 	workspaces := []Workspace{}
 	beads := []AgentBead{
-		{ID: "gtd-myrig-polecat-dead", Polecat: "dead", DaytonaWorkspaceID: "gt-abc12345-myrig-dead", AgentState: "working"},
+		{ID: "gtd-myrig-polecat-dead", Polecat: "dead", DaytonaWorkspaceName: "gt-abc12345-myrig-dead", AgentState: "working"},
 	}
 
 	report := DiscoverWorkspaces(client, "myrig", workspaces, beads)

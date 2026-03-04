@@ -132,7 +132,7 @@ func TestAdminClient_DenyCert(t *testing.T) {
 
 // TestCertLifecycle_IssueExtractDeny verifies the full cert lifecycle:
 // 1. Issue a polecat cert via CA
-// 2. Extract the serial number (same as addDaytonaLocked does)
+// 2. Extract the serial number (same as addDaytona does)
 // 3. Use that serial to deny the cert via AdminClient
 // This is an integration test of the cert issuance → storage → revocation path.
 func TestCertLifecycle_IssueExtractDeny(t *testing.T) {
@@ -140,14 +140,14 @@ func TestCertLifecycle_IssueExtractDeny(t *testing.T) {
 	ca, err := GenerateCA(dir)
 	require.NoError(t, err)
 
-	// Step 1: Issue polecat cert (same TTL as addDaytonaLocked: 720h / 30 days).
+	// Step 1: Issue polecat cert (same TTL as addDaytona: 720h / 30 days).
 	certCN := "gt-myrig-onyx"
 	certPEM, keyPEM, err := ca.IssuePolecat(certCN, 720*time.Hour)
 	require.NoError(t, err)
 	require.NotEmpty(t, certPEM)
 	require.NotEmpty(t, keyPEM)
 
-	// Step 2: Extract serial (same code path as addDaytonaLocked line 944-947).
+	// Step 2: Extract serial (same code path as addDaytona).
 	var certSerial string
 	block, _ := pem.Decode(certPEM)
 	require.NotNil(t, block, "certPEM should decode")

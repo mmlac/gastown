@@ -2623,7 +2623,7 @@ func (d *Daemon) listDaytonaPolecatBeads(rigName string) []daytona.AgentBead {
 		result = append(result, daytona.AgentBead{
 			ID:                 agent.ID,
 			Polecat:            polecatName,
-			DaytonaWorkspaceID: fields.DaytonaWorkspace,
+			DaytonaWorkspaceName: fields.DaytonaWorkspace,
 			AgentState:         fields.AgentState,
 			CertSerial:         fields.CertSerial,
 		})

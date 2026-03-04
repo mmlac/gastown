@@ -1352,8 +1352,8 @@ func TestCleanupOrphanPreservesRemoteMarkerDirs(t *testing.T) {
 	}
 	m := NewManager(r, nil, nil)
 
-	// Configure remote mode.
-	m.SetDaytona(nil, nil, &config.RigSettings{
+	// Configure remote mode (requires non-nil client for isRemoteMode).
+	m.SetDaytona(daytona.NewClient("gt-test"), nil, &config.RigSettings{
 		RemoteBackend: &config.RemoteBackend{Provider: "daytona"},
 	})
 
@@ -1737,12 +1737,20 @@ func TestIsRemoteMode(t *testing.T) {
 		t.Error("isRemoteMode() = true, want false when RemoteBackend is nil")
 	}
 
-	// SetDaytona with RemoteBackend: remote
+	// SetDaytona with RemoteBackend but nil client: still not remote
 	m.SetDaytona(nil, nil, &config.RigSettings{
 		RemoteBackend: &config.RemoteBackend{Provider: "daytona"},
 	})
+	if m.isRemoteMode() {
+		t.Error("isRemoteMode() = true, want false when daytonaClient is nil")
+	}
+
+	// SetDaytona with client and RemoteBackend: remote
+	m.SetDaytona(daytona.NewClient("gt-test"), nil, &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{Provider: "daytona"},
+	})
 	if !m.isRemoteMode() {
-		t.Error("isRemoteMode() = false, want true when RemoteBackend is set")
+		t.Error("isRemoteMode() = false, want true when client and RemoteBackend are set")
 	}
 }
 

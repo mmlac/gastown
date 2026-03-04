@@ -83,9 +83,9 @@ type Polecat struct {
 	// Issue is the currently assigned issue ID (if any).
 	Issue string `json:"issue,omitempty"`
 
-	// DaytonaWorkspaceID is the daytona workspace name for remote polecats.
+	// DaytonaWorkspaceName is the daytona workspace name for remote polecats.
 	// Empty for local polecats. Persisted via agent bead label daytona_workspace.
-	DaytonaWorkspaceID string `json:"daytona_workspace_id,omitempty"`
+	DaytonaWorkspaceName string `json:"daytona_workspace_name,omitempty"`
 
 	// CreatedAt is when the polecat was created.
 	CreatedAt time.Time `json:"created_at"`

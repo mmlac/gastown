@@ -363,7 +363,7 @@ func TestIssuePolecat_CertSerialExtraction(t *testing.T) {
 		leaf, err := x509.ParseCertificate(block.Bytes)
 		require.NoError(t, err)
 
-		serial := leaf.SerialNumber.Text(16) // lowercase hex, same as addDaytonaLocked
+		serial := leaf.SerialNumber.Text(16) // lowercase hex, same as addDaytona
 		assert.NotEmpty(t, serial, "serial should be non-empty")
 		assert.Greater(t, len(serial), 8, "serial should be a long hex string (128-bit random)")
 

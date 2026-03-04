@@ -528,15 +528,15 @@ func TestRunnerError(t *testing.T) {
 	}
 }
 
-func TestCreateWithEnvAndProfile(t *testing.T) {
+func TestCreateWithEnvAndDevcontainerPath(t *testing.T) {
 	mock := &mockRunner{
 		defaultResponse: mockResponse{exitCode: 0},
 	}
 	c := NewClientWithRunner("gt-abc12345", mock)
 
 	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{
-		Profile: ".devcontainer/go",
-		Env:     map[string]string{"KEY": "val"},
+		DevcontainerPath: ".devcontainer/go",
+		Env:              map[string]string{"KEY": "val"},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
