@@ -980,7 +980,7 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 		_ = m.beads.ResetAgentBeadForReuse(aid, "spawn rollback")
 
 		if workspaceCreated {
-			ctx, cancel := context.WithTimeout(context.Background(), constants.DaytonaListTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), constants.DaytonaStopTimeout)
 			defer cancel()
 			_ = m.daytonaClient.Delete(ctx, wsName)
 		}
@@ -1542,7 +1542,7 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 // work bead unassignment) is already done.
 func (m *Manager) removeDaytonaWorkspace(name, wsName, polecatDir, branchName string) error {
 	if m.daytonaClient != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), constants.DaytonaListTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), constants.DaytonaStopTimeout)
 		defer cancel()
 
 		autoDelete := m.rigSettings != nil && m.rigSettings.RemoteBackend != nil && m.rigSettings.RemoteBackend.AutoDelete
