@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"log"
 	"os"
 	"path/filepath"
@@ -360,5 +361,90 @@ func TestRestartDaytonaPolecatSession_DelegatesToDaytonaPath(t *testing.T) {
 	}
 	if !strings.Contains(errMsg, "daytona") && !strings.Contains(errMsg, "workspace") {
 		t.Errorf("error should relate to daytona workspace operations, got: %v", err)
+	}
+}
+
+// TestCleanupAutoDeletedWorkspace_NoFatalOnBdFailure verifies that
+// cleanupAutoDeletedWorkspace doesn't panic when bd CLI commands fail
+// (e.g., non-existent bd path). All operations are best-effort.
+func TestCleanupAutoDeletedWorkspace_NoFatalOnBdFailure(t *testing.T) {
+	t.Parallel()
+
+	townRoot := t.TempDir()
+
+	// Create rigs.json so GetRigPrefix resolves (avoids fallback noise).
+	mayorDir := filepath.Join(townRoot, "mayor")
+	if err := os.MkdirAll(mayorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mayorDir, "rigs.json"),
+		[]byte(`{"rigs":[{"name":"myrig","prefix":"gtd"}]}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rigDir := filepath.Join(townRoot, "myrig")
+	if err := os.MkdirAll(rigDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	var logBuf strings.Builder
+	d := &Daemon{
+		config: &Config{TownRoot: townRoot},
+		logger: log.New(&logBuf, "", 0),
+		bdPath: "/nonexistent/bd", // bd not available — all commands should fail gracefully
+		ctx:    context.Background(),
+	}
+
+	// Should not panic or fatal — all bd operations are best-effort.
+	d.cleanupAutoDeletedWorkspace("myrig", "garnet", rigDir)
+
+	got := logBuf.String()
+	// Should log warnings about failed commands (since bd doesn't exist).
+	if !strings.Contains(got, "Warning") {
+		t.Errorf("expected warning logs for failed bd commands, got: %q", got)
+	}
+	// Should log the final cleanup summary.
+	if !strings.Contains(got, "Cleaned up auto-deleted workspace") {
+		t.Errorf("expected cleanup summary log, got: %q", got)
+	}
+}
+
+// TestCleanupAutoDeletedWorkspace_LogsAgentBeadID verifies that the cleanup
+// function correctly computes and logs the agent bead ID.
+func TestCleanupAutoDeletedWorkspace_LogsAgentBeadID(t *testing.T) {
+	t.Parallel()
+
+	townRoot := t.TempDir()
+
+	mayorDir := filepath.Join(townRoot, "mayor")
+	if err := os.MkdirAll(mayorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Configure prefix "gtd" for the rig.
+	if err := os.WriteFile(filepath.Join(mayorDir, "rigs.json"),
+		[]byte(`{"rigs":[{"name":"testrig","prefix":"gtd"}]}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rigDir := filepath.Join(townRoot, "testrig")
+	if err := os.MkdirAll(rigDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	var logBuf strings.Builder
+	d := &Daemon{
+		config: &Config{TownRoot: townRoot},
+		logger: log.New(&logBuf, "", 0),
+		bdPath: "/nonexistent/bd",
+		ctx:    context.Background(),
+	}
+
+	d.cleanupAutoDeletedWorkspace("testrig", "amber", rigDir)
+
+	got := logBuf.String()
+	// The bead ID should be logged in the cleanup summary.
+	// Expected format: gtd-testrig-polecat-amber
+	if !strings.Contains(got, "gtd-testrig-polecat-amber") {
+		t.Errorf("expected agent bead ID in log output, got: %q", got)
 	}
 }
