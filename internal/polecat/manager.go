@@ -1073,7 +1073,8 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 
 	createOpts := daytona.CreateOptions{
 		Image:            rb.Image,
-		Dockerfile: rb.Dockerfile,
+		Dockerfile:       rb.Dockerfile,
+		Snapshot:         rb.Snapshot,
 		Env:              rb.Env,
 		NetworkBlockAll:  rb.NetworkBlockAll,
 		NetworkAllowList: rb.NetworkAllowList,
