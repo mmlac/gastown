@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestDiscoverWorkspaces_AllHealthy(t *testing.T) {
@@ -638,6 +639,60 @@ func TestDiscoverWorkspaces_NonSpawningBeadStillOrphaned(t *testing.T) {
 	}
 	if report.SpawningSkipped != 0 {
 		t.Errorf("SpawningSkipped = %d, want 0", report.SpawningSkipped)
+	}
+}
+
+func TestReconcile_PerOperationTimeoutNotShared(t *testing.T) {
+	t.Parallel()
+
+	// Track contexts passed to Stop to verify each gets its own deadline.
+	var stopContexts []context.Context
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+		interceptRun: func(ctx context.Context, name string, args ...string) {
+			if len(args) > 0 && args[0] == "stop" {
+				stopContexts = append(stopContexts, ctx)
+			}
+		},
+	}
+	client := NewClientWithRunner("gt-abc12345", mock)
+	logger := log.New(os.Stderr, "test: ", 0)
+
+	// Three orphaned workspaces — all should be processed with independent timeouts.
+	report := &ReconcileReport{
+		Rig: "myrig",
+		Results: []DiscoveryResult{
+			{Action: ActionOrphanedWorkspace, Rig: "myrig", Polecat: "a", Workspace: &Workspace{Name: "ws-a", State: "running"}},
+			{Action: ActionOrphanedWorkspace, Rig: "myrig", Polecat: "b", Workspace: &Workspace{Name: "ws-b", State: "running"}},
+			{Action: ActionOrphanedWorkspace, Rig: "myrig", Polecat: "c", Workspace: &Workspace{Name: "ws-c", State: "running"}},
+		},
+		OrphanedWorkspaces: 3,
+	}
+
+	result := Reconcile(context.Background(), client, report, ReconcileOptions{
+		PerOperationTimeout: 5 * time.Second,
+	}, nil, nil, logger)
+
+	if result.WorkspacesStopped != 3 {
+		t.Errorf("WorkspacesStopped = %d, want 3", result.WorkspacesStopped)
+	}
+
+	// Each stop call should have received a context with its own deadline,
+	// derived from the parent (Background) with the per-operation timeout.
+	if len(stopContexts) != 3 {
+		t.Fatalf("expected 3 stop contexts, got %d", len(stopContexts))
+	}
+	for i, ctx := range stopContexts {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Errorf("stop context %d has no deadline (should have per-operation timeout)", i)
+			continue
+		}
+		// Deadline should be in the future (within ~5s of now).
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining > 6*time.Second {
+			t.Errorf("stop context %d deadline unexpected: remaining=%v", i, remaining)
+		}
 	}
 }
 

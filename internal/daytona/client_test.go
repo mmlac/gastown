@@ -14,6 +14,8 @@ type mockRunner struct {
 	responses map[string]mockResponse
 	// defaultResponse is returned when no keyed response matches.
 	defaultResponse mockResponse
+	// interceptRun is called (if non-nil) with the context and args before returning.
+	interceptRun func(ctx context.Context, name string, args ...string)
 }
 
 type mockCall struct {
@@ -28,8 +30,11 @@ type mockResponse struct {
 	err      error
 }
 
-func (m *mockRunner) Run(_ context.Context, name string, args ...string) (string, string, int, error) {
+func (m *mockRunner) Run(ctx context.Context, name string, args ...string) (string, string, int, error) {
 	m.calls = append(m.calls, mockCall{Name: name, Args: args})
+	if m.interceptRun != nil {
+		m.interceptRun(ctx, name, args...)
+	}
 	key := name + " " + strings.Join(args, " ")
 	for prefix, resp := range m.responses {
 		if strings.HasPrefix(key, prefix) {
