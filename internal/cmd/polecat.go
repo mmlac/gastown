@@ -12,6 +12,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/daytona"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/rig"
@@ -392,8 +395,10 @@ type PolecatListItem struct {
 }
 
 // getPolecatManager creates a polecat manager for the given rig.
+// If the rig has a RemoteBackend configured, it initializes the daytona client
+// so that removal operations can properly stop/delete remote workspaces.
 func getPolecatManager(rigName string) (*polecat.Manager, *rig.Rig, error) {
-	_, r, err := getRig(rigName)
+	townRoot, r, err := getRig(rigName)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -401,6 +406,21 @@ func getPolecatManager(rigName string) (*polecat.Manager, *rig.Rig, error) {
 	polecatGit := git.NewGit(r.Path)
 	t := tmux.NewTmux()
 	mgr := polecat.NewManager(r, polecatGit, t)
+
+	// Load rig settings and configure daytona client when RemoteBackend is present.
+	// Without this, removeDaytonaWorkspace silently skips workspace cleanup because
+	// daytonaClient is nil, leaking running Daytona workspaces on every CLI removal.
+	rigSettings, _ := config.LoadRigSettings(config.RigSettingsPath(r.Path))
+	if rigSettings != nil && rigSettings.RemoteBackend != nil {
+		townConfigPath := constants.MayorTownPath(townRoot)
+		if townCfg, err := config.LoadTownConfig(townConfigPath); err == nil {
+			shortID := townCfg.ShortInstallationID()
+			if shortID != "" {
+				daytonaClient := daytona.NewClient("gt-" + shortID)
+				mgr.SetDaytona(daytonaClient, nil, rigSettings)
+			}
+		}
+	}
 
 	return mgr, r, nil
 }
