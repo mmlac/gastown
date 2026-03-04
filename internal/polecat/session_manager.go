@@ -64,7 +64,7 @@ func NewSessionManager(t *tmux.Tmux, r *rig.Rig) *SessionManager {
 	// No-op if the rig has no RemoteBackend configured (local-only mode).
 	settingsPath := filepath.Join(r.Path, "settings", "config.json")
 	if settings, err := config.LoadRigSettings(settingsPath); err == nil && settings.RemoteBackend != nil {
-		adminAddr := "127.0.0.1:9877"
+		adminAddr := constants.DefaultProxyAdminAddr
 		if settings.RemoteBackend.ProxyAdminAddr != "" {
 			adminAddr = settings.RemoteBackend.ProxyAdminAddr
 		}
@@ -962,7 +962,7 @@ func (m *SessionManager) buildDaytonaCommand(polecat, wsName, beacon string, rc 
 	// Add proxy URL for mTLS proxy access from the container.
 	proxyAddr := rb.ProxyAddr
 	if proxyAddr == "" {
-		proxyAddr = "localhost:8443"
+		proxyAddr = constants.DefaultProxyAddr
 	}
 	env["GT_PROXY_URL"] = fmt.Sprintf("https://%s", proxyAddr)
 

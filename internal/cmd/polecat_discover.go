@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
@@ -135,11 +134,11 @@ func runPolecatDiscover(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("installation ID not set in town config — run 'gt install' to initialize")
 	}
 
-	installPrefix := "gt-" + shortID
+	installPrefix := constants.InstallPrefix(shortID)
 
 	// Create daytona client and discover workspaces
 	client := daytona.NewClient(installPrefix)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.DaytonaListTimeout)
 	defer cancel()
 
 	// List all owned workspaces from daytona

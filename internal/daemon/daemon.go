@@ -2097,12 +2097,12 @@ func (d *Daemon) restartDaytonaPolecatSession(rigName, polecatName, sessionName,
 		return fmt.Errorf("no InstallationID in town config, cannot determine workspace name")
 	}
 	shortID := townCfg.ShortInstallationID()
-	installPrefix := "gt-" + shortID
+	installPrefix := constants.InstallPrefix(shortID)
 	client := daytona.NewClient(installPrefix)
 	wsName := client.WorkspaceName(rigName, polecatName)
 
 	// Check workspace state and start if stopped.
-	ctx, cancel := context.WithTimeout(d.ctx, 120*time.Second)
+	ctx, cancel := context.WithTimeout(d.ctx, constants.DaytonaCreateTimeout)
 	defer cancel()
 
 	workspaces, err := client.ListOwned(ctx)
@@ -2429,10 +2429,10 @@ func (d *Daemon) reconcileDaytonaWorkspaces() {
 
 // reconcileDaytonaRig performs workspace discovery and reconciliation for a single rig.
 func (d *Daemon) reconcileDaytonaRig(rigName, shortID string, backend *config.RemoteBackend) {
-	installPrefix := "gt-" + shortID
+	installPrefix := constants.InstallPrefix(shortID)
 	client := daytona.NewClient(installPrefix)
 
-	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(d.ctx, constants.DaytonaListTimeout)
 	defer cancel()
 
 	// Get all workspaces owned by this installation.
@@ -2469,7 +2469,7 @@ func (d *Daemon) reconcileDaytonaRig(rigName, shortID string, backend *config.Re
 
 	// Build cert revoker callback — revokes mTLS certs via the proxy admin API
 	// before bead reset to prevent orphaned certs from authenticating.
-	adminAddr := "127.0.0.1:9877"
+	adminAddr := constants.DefaultProxyAdminAddr
 	if backend.ProxyAdminAddr != "" {
 		adminAddr = backend.ProxyAdminAddr
 	}
