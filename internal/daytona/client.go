@@ -309,6 +309,16 @@ func (c *Client) Info(ctx context.Context, name string) (*WorkspaceInfo, error) 
 	return &info, nil
 }
 
+// ExecOptions configures optional behaviour for Exec calls.
+type ExecOptions struct {
+	// Env sets environment variables inside the workspace via an inline
+	// `env K=V` prefix (daytona exec does not support --env).
+	Env map[string]string
+
+	// Cwd sets the working directory for the command via --cwd.
+	Cwd string
+}
+
 // Exec runs a command inside a workspace and returns stdout, stderr, and exit code.
 // Retries on OS-level errors (e.g., daytona binary I/O failure) but not on non-zero
 // exit codes, which belong to the command running inside the workspace.
@@ -316,19 +326,29 @@ func (c *Client) Info(ctx context.Context, name string) (*WorkspaceInfo, error) 
 // Environment variables are injected via an inline `env K=V` prefix rather than
 // --env flags, because daytona exec does not support --env.
 func (c *Client) Exec(ctx context.Context, name string, env map[string]string, cmd ...string) (string, string, int, error) {
-	args := []string{"exec", name, "--"}
-	if len(env) > 0 {
+	return c.ExecWithOptions(ctx, name, ExecOptions{Env: env}, cmd...)
+}
+
+// ExecWithOptions is like Exec but accepts an ExecOptions struct for extended
+// configuration such as --cwd.
+func (c *Client) ExecWithOptions(ctx context.Context, name string, opts ExecOptions, cmd ...string) (string, string, int, error) {
+	args := []string{"exec", name}
+	if opts.Cwd != "" {
+		args = append(args, "--cwd", opts.Cwd)
+	}
+	args = append(args, "--")
+	if len(opts.Env) > 0 {
 		// daytona exec does not support --env; use the env command to set
 		// variables inline inside the container.
 		args = append(args, "env")
 		// Sort keys for deterministic command output.
-		keys := make([]string, 0, len(env))
-		for k := range env {
+		keys := make([]string, 0, len(opts.Env))
+		for k := range opts.Env {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			args = append(args, k+"="+env[k])
+			args = append(args, k+"="+opts.Env[k])
 		}
 	}
 	args = append(args, cmd...)

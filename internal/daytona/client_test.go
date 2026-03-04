@@ -504,6 +504,66 @@ func TestExec(t *testing.T) {
 	}
 }
 
+func TestExecWithOptionsCwd(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{
+			stdout:   "ok\n",
+			exitCode: 0,
+		},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	stdout, _, exitCode, err := c.ExecWithOptions(context.Background(), "ws-name",
+		ExecOptions{Cwd: "/home/daytona/certs"},
+		"ls", "-la",
+	)
+	if err != nil {
+		t.Fatalf("ExecWithOptions() error = %v", err)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	if exitCode != 0 {
+		t.Errorf("exitCode = %d, want 0", exitCode)
+	}
+
+	call := mock.calls[0]
+	args := strings.Join(call.Args, " ")
+	if !strings.Contains(args, "exec ws-name --cwd /home/daytona/certs --") {
+		t.Errorf("args missing '--cwd': %s", args)
+	}
+}
+
+func TestExecWithOptionsCwdAndEnv(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{
+			stdout:   "ok\n",
+			exitCode: 0,
+		},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	_, _, _, err := c.ExecWithOptions(context.Background(), "ws-name",
+		ExecOptions{
+			Cwd: "/workdir",
+			Env: map[string]string{"KEY": "val"},
+		},
+		"echo", "hi",
+	)
+	if err != nil {
+		t.Fatalf("ExecWithOptions() error = %v", err)
+	}
+
+	call := mock.calls[0]
+	args := strings.Join(call.Args, " ")
+	if !strings.Contains(args, "--cwd /workdir") {
+		t.Errorf("args missing '--cwd': %s", args)
+	}
+	if !strings.Contains(args, "-- env KEY=val echo hi") {
+		t.Errorf("args missing env prefix or command: %s", args)
+	}
+}
+
 func TestExecNonZeroExit(t *testing.T) {
 	mock := &mockRunner{
 		defaultResponse: mockResponse{

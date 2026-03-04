@@ -911,7 +911,7 @@ func (m *Manager) injectCertsIntoWorkspace(ctx context.Context, wsName string, c
 		{certDir + "/client.key", keyPEM},
 		{certDir + "/ca.crt", m.proxyCA.CertPEM},
 	} {
-		if err := m.writeFileInWorkspace(ctx, wsName, f.path, f.data); err != nil {
+		if err := m.writeFileInWorkspace(ctx, wsName, f.path, certDir, f.data); err != nil {
 			return fmt.Errorf("injecting %s into workspace: %w", f.path, err)
 		}
 	}
@@ -1134,11 +1134,14 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 
 // writeFileInWorkspace writes data to a file inside a daytona workspace using
 // a base64-encoded shell command (since daytona exec doesn't support stdin piping).
-func (m *Manager) writeFileInWorkspace(ctx context.Context, wsName, path string, data []byte) error {
+// When cwd is non-empty it is passed as --cwd to daytona exec so the command
+// runs in the specified working directory.
+func (m *Manager) writeFileInWorkspace(ctx context.Context, wsName, path, cwd string, data []byte) error {
 	// Base64 encode to avoid shell escaping issues with binary/PEM data.
 	// Pass encoded data and path as positional args ($1, $2) to avoid shell injection.
 	encoded := base64Encode(data)
-	_, stderr, code, err := m.daytonaClient.Exec(ctx, wsName, nil, "sh", "-c", `echo "$1" | base64 -d > "$2"`, "_", encoded, path)
+	opts := daytona.ExecOptions{Cwd: cwd}
+	_, stderr, code, err := m.daytonaClient.ExecWithOptions(ctx, wsName, opts, "sh", "-c", `echo "$1" | base64 -d > "$2"`, "_", encoded, path)
 	if err != nil {
 		return fmt.Errorf("exec failed: %w", err)
 	}
