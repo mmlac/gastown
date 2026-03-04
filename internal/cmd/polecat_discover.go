@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -52,24 +55,24 @@ Examples:
 	RunE: runPolecatDiscover,
 }
 
-// DiscoverResult holds the full discovery output.
+// DiscoverResult holds the full discovery output for display and JSON.
 type DiscoverResult struct {
-	Rig               string             `json:"rig"`
-	InstallPrefix     string             `json:"install_prefix"`
-	Matched           []DiscoverMatch    `json:"matched,omitempty"`
-	OrphanWorkspaces  []DiscoverOrphan   `json:"orphan_workspaces,omitempty"`
-	OrphanBeads       []DiscoverOrphan   `json:"orphan_beads,omitempty"`
-	Reconciled        bool               `json:"reconciled"`
-	DryRun            bool               `json:"dry_run,omitempty"`
-	ReconcileActions  []ReconcileAction  `json:"reconcile_actions,omitempty"`
+	Rig              string            `json:"rig"`
+	InstallPrefix    string            `json:"install_prefix"`
+	Matched          []DiscoverMatch   `json:"matched,omitempty"`
+	OrphanWorkspaces []DiscoverOrphan  `json:"orphan_workspaces,omitempty"`
+	OrphanBeads      []DiscoverOrphan  `json:"orphan_beads,omitempty"`
+	Reconciled       bool              `json:"reconciled"`
+	DryRun           bool              `json:"dry_run,omitempty"`
+	ReconcileActions []ReconcileAction `json:"reconcile_actions,omitempty"`
 }
 
 // DiscoverMatch represents a workspace with a matching agent bead.
 type DiscoverMatch struct {
-	Polecat       string `json:"polecat"`
-	WorkspaceName string `json:"workspace_name"`
+	Polecat        string `json:"polecat"`
+	WorkspaceName  string `json:"workspace_name"`
 	WorkspaceState string `json:"workspace_state"`
-	BeadID        string `json:"bead_id"`
+	BeadID         string `json:"bead_id"`
 }
 
 // DiscoverOrphan represents an orphaned workspace or bead.
@@ -80,7 +83,7 @@ type DiscoverOrphan struct {
 	BeadID         string `json:"bead_id,omitempty"`
 }
 
-// ReconcileAction records what reconciliation did.
+// ReconcileAction records what reconciliation did (for display/JSON output).
 type ReconcileAction struct {
 	Type    string `json:"type"`    // "stop_workspace" or "clear_bead"
 	Target  string `json:"target"`  // workspace name or bead ID
@@ -139,21 +142,44 @@ func runPolecatDiscover(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result, err := discoverWorkspaces(ctx, client, r, townRoot, rigName, installPrefix)
+	// List all owned workspaces from daytona
+	workspaces, err := client.ListOwned(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("listing daytona workspaces: %w", err)
 	}
+
+	// Gather agent beads for cross-referencing
+	agentBeads := gatherPolecatAgentBeads(r, rigName)
+
+	// Use daytona.DiscoverWorkspaces for the cross-referencing algorithm
+	report := daytona.DiscoverWorkspaces(client, rigName, workspaces, agentBeads)
+
+	// Convert report to display result
+	result := reportToDiscoverResult(report, installPrefix)
 
 	// Validate --dry-run requires --reconcile
 	if polecatDiscoverDryRun && !polecatDiscoverReconcile {
 		return fmt.Errorf("--dry-run requires --reconcile")
 	}
 
-	// Reconcile if requested
+	// Reconcile if requested — delegate to daytona.Reconcile
 	if polecatDiscoverReconcile {
 		result.Reconciled = true
 		result.DryRun = polecatDiscoverDryRun
-		reconcile(ctx, client, r, townRoot, result, polecatDiscoverDryRun)
+
+		bd := beads.New(r.Path)
+		beadResetter := func(beadID string) error {
+			empty := ""
+			return bd.UpdateAgentDescriptionFields(beadID, beads.AgentFieldUpdates{
+				DaytonaWorkspace: &empty,
+			})
+		}
+
+		opts := daytona.ReconcileOptions{DryRun: polecatDiscoverDryRun}
+		logger := log.New(io.Discard, "", 0)
+
+		reconcileResult := daytona.Reconcile(ctx, client, report, opts, beadResetter, nil, logger)
+		result.ReconcileActions = buildReconcileActions(report, reconcileResult, polecatDiscoverDryRun)
 	}
 
 	// Output
@@ -167,77 +193,106 @@ func runPolecatDiscover(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func discoverWorkspaces(ctx context.Context, client *daytona.Client, r *rig.Rig, townRoot, rigName, installPrefix string) (*DiscoverResult, error) {
-	result := &DiscoverResult{
-		Rig:           rigName,
-		InstallPrefix: installPrefix,
-	}
-
-	// List all owned workspaces from daytona
-	workspaces, err := client.ListOwned(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing daytona workspaces: %w", err)
-	}
-
-	// Filter to workspaces belonging to this rig
-	rigWorkspaces := make(map[string]daytona.Workspace) // polecat name -> workspace
-	for _, ws := range workspaces {
-		if ws.Rig == rigName {
-			rigWorkspaces[ws.Polecat] = ws
-		}
-	}
-
-	// Get agent beads with daytona workspace labels
+// gatherPolecatAgentBeads builds []daytona.AgentBead from the rig's polecat beads.
+// This mirrors how the daemon gathers beads but uses the beads API directly
+// instead of JSON parsing via the bd CLI.
+func gatherPolecatAgentBeads(r *rig.Rig, rigName string) []daytona.AgentBead {
 	bd := beads.New(r.Path)
 	prefix := rigPrefix(r)
-	beadWorkspaces := make(map[string]string) // polecat name -> bead ID
 	polecatNames := listPolecatNames(r)
 
+	var result []daytona.AgentBead
 	for _, name := range polecatNames {
 		beadID := beads.PolecatBeadIDWithPrefix(prefix, rigName, name)
 		_, fields, err := bd.GetAgentBead(beadID)
 		if err != nil || fields == nil {
 			continue
 		}
-		if fields.DaytonaWorkspace != "" {
-			beadWorkspaces[name] = beadID
+		if fields.DaytonaWorkspace == "" {
+			continue
 		}
+		result = append(result, daytona.AgentBead{
+			ID:                 beadID,
+			Polecat:            name,
+			DaytonaWorkspaceID: fields.DaytonaWorkspace,
+			AgentState:         fields.AgentState,
+			CertSerial:         fields.CertSerial,
+		})
+	}
+	return result
+}
+
+// reportToDiscoverResult converts a daytona.ReconcileReport to the display-oriented DiscoverResult.
+func reportToDiscoverResult(report *daytona.ReconcileReport, installPrefix string) *DiscoverResult {
+	result := &DiscoverResult{
+		Rig:           report.Rig,
+		InstallPrefix: installPrefix,
 	}
 
-	// Cross-reference: find matches, orphan workspaces, and orphan beads
-	matchedPolecats := make(map[string]bool)
-
-	for polecatName, ws := range rigWorkspaces {
-		if beadID, hasBead := beadWorkspaces[polecatName]; hasBead {
-			// Matched: both workspace and bead exist
+	for _, item := range report.Results {
+		switch item.Action {
+		case daytona.ActionHealthy:
 			result.Matched = append(result.Matched, DiscoverMatch{
-				Polecat:        polecatName,
-				WorkspaceName:  ws.Name,
-				WorkspaceState: ws.State,
-				BeadID:         beadID,
+				Polecat:        item.Polecat,
+				WorkspaceName:  item.Workspace.Name,
+				WorkspaceState: item.Workspace.State,
+				BeadID:         item.BeadID,
 			})
-			matchedPolecats[polecatName] = true
-		} else {
-			// Orphaned workspace: workspace exists but no bead
+		case daytona.ActionOrphanedWorkspace:
 			result.OrphanWorkspaces = append(result.OrphanWorkspaces, DiscoverOrphan{
-				Polecat:        polecatName,
-				WorkspaceName:  ws.Name,
-				WorkspaceState: ws.State,
+				Polecat:        item.Polecat,
+				WorkspaceName:  item.Workspace.Name,
+				WorkspaceState: item.Workspace.State,
 			})
-		}
-	}
-
-	for polecatName, beadID := range beadWorkspaces {
-		if !matchedPolecats[polecatName] {
-			// Orphaned bead: bead references a workspace that doesn't exist
+		case daytona.ActionOrphanedBead:
 			result.OrphanBeads = append(result.OrphanBeads, DiscoverOrphan{
-				Polecat: polecatName,
-				BeadID:  beadID,
+				Polecat: item.Polecat,
+				BeadID:  item.BeadID,
 			})
 		}
 	}
 
-	return result, nil
+	return result
+}
+
+// buildReconcileActions builds display actions from the reconcile report and result.
+// For dry-run, all actions are marked as success. For actual runs, errors from
+// daytona.Reconcile are matched to actions by target name.
+func buildReconcileActions(report *daytona.ReconcileReport, reconcileResult *daytona.ReconcileResult, dryRun bool) []ReconcileAction {
+	var actions []ReconcileAction
+
+	for _, item := range report.Results {
+		switch item.Action {
+		case daytona.ActionOrphanedWorkspace:
+			actions = append(actions, ReconcileAction{
+				Type:    "stop_workspace",
+				Target:  item.Workspace.Name,
+				Success: true,
+			})
+		case daytona.ActionOrphanedBead:
+			actions = append(actions, ReconcileAction{
+				Type:    "clear_bead",
+				Target:  item.BeadID,
+				Success: true,
+			})
+		}
+	}
+
+	if !dryRun {
+		// Match errors from reconcileResult to actions by target name.
+		for _, err := range reconcileResult.Errors {
+			errStr := err.Error()
+			for i := range actions {
+				if strings.Contains(errStr, actions[i].Target) {
+					actions[i].Success = false
+					actions[i].Error = errStr
+					break
+				}
+			}
+		}
+	}
+
+	return actions
 }
 
 // listPolecatNames returns all polecat names for a rig by scanning the polecats directory.
@@ -258,45 +313,6 @@ func listPolecatNames(r *rig.Rig) []string {
 
 func isHiddenDir(name string) bool {
 	return len(name) > 0 && name[0] == '.'
-}
-
-func reconcile(ctx context.Context, client *daytona.Client, r *rig.Rig, townRoot string, result *DiscoverResult, dryRun bool) {
-	bd := beads.New(r.Path)
-
-	// Stop orphaned workspaces
-	for _, orphan := range result.OrphanWorkspaces {
-		action := ReconcileAction{
-			Type:   "stop_workspace",
-			Target: orphan.WorkspaceName,
-		}
-		if dryRun {
-			action.Success = true
-		} else if err := client.Stop(ctx, orphan.WorkspaceName); err != nil {
-			action.Error = err.Error()
-		} else {
-			action.Success = true
-		}
-		result.ReconcileActions = append(result.ReconcileActions, action)
-	}
-
-	// Clear daytona_workspace field on orphaned beads
-	empty := ""
-	for _, orphan := range result.OrphanBeads {
-		action := ReconcileAction{
-			Type:   "clear_bead",
-			Target: orphan.BeadID,
-		}
-		if dryRun {
-			action.Success = true
-		} else if err := bd.UpdateAgentDescriptionFields(orphan.BeadID, beads.AgentFieldUpdates{
-			DaytonaWorkspace: &empty,
-		}); err != nil {
-			action.Error = err.Error()
-		} else {
-			action.Success = true
-		}
-		result.ReconcileActions = append(result.ReconcileActions, action)
-	}
 }
 
 func printDiscoverResult(result *DiscoverResult) {
