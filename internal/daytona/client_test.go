@@ -541,8 +541,8 @@ func TestListOwnedPagination(t *testing.T) {
 
 	mock := &mockRunner{
 		responses: map[string]mockResponse{
-			"daytona list -o json --page 1": {stdout: page1, exitCode: 0},
-			"daytona list -o json --page 2": {stdout: page2, exitCode: 0},
+			"daytona list -f json --page 1": {stdout: page1, exitCode: 0},
+			"daytona list -f json --page 2": {stdout: page2, exitCode: 0},
 		},
 	}
 
@@ -580,12 +580,12 @@ func TestListOwnedPaginationStopsOnPartialPage(t *testing.T) {
 	// If a page returns fewer than listPageSize entries, no more pages are fetched.
 	mock := &mockRunner{
 		responses: map[string]mockResponse{
-			"daytona list -o json --page 1": {
+			"daytona list -f json --page 1": {
 				stdout:   `[{"id": "ws1", "name": "gt-abc12345-rig--onyx", "state": "running"}]`,
 				exitCode: 0,
 			},
 			// Page 2 should never be called since page 1 had < listPageSize entries.
-			"daytona list -o json --page 2": {
+			"daytona list -f json --page 2": {
 				stderr:   "should not reach page 2",
 				exitCode: 1,
 			},
