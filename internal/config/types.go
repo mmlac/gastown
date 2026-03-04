@@ -681,6 +681,22 @@ type RemoteBackend struct {
 	// Env provides extra environment variables injected into daytona containers.
 	Env map[string]string `json:"env,omitempty"`
 
+	// Class selects a predefined resource tier for daytona workspaces.
+	// Maps to --class on `daytona create`. Values: "small", "medium", "large".
+	Class string `json:"class,omitempty"`
+
+	// CPU sets the number of CPU cores for daytona workspaces.
+	// Maps to --cpu on `daytona create`. Overrides the class default.
+	CPU int `json:"cpu,omitempty"`
+
+	// Memory sets the memory in MB for daytona workspaces.
+	// Maps to --memory on `daytona create`. Overrides the class default.
+	Memory int `json:"memory,omitempty"`
+
+	// Disk sets the disk size in GB for daytona workspaces.
+	// Maps to --disk on `daytona create`. Overrides the class default.
+	Disk int `json:"disk,omitempty"`
+
 	// NetworkBlockAll blocks all outbound network access from the container.
 	// When true, daytona create is called with --network-block-all.
 	NetworkBlockAll bool `json:"network_block_all,omitempty"`
