@@ -1943,10 +1943,21 @@ func (d *Daemon) restartPolecatSession(rigName, polecatName, sessionName string)
 		return fmt.Errorf("cannot restart polecat: %s", reason)
 	}
 
-	// Check if this rig uses a remote backend (daytona).
 	rigPath := filepath.Join(d.config.TownRoot, rigName)
-	rigSettingsPath := config.RigSettingsPath(rigPath)
-	if rigSettings, err := config.LoadRigSettings(rigSettingsPath); err == nil && rigSettings.RemoteBackend != nil {
+
+	// Determine local vs remote restart from the agent bead's DaytonaWorkspace
+	// field, not from current config. This prevents path mismatch when config
+	// changes while polecats are running (gtd-eg9).
+	isDaytona, beadErr := d.isPolecatDaytona(rigName, polecatName)
+	if beadErr != nil {
+		// Agent bead unreadable (e.g., first spawn before bead exists).
+		// Fall back to config-based check.
+		rigSettingsPath := config.RigSettingsPath(rigPath)
+		if rigSettings, err := config.LoadRigSettings(rigSettingsPath); err == nil && rigSettings.RemoteBackend != nil {
+			isDaytona = true
+		}
+	}
+	if isDaytona {
 		return d.restartDaytonaPolecatSession(rigName, polecatName, sessionName, rigPath)
 	}
 
@@ -2042,6 +2053,34 @@ func (d *Daemon) restartPolecatSession(rigName, polecatName, sessionName string)
 	_ = d.tmux.AcceptStartupDialogs(sessionName)
 
 	return nil
+}
+
+// isPolecatDaytona checks the agent bead's DaytonaWorkspace field to determine
+// whether a polecat was spawned as a remote (daytona) or local polecat.
+// Returns (true, nil) for daytona polecats, (false, nil) for local polecats,
+// and (false, err) if the agent bead cannot be read.
+func (d *Daemon) isPolecatDaytona(rigName, polecatName string) (bool, error) {
+	prefix := config.GetRigPrefix(d.config.TownRoot, rigName)
+	agentBeadID := beads.PolecatBeadIDWithPrefix(prefix, rigName, polecatName)
+
+	cmd := exec.Command(d.bdPath, "show", agentBeadID, "--json") //nolint:gosec // G204: bd is a trusted internal tool
+	cmd.Dir = d.config.TownRoot
+	cmd.Env = os.Environ()
+
+	output, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("bd show %s: %w", agentBeadID, err)
+	}
+
+	var issues []struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(output, &issues); err != nil || len(issues) == 0 {
+		return false, fmt.Errorf("parsing agent bead %s: no results", agentBeadID)
+	}
+
+	fields := beads.ParseAgentFields(issues[0].Description)
+	return fields != nil && fields.DaytonaWorkspace != "", nil
 }
 
 // restartDaytonaPolecatSession restarts a crashed polecat that runs in a
