@@ -353,7 +353,7 @@ daytona delete <workspace-name>
 
 ```bash
 # List all workspaces for this installation
-daytona list -o json | jq '.[] | select(.name | startswith("gt-"))'
+daytona list -f json | jq '.[] | select(.name | startswith("gt-"))'
 
 # Check a specific workspace
 daytona info <workspace-name>
