@@ -55,10 +55,26 @@ type SessionManager struct {
 
 // NewSessionManager creates a new polecat session manager for a rig.
 func NewSessionManager(t *tmux.Tmux, r *rig.Rig) *SessionManager {
-	return &SessionManager{
+	sm := &SessionManager{
 		tmux: t,
 		rig:  r,
 	}
+
+	// Wire up proxy admin client for mTLS cert revocation on Stop.
+	// No-op if the rig has no RemoteBackend configured (local-only mode).
+	settingsPath := filepath.Join(r.Path, "settings", "config.json")
+	if settings, err := config.LoadRigSettings(settingsPath); err == nil && settings.RemoteBackend != nil {
+		adminAddr := "127.0.0.1:9877"
+		if settings.RemoteBackend.ProxyAdminAddr != "" {
+			adminAddr = settings.RemoteBackend.ProxyAdminAddr
+		}
+		resolvedBeads := beads.ResolveBeadsDir(r.Path)
+		beadsPath := filepath.Dir(resolvedBeads)
+		sm.proxyAdmin = proxy.NewAdminClient(adminAddr)
+		sm.beads = beads.NewWithBeadsDir(beadsPath, resolvedBeads)
+	}
+
+	return sm
 }
 
 // SetProxyAdmin sets the proxy admin client for mTLS cert lifecycle.
