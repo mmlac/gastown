@@ -1946,7 +1946,7 @@ func TestWriteFileInWorkspace_NoShellInjection(t *testing.T) {
 	maliciousPath := "/tmp/cert; rm -rf /"
 	data := []byte("test-data")
 
-	_ = m.writeFileInWorkspace(context.Background(), "ws-test", maliciousPath, data)
+	_ = m.writeFileInWorkspace(context.Background(), "ws-test", maliciousPath, "", data)
 
 	if len(runner.calls) == 0 {
 		t.Fatal("expected daytona exec call")
