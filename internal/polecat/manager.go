@@ -1577,6 +1577,12 @@ func (m *Manager) removeDaytonaWorkspace(name, wsName, polecatDir, branchName st
 			// Default: stop workspace (preserves state for fast re-spawn)
 			if err := m.daytonaClient.Stop(ctx, wsName); err != nil {
 				style.PrintWarning("could not stop daytona workspace %s: %v", wsName, err)
+			} else {
+				// Archive moves filesystem to object storage at reduced cost.
+				// Best-effort: failure is non-fatal since the workspace is already stopped.
+				if err := m.daytonaClient.Archive(ctx, wsName); err != nil {
+					style.PrintWarning("could not archive daytona workspace %s: %v", wsName, err)
+				}
 			}
 		}
 	}
