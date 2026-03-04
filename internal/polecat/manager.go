@@ -1054,11 +1054,10 @@ func (m *Manager) addDaytonaLocked(name string, opts AddOptions, polecatDir stri
 // writeFileInWorkspace writes data to a file inside a daytona workspace using
 // a base64-encoded shell command (since daytona exec doesn't support stdin piping).
 func (m *Manager) writeFileInWorkspace(ctx context.Context, wsName, path string, data []byte) error {
-	// Use printf with escaped content via sh -c to write the file.
 	// Base64 encode to avoid shell escaping issues with binary/PEM data.
+	// Pass encoded data and path as positional args ($1, $2) to avoid shell injection.
 	encoded := base64Encode(data)
-	cmd := fmt.Sprintf("echo '%s' | base64 -d > %s", encoded, path)
-	_, stderr, code, err := m.daytonaClient.Exec(ctx, wsName, nil, "sh", "-c", cmd)
+	_, stderr, code, err := m.daytonaClient.Exec(ctx, wsName, nil, "sh", "-c", `echo "$1" | base64 -d > "$2"`, "_", encoded, path)
 	if err != nil {
 		return fmt.Errorf("exec failed: %w", err)
 	}

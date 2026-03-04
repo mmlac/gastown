@@ -1916,3 +1916,55 @@ func TestRemoveDaytonaWorkspace_AutoDelete(t *testing.T) {
 		t.Errorf("expected 'daytona delete' call, got calls: %v", runner.calls)
 	}
 }
+
+// TestWriteFileInWorkspace_NoShellInjection verifies that writeFileInWorkspace
+// passes the path as a positional argument rather than interpolating it into
+// the shell command string, preventing shell injection via crafted paths.
+func TestWriteFileInWorkspace_NoShellInjection(t *testing.T) {
+	t.Parallel()
+
+	rigDir := t.TempDir()
+	r := &rig.Rig{Name: "testrig", Path: rigDir}
+	m := NewManager(r, git.NewGit(rigDir), nil)
+
+	runner := &mockRunner{}
+	client := daytona.NewClientWithRunner("gt-test1234", runner)
+	settings := &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{Provider: "daytona"},
+	}
+	m.SetDaytona(client, nil, settings)
+
+	// A path that would cause shell injection if interpolated directly.
+	maliciousPath := "/tmp/cert; rm -rf /"
+	data := []byte("test-data")
+
+	_ = m.writeFileInWorkspace(context.Background(), "ws-test", maliciousPath, data)
+
+	if len(runner.calls) == 0 {
+		t.Fatal("expected daytona exec call")
+	}
+
+	call := runner.calls[0]
+	// Expected args: exec ws-test -- sh -c 'echo "$1" | base64 -d > "$2"' _ <base64> <path>
+	// The path must appear as a separate argument, NOT inside the shell script string.
+	args := call.args
+	script := ""
+	for i, a := range args {
+		if a == "--" && i+3 < len(args) && args[i+1] == "sh" && args[i+2] == "-c" {
+			script = args[i+3]
+			// Verify the script does NOT contain the malicious path
+			if strings.Contains(script, maliciousPath) {
+				t.Errorf("shell script contains unescaped path (injection vulnerable): %s", script)
+			}
+			// Verify the path is passed as a separate positional arg
+			lastArg := args[len(args)-1]
+			if lastArg != maliciousPath {
+				t.Errorf("path not passed as positional arg: last arg = %q, want %q", lastArg, maliciousPath)
+			}
+			break
+		}
+	}
+	if script == "" {
+		t.Fatalf("could not find sh -c script in exec args: %v", args)
+	}
+}
