@@ -58,6 +58,7 @@ type CreateOptions struct {
 type Client struct {
 	installPrefix string // "gt-<installID-short>" — scopes workspaces to this installation
 	runner        CommandRunner
+	retry         RetryConfig
 }
 
 // NewClient creates a Client that scopes workspaces with the given prefix.
@@ -66,15 +67,23 @@ func NewClient(installPrefix string) *Client {
 	return &Client{
 		installPrefix: installPrefix,
 		runner:        &execRunner{},
+		retry:         DefaultRetryConfig(),
 	}
 }
 
 // NewClientWithRunner creates a Client with a custom CommandRunner (for testing).
+// Retry is disabled by default; use SetRetry to enable.
 func NewClientWithRunner(installPrefix string, runner CommandRunner) *Client {
 	return &Client{
 		installPrefix: installPrefix,
 		runner:        runner,
+		retry:         NoRetryConfig(),
 	}
+}
+
+// SetRetry configures the retry policy for transient CLI failures.
+func (c *Client) SetRetry(cfg RetryConfig) {
+	c.retry = cfg
 }
 
 // WorkspaceName returns the deterministic workspace name for a rig+polecat pair.
@@ -114,7 +123,9 @@ func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts 
 	for k, v := range opts.Env {
 		args = append(args, "--env", k+"="+v)
 	}
-	_, stderr, exitCode, err := c.runner.Run(ctx, "daytona", args...)
+	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
+		return c.runner.Run(ctx, "daytona", args...)
+	})
 	if err != nil {
 		return fmt.Errorf("daytona create: %w", err)
 	}
@@ -126,7 +137,9 @@ func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts 
 
 // Start ensures a workspace is running.
 func (c *Client) Start(ctx context.Context, name string) error {
-	_, stderr, exitCode, err := c.runner.Run(ctx, "daytona", "start", name, "--yes")
+	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
+		return c.runner.Run(ctx, "daytona", "start", name, "--yes")
+	})
 	if err != nil {
 		return fmt.Errorf("daytona start: %w", err)
 	}
@@ -138,7 +151,9 @@ func (c *Client) Start(ctx context.Context, name string) error {
 
 // Stop pauses a workspace (preserves state for re-start).
 func (c *Client) Stop(ctx context.Context, name string) error {
-	_, stderr, exitCode, err := c.runner.Run(ctx, "daytona", "stop", name, "--yes")
+	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
+		return c.runner.Run(ctx, "daytona", "stop", name, "--yes")
+	})
 	if err != nil {
 		return fmt.Errorf("daytona stop: %w", err)
 	}
@@ -150,7 +165,9 @@ func (c *Client) Stop(ctx context.Context, name string) error {
 
 // Delete permanently removes a workspace.
 func (c *Client) Delete(ctx context.Context, name string) error {
-	_, stderr, exitCode, err := c.runner.Run(ctx, "daytona", "delete", name, "--yes")
+	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
+		return c.runner.Run(ctx, "daytona", "delete", name, "--yes")
+	})
 	if err != nil {
 		return fmt.Errorf("daytona delete: %w", err)
 	}
@@ -161,6 +178,8 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 }
 
 // Exec runs a command inside a workspace and returns stdout, stderr, and exit code.
+// Retries on OS-level errors (e.g., daytona binary I/O failure) but not on non-zero
+// exit codes, which belong to the command running inside the workspace.
 func (c *Client) Exec(ctx context.Context, name string, env map[string]string, cmd ...string) (string, string, int, error) {
 	args := []string{"exec", name}
 	for k, v := range env {
@@ -168,7 +187,9 @@ func (c *Client) Exec(ctx context.Context, name string, env map[string]string, c
 	}
 	args = append(args, "--")
 	args = append(args, cmd...)
-	stdout, stderr, exitCode, err := c.runner.Run(ctx, "daytona", args...)
+	stdout, stderr, exitCode, err := c.runWithRetry(ctx, false, func() (string, string, int, error) {
+		return c.runner.Run(ctx, "daytona", args...)
+	})
 	if err != nil {
 		return "", "", -1, fmt.Errorf("daytona exec: %w", err)
 	}
@@ -184,7 +205,9 @@ type daytonaListEntry struct {
 
 // ListOwned returns all workspaces belonging to this installation (filtered by installPrefix).
 func (c *Client) ListOwned(ctx context.Context) ([]Workspace, error) {
-	stdout, stderr, exitCode, err := c.runner.Run(ctx, "daytona", "list", "-o", "json")
+	stdout, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
+		return c.runner.Run(ctx, "daytona", "list", "-o", "json")
+	})
 	if err != nil {
 		return nil, fmt.Errorf("daytona list: %w", err)
 	}
