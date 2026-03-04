@@ -322,6 +322,10 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 	// Get polecat object for path info
 	polecatObj, err := polecatMgr.Get(polecatName)
 	if err != nil {
+		// Clean up partial state: AllocateAndAdd succeeded, so the polecat directory,
+		// agent bead, branch, workspace, and cert are all allocated. Without removal
+		// they leak with no cleanup path.
+		_ = polecatMgr.Remove(polecatName, true)
 		return nil, fmt.Errorf("getting polecat after creation: %w", err)
 	}
 
@@ -511,6 +515,7 @@ func IsRigName(target string) (string, bool) {
 // 1. daytona CLI is installed and accessible
 // 2. proxy server is running (admin API reachable)
 // 3. proxy CA exists (required for mTLS cert issuance)
+// 4. daytona CLI is authenticated (has active profile)
 func runDaytonaPreflightChecks(townRoot string, settings *config.RigSettings) error {
 	// 1. Verify daytona CLI is installed
 	if _, err := exec.LookPath("daytona"); err != nil {
@@ -543,6 +548,15 @@ func runDaytonaPreflightChecks(townRoot string, settings *config.RigSettings) er
 	if _, err := os.Stat(keyPath); err != nil {
 		return fmt.Errorf("proxy CA key not found at %s\n"+
 			"The proxy server creates the CA on startup. Start the proxy first: gt-proxy-server", keyPath)
+	}
+
+	// 4. Verify daytona is authenticated (has an active profile)
+	// An unauthenticated CLI passes all other checks but causes confusing errors
+	// later during workspace creation.
+	profileCmd := exec.Command("daytona", "profile", "current")
+	if output, err := profileCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("daytona CLI is not authenticated: %s\n"+
+			"Run 'daytona login' to authenticate", strings.TrimSpace(string(output)))
 	}
 
 	return nil
