@@ -54,9 +54,11 @@ type Workspace struct {
 
 // CreateOptions configures workspace creation.
 type CreateOptions struct {
-	Image      string            // container image override
-	Dockerfile string            // path to Dockerfile for sandbox snapshot (maps to --dockerfile)
-	Env        map[string]string // extra environment variables
+	Image            string            // container image override
+	Dockerfile       string            // path to Dockerfile for sandbox snapshot (maps to --dockerfile)
+	Env              map[string]string // extra environment variables
+	NetworkBlockAll  bool              // block all outbound network (--network-block-all)
+	NetworkAllowList string            // comma-separated CIDRs to allow (--network-allow-list)
 }
 
 // Client wraps the daytona CLI for workspace lifecycle and discovery.
@@ -130,6 +132,12 @@ func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts 
 	}
 	for k, v := range opts.Env {
 		args = append(args, "--env", k+"="+v)
+	}
+	if opts.NetworkBlockAll {
+		args = append(args, "--network-block-all")
+	}
+	if opts.NetworkAllowList != "" {
+		args = append(args, "--network-allow-list", opts.NetworkAllowList)
 	}
 	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
 		return c.runner.Run(ctx, "daytona", args...)

@@ -1075,6 +1075,8 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 		Image:            rb.Image,
 		Dockerfile: rb.Dockerfile,
 		Env:              rb.Env,
+		NetworkBlockAll:  rb.NetworkBlockAll,
+		NetworkAllowList: rb.NetworkAllowList,
 	}
 	if err := m.daytonaClient.Create(ctx, wsName, repoURL, branchName, createOpts); err != nil {
 		cleanupOnError()

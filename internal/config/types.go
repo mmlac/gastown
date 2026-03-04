@@ -671,6 +671,14 @@ type RemoteBackend struct {
 
 	// Env provides extra environment variables injected into daytona containers.
 	Env map[string]string `json:"env,omitempty"`
+
+	// NetworkBlockAll blocks all outbound network access from the container.
+	// When true, daytona create is called with --network-block-all.
+	NetworkBlockAll bool `json:"network_block_all,omitempty"`
+
+	// NetworkAllowList is a comma-separated list of CIDRs to allow when
+	// NetworkBlockAll is true. Passed as --network-allow-list to daytona create.
+	NetworkAllowList string `json:"network_allow_list,omitempty"`
 }
 
 // Validate checks that RemoteBackend has a supported provider.
