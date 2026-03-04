@@ -11,7 +11,7 @@ This guide covers setup, configuration, and operations.
 
 | Requirement | Notes |
 |---|---|
-| **`daytona` CLI** | >= 0.49.0, installed and authenticated (`daytona login`). See [installation docs](https://www.daytona.io/docs/installation/installation/). |
+| **`daytona` CLI** | >= 0.149.0, installed and authenticated (`daytona login`). See [installation docs](https://www.daytona.io/docs/installation/installation/). |
 | **Gas Town installation** | A working `gt install` with at least one rig. |
 | **`gt-proxy-server`** | Running on the host. Manages mTLS certs, proxies git, and relays `gt`/`bd` commands. See [proxy-server.md](proxy-server.md). |
 | **Container image** | Must include `claude-code` (or your agent), `git`, and `gt-proxy-client` installed as both `/usr/local/bin/gt` and `/usr/local/bin/bd`. |
