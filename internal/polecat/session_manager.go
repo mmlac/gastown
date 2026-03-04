@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -976,8 +977,17 @@ func (m *SessionManager) buildDaytonaCommand(polecat, wsName, beacon string, rc 
 	// which may contain shell special characters (newlines, quotes).
 	var parts []string
 	parts = append(parts, "daytona", "exec", wsName)
-	for k, v := range env {
-		parts = append(parts, "--env", fmt.Sprintf("%s=%s", k, v))
+
+	// Pass environment variables via --env flags.
+	// Sort keys for deterministic command output, and shell-quote values
+	// to prevent word-splitting or metacharacter interpretation.
+	envKeys := make([]string, 0, len(env))
+	for k := range env {
+		envKeys = append(envKeys, k)
+	}
+	sort.Strings(envKeys)
+	for _, k := range envKeys {
+		parts = append(parts, "--env", fmt.Sprintf("%s=%s", k, config.ShellQuote(env[k])))
 	}
 	parts = append(parts, "--")
 
