@@ -579,24 +579,26 @@ func TestBuildDaytonaCommand(t *testing.T) {
 		t.Errorf("command should start with 'daytona exec %s', got: %s", wsName, cmd)
 	}
 
-	// Verify required env vars are present via --env flags
-	requiredEnvVars := []string{
-		"GT_RIG=testrig",
-		"GT_POLECAT=onyx",
-		"GT_ROLE=testrig/polecats/onyx",
-		"GT_PROXY_URL=https://proxy.example.com:8443",
-		"GT_RUN=test-run-id-123",
-		"BD_DOLT_AUTO_COMMIT=off",
+	// Per-session env vars are passed via inline env prefix (not --env).
+	// Only GT_RUN should be in the exec command; static vars (GT_RIG, GT_POLECAT,
+	// etc.) are set at workspace creation time via daytona create --env.
+	if !strings.Contains(cmd, "GT_RUN=test-run-id-123") {
+		t.Errorf("command missing GT_RUN env var\ncmd: %s", cmd)
 	}
-	for _, env := range requiredEnvVars {
-		if !strings.Contains(cmd, "--env "+env) {
-			t.Errorf("command missing --env %s\ncmd: %s", env, cmd)
+
+	// Static vars should NOT be in the exec command.
+	for _, staticVar := range []string{"GT_RIG=", "GT_POLECAT=", "GT_ROLE=", "GT_PROXY_URL=", "BD_DOLT_AUTO_COMMIT="} {
+		if strings.Contains(cmd, staticVar) {
+			t.Errorf("command should not contain static var %s (set at create time)\ncmd: %s", staticVar, cmd)
 		}
 	}
 
-	// Verify the command contains sh -c with the agent command
-	if !strings.Contains(cmd, "-- sh -c") {
-		t.Errorf("command missing '-- sh -c'\ncmd: %s", cmd)
+	// Verify the command contains -- env ... sh -c with the agent command
+	if !strings.Contains(cmd, "-- env") {
+		t.Errorf("command missing '-- env' prefix\ncmd: %s", cmd)
+	}
+	if !strings.Contains(cmd, "sh -c") {
+		t.Errorf("command missing 'sh -c'\ncmd: %s", cmd)
 	}
 
 	// Verify the agent command includes claude and the beacon
@@ -608,9 +610,10 @@ func TestBuildDaytonaCommand(t *testing.T) {
 	}
 }
 
-// TestBuildDaytonaCommand_DefaultProxyAddr verifies that the default proxy
-// address (localhost:8443) is used when ProxyAddr is not configured.
-func TestBuildDaytonaCommand_DefaultProxyAddr(t *testing.T) {
+// TestBuildDaytonaCommand_OnlyPerSessionEnv verifies that the exec command
+// only contains per-session env vars (GT_RUN), not static vars like proxy URLs.
+// Static vars are set at workspace creation time via daytona create --env.
+func TestBuildDaytonaCommand_OnlyPerSessionEnv(t *testing.T) {
 	t.Parallel()
 
 	rigPath := filepath.Join(t.TempDir(), "testrig")
@@ -623,7 +626,6 @@ func TestBuildDaytonaCommand_DefaultProxyAddr(t *testing.T) {
 	m.SetDaytona(daytona.NewClient("gt-abc12345"), &config.RigSettings{
 		RemoteBackend: &config.RemoteBackend{
 			Provider: "daytona",
-			// ProxyAddr not set — should default to localhost:8443
 		},
 	})
 
@@ -635,14 +637,19 @@ func TestBuildDaytonaCommand_DefaultProxyAddr(t *testing.T) {
 
 	cmd := m.buildDaytonaCommand("onyx", "ws-name", "beacon", rc, "run-id")
 
-	if !strings.Contains(cmd, "GT_PROXY_URL=https://localhost:8443") {
-		t.Errorf("command missing default proxy URL\ncmd: %s", cmd)
+	// GT_RUN should be present (per-session var).
+	if !strings.Contains(cmd, "GT_RUN=run-id") {
+		t.Errorf("command missing GT_RUN\ncmd: %s", cmd)
+	}
+	// Proxy URL should NOT be present (static var set at create time).
+	if strings.Contains(cmd, "GT_PROXY_URL") {
+		t.Errorf("command should not contain GT_PROXY_URL (set at create time)\ncmd: %s", cmd)
 	}
 }
 
-// TestBuildDaytonaCommand_ExtraEnv verifies that RemoteBackend.Env vars are
-// included in the daytona exec command.
-func TestBuildDaytonaCommand_ExtraEnv(t *testing.T) {
+// TestBuildDaytonaCommand_ExtraEnvNotInExec verifies that RemoteBackend.Env vars
+// are NOT included in the daytona exec command (they're set at create time).
+func TestBuildDaytonaCommand_ExtraEnvNotInExec(t *testing.T) {
 	t.Parallel()
 
 	rigPath := filepath.Join(t.TempDir(), "testrig")
@@ -667,13 +674,14 @@ func TestBuildDaytonaCommand_ExtraEnv(t *testing.T) {
 
 	cmd := m.buildDaytonaCommand("onyx", "ws-name", "beacon", rc, "run-id")
 
-	if !strings.Contains(cmd, "--env CUSTOM_VAR=custom_value") {
-		t.Errorf("command missing custom env var\ncmd: %s", cmd)
+	// CUSTOM_VAR should NOT be in exec command (set at create time via daytona create --env).
+	if strings.Contains(cmd, "CUSTOM_VAR") {
+		t.Errorf("command should not contain CUSTOM_VAR (set at create time)\ncmd: %s", cmd)
 	}
 }
 
-// TestBuildDaytonaCommand_EnvValueShellQuoting verifies that env values containing
-// shell metacharacters are properly quoted to prevent word-splitting or injection.
+// TestBuildDaytonaCommand_EnvValueShellQuoting verifies that per-session env
+// values are properly quoted in the inline env prefix.
 func TestBuildDaytonaCommand_EnvValueShellQuoting(t *testing.T) {
 	t.Parallel()
 
@@ -687,12 +695,6 @@ func TestBuildDaytonaCommand_EnvValueShellQuoting(t *testing.T) {
 	m.SetDaytona(daytona.NewClient("gt-abc12345"), &config.RigSettings{
 		RemoteBackend: &config.RemoteBackend{
 			Provider: "daytona",
-			Env: map[string]string{
-				"SAFE_VAR":    "simple",
-				"SPACED_VAR":  "has spaces",
-				"DOLLAR_VAR":  "price=$100",
-				"QUOTE_VAR":   "it's quoted",
-			},
 		},
 	})
 
@@ -702,23 +704,16 @@ func TestBuildDaytonaCommand_EnvValueShellQuoting(t *testing.T) {
 		Args:     []string{"--dangerously-skip-permissions"},
 	}
 
+	// GT_RUN is the per-session var; verify it's quoted via env prefix, not --env.
 	cmd := m.buildDaytonaCommand("onyx", "ws-name", "beacon", rc, "run-id")
 
-	// Simple value should pass through unquoted.
-	if !strings.Contains(cmd, "--env SAFE_VAR=simple") {
-		t.Errorf("command missing unquoted SAFE_VAR\ncmd: %s", cmd)
+	// Should use inline env prefix, not --env flags.
+	if strings.Contains(cmd, "--env") {
+		t.Errorf("command should not use --env flags\ncmd: %s", cmd)
 	}
-	// Value with spaces should be single-quoted.
-	if !strings.Contains(cmd, "--env SPACED_VAR='has spaces'") {
-		t.Errorf("command missing quoted SPACED_VAR\ncmd: %s", cmd)
-	}
-	// Value with dollar sign should be single-quoted.
-	if !strings.Contains(cmd, "--env DOLLAR_VAR='price=$100'") {
-		t.Errorf("command missing quoted DOLLAR_VAR\ncmd: %s", cmd)
-	}
-	// Value with single quote should use the '\'' escape idiom.
-	if !strings.Contains(cmd, "--env QUOTE_VAR='it'\\''s quoted'") {
-		t.Errorf("command missing properly escaped QUOTE_VAR\ncmd: %s", cmd)
+	// GT_RUN should be present via env prefix.
+	if !strings.Contains(cmd, "env GT_RUN=run-id") {
+		t.Errorf("command missing 'env GT_RUN=run-id'\ncmd: %s", cmd)
 	}
 }
 
@@ -749,9 +744,12 @@ func TestBuildDaytonaCommand_BeaconWithSpecialChars(t *testing.T) {
 
 	cmd := m.buildDaytonaCommand("onyx", "ws-name", beacon, rc, "run-id")
 
-	// The command should be properly formed (not empty, has sh -c)
-	if !strings.Contains(cmd, "-- sh -c") {
-		t.Errorf("command missing '-- sh -c'\ncmd: %s", cmd)
+	// The command should be properly formed (not empty, has env prefix and sh -c)
+	if !strings.Contains(cmd, "-- env") {
+		t.Errorf("command missing '-- env' prefix\ncmd: %s", cmd)
+	}
+	if !strings.Contains(cmd, "sh -c") {
+		t.Errorf("command missing 'sh -c'\ncmd: %s", cmd)
 	}
 	if cmd == "" {
 		t.Error("buildDaytonaCommand returned empty string")

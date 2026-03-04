@@ -2198,7 +2198,7 @@ func (d *Daemon) restartDaytonaPolecatSession(rigName, polecatName, sessionName,
 	rc := config.ResolveRoleAgentConfig("polecat", d.config.TownRoot, rigPath)
 
 	// Build the daytona exec command that wraps the agent inside the workspace.
-	// Format: exec daytona exec <ws> --env K=V ... -- <agent-cmd>
+	// Format: exec daytona exec <ws> -- env K=V ... <agent-cmd>
 	startCmd := d.buildDaytonaExecCommand(wsName, envVars, rc)
 
 	// Use the marker directory as tmux working directory.
@@ -2342,23 +2342,26 @@ func (d *Daemon) cleanupAutoDeletedWorkspace(rigName, polecatName, rigPath strin
 // inside a daytona workspace. The command uses exec to replace the shell so
 // that pane_current_command shows daytona (for liveness detection).
 //
-// Format: exec daytona exec <ws> --env K=V ... -- <agent-cmd>
+// Environment variables are injected via an inline `env K=V` prefix rather than
+// --env flags, because daytona exec does not support --env.
+//
+// Format: exec daytona exec <ws> -- env K=V ... <agent-cmd>
 func (d *Daemon) buildDaytonaExecCommand(wsName string, envVars map[string]string, rc *config.RuntimeConfig) string {
 	var parts []string
-	parts = append(parts, "exec", "daytona", "exec", wsName)
+	parts = append(parts, "exec", "daytona", "exec", wsName, "--")
 
-	// Pass environment variables via daytona exec --env flags.
-	// Sort keys for deterministic command output.
+	// Set environment variables via inline env command since daytona exec
+	// does not support --env flags. Sort keys for deterministic output.
+	parts = append(parts, "env")
 	envKeys := make([]string, 0, len(envVars))
 	for k := range envVars {
 		envKeys = append(envKeys, k)
 	}
 	sort.Strings(envKeys)
 	for _, k := range envKeys {
-		parts = append(parts, "--env", fmt.Sprintf("%s=%s", k, config.ShellQuote(envVars[k])))
+		parts = append(parts, fmt.Sprintf("%s=%s", k, config.ShellQuote(envVars[k])))
 	}
 
-	parts = append(parts, "--")
 	parts = append(parts, rc.BuildCommand())
 
 	return strings.Join(parts, " ")
