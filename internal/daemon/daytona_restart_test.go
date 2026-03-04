@@ -125,8 +125,8 @@ func TestBuildDaytonaExecCommand_CustomAgent(t *testing.T) {
 }
 
 // TestRestartPolecatSession_DelegatesToDaytona verifies that when a rig has
-// RemoteBackend configured, restartPolecatSession delegates to the daytona
-// restart path rather than the local worktree path.
+// RemoteBackend configured (and agent bead is unreadable), restartPolecatSession
+// falls back to config and delegates to the daytona restart path.
 func TestRestartPolecatSession_DelegatesToDaytona(t *testing.T) {
 	t.Parallel()
 
@@ -167,6 +167,25 @@ func TestRestartPolecatSession_DelegatesToDaytona(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "daytona") && !strings.Contains(err.Error(), "town config") {
 		t.Errorf("expected daytona-related error, got: %v", err)
+	}
+}
+
+// TestIsPolecatDaytona_FailsWithoutBd verifies that isPolecatDaytona returns
+// an error when the bd CLI is not available, triggering the config fallback.
+func TestIsPolecatDaytona_FailsWithoutBd(t *testing.T) {
+	t.Parallel()
+
+	d := &Daemon{
+		config: &Config{TownRoot: t.TempDir()},
+		bdPath: "/nonexistent/bd",
+	}
+
+	isDaytona, err := d.isPolecatDaytona("myrig", "amber")
+	if err == nil {
+		t.Fatal("expected error when bd is not available, got nil")
+	}
+	if isDaytona {
+		t.Error("expected isDaytona=false when bd fails")
 	}
 }
 
