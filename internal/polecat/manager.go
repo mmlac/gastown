@@ -1097,7 +1097,16 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 		AutoArchiveInterval: rb.AutoArchiveInterval,
 		AutoDeleteInterval:  rb.AutoDeleteInterval,
 	}
+
+	// Track workspace creation latency (cold-start vs warm-start). (gtd-619)
+	startType := "cold"
+	if rb.Snapshot != "" {
+		startType = "warm"
+	}
+	createStart := time.Now()
+
 	if err := m.daytonaClient.Create(ctx, wsName, repoURL, branchName, createOpts); err != nil {
+		telemetry.RecordPolecatCreateDuration(ctx, name, startType, time.Since(createStart).Seconds(), err)
 		cleanupOnError()
 		return nil, fmt.Errorf("daytona create workspace %s: %w", wsName, err)
 	}
@@ -1107,15 +1116,20 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 	// restarts, but each polecat gets its own unique client cert so we always
 	// write fresh certs on creation.
 	if err := m.injectCertsIntoWorkspace(ctx, wsName, certPEM, keyPEM); err != nil {
+		telemetry.RecordPolecatCreateDuration(ctx, name, startType, time.Since(createStart).Seconds(), err)
 		cleanupOnError()
 		return nil, err
 	}
 
 	// Post-create setup: run gt prime inside the workspace.
 	if err := m.runDaytonaPostCreate(ctx, wsName, name); err != nil {
+		telemetry.RecordPolecatCreateDuration(ctx, name, startType, time.Since(createStart).Seconds(), err)
 		cleanupOnError()
 		return nil, err
 	}
+
+	// Record successful workspace creation duration. (gtd-619)
+	telemetry.RecordPolecatCreateDuration(ctx, name, startType, time.Since(createStart).Seconds(), nil)
 
 	now := time.Now()
 	p := &Polecat{
