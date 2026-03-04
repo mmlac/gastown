@@ -462,15 +462,26 @@ func TestAddDaytona_SuccessPath(t *testing.T) {
 		t.Fatal("expected daytona calls, got 0")
 	}
 
-	// First call should be create.
+	// First call should be create with --volume flag.
 	foundCreate := false
+	foundVolume := false
 	for _, c := range calls {
 		if c.name == "daytona" && len(c.args) > 0 && c.args[0] == "create" {
 			foundCreate = true
+			for i, arg := range c.args {
+				if arg == "--volume" && i+1 < len(c.args) {
+					if strings.Contains(c.args[i+1], "gt-certs-") && strings.Contains(c.args[i+1], ":/run/gt-proxy") {
+						foundVolume = true
+					}
+				}
+			}
 		}
 	}
 	if !foundCreate {
 		t.Errorf("expected 'daytona create' call in: %v", calls)
+	}
+	if !foundVolume {
+		t.Errorf("expected --volume gt-certs-*:/run/gt-proxy in create args: %v", calls)
 	}
 }
 

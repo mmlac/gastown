@@ -1071,11 +1071,17 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 	ctx, cancel := context.WithTimeout(context.Background(), constants.DaytonaCreateTimeout)
 	defer cancel()
 
+	// Mount a shared cert volume so certs persist across workspace restarts.
+	// The volume is named per-installation: gt-certs-<installPrefix>.
+	certVolume := m.daytonaClient.CertVolumeName()
+	certMount := certVolume + ":" + constants.DefaultRemoteCertDir
+
 	createOpts := daytona.CreateOptions{
 		Image:            rb.Image,
 		Dockerfile:       rb.Dockerfile,
 		Snapshot:         rb.Snapshot,
 		Env:              rb.Env,
+		Volumes:          []string{certMount},
 		NetworkBlockAll:  rb.NetworkBlockAll,
 		NetworkAllowList: rb.NetworkAllowList,
 	}
@@ -1085,7 +1091,9 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 	}
 	workspaceCreated = true
 
-	// Inject mTLS certs into the workspace for proxy authentication.
+	// Inject mTLS certs into the workspace. The cert volume persists across
+	// restarts, but each polecat gets its own unique client cert so we always
+	// write fresh certs on creation.
 	if err := m.injectCertsIntoWorkspace(ctx, wsName, certPEM, keyPEM); err != nil {
 		cleanupOnError()
 		return nil, err
