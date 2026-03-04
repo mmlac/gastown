@@ -135,10 +135,11 @@ func TestShortInstallationID(t *testing.T) {
 		id   string
 		want string
 	}{
-		{"full UUID", "550e8400-e29b-41d4-a716-446655440000", "550e8400"},
+		{"full UUID", "550e8400-e29b-41d4-a716-446655440000", "550e8400-e29"},
 		{"short string", "abc", "abc"},
 		{"empty", "", ""},
-		{"exactly 8", "12345678", "12345678"},
+		{"exactly 12", "123456789abc", "123456789abc"},
+		{"longer than 12", "123456789abcdef", "123456789abc"},
 	}
 
 	for _, tt := range tests {

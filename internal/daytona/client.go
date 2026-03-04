@@ -61,7 +61,7 @@ type Client struct {
 }
 
 // NewClient creates a Client that scopes workspaces with the given prefix.
-// The installPrefix is typically "gt-<first-8-chars-of-installationID>".
+// The installPrefix is typically "gt-<first-12-chars-of-installationID>".
 func NewClient(installPrefix string) *Client {
 	return &Client{
 		installPrefix: installPrefix,

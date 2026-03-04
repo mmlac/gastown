@@ -23,13 +23,15 @@ type TownConfig struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
-// ShortInstallationID returns the first 8 characters of the InstallationID,
+// ShortInstallationID returns the first 12 characters of the InstallationID,
 // used for workspace naming: gt-<installID-short>-<rig>-<polecat>.
+// 12 hex chars = 48 bits of entropy; birthday collision probability stays below
+// 1% up to ~260 000 installations (vs ~9 300 with the old 8-char / 32-bit scheme).
 func (c *TownConfig) ShortInstallationID() string {
-	if len(c.InstallationID) < 8 {
+	if len(c.InstallationID) < 12 {
 		return c.InstallationID
 	}
-	return c.InstallationID[:8]
+	return c.InstallationID[:12]
 }
 
 // MayorConfig represents town-level behavioral configuration (mayor/config.json).

@@ -254,7 +254,7 @@ func TestRestartDaytonaPolecatSession_ShortInstallationID(t *testing.T) {
 
 	townRoot := t.TempDir()
 
-	// Create town config with a short installation ID (< 8 chars).
+	// Create town config with a short installation ID (< 12 chars).
 	mayorDir := filepath.Join(townRoot, "mayor")
 	if err := os.MkdirAll(mayorDir, 0755); err != nil {
 		t.Fatal(err)
