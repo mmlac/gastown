@@ -141,7 +141,9 @@ When `gt sling <bead> <rig>` runs with a Daytona-configured rig:
 1. **Preflight checks** — verifies `daytona` CLI is on PATH, proxy server is
    reachable (pings admin API), and CA cert/key exist.
 2. **Workspace creation** — calls `daytona create <repoURL> --name <wsName>
-   --branch <branch>` with optional `--image` and `--devcontainer-path`.
+   --branch <branch> --yes` with optional `--image` and `--devcontainer-path`.
+   The `--yes` flag suppresses interactive confirmation prompts so the command
+   runs unattended.
 3. **Certificate injection** — issues an mTLS client cert from the proxy CA,
    then injects `client.crt`, `client.key`, and `ca.crt` into the container at
    `/run/gt-proxy/` via `daytona exec -- tee`.
@@ -187,9 +189,9 @@ Allowed commands:
 
 | Event | Action |
 |---|---|
-| **Spawn** | Create workspace, inject certs, start `daytona exec` session |
-| **Session end** | Kill tmux pane; if `auto_stop: true`, stop workspace |
-| **Polecat removal** | Revoke mTLS cert via admin API; if `auto_delete: true`, delete workspace |
+| **Spawn** | Create workspace (`--yes`), inject certs, start `daytona exec` session |
+| **Session end** | Kill tmux pane; if `auto_stop: true`, stop workspace (`--yes`) |
+| **Polecat removal** | Revoke mTLS cert via admin API; if `auto_delete: true`, delete workspace (`--yes`) |
 | **Idle** | Workspace stays running as a warm slot for the next sling (persistent polecat model) |
 
 ### Environment Variables in Containers
@@ -229,6 +231,25 @@ Useful for one-off testing. The proxy must still be running.
 
 When `remote_backend` is configured in the rig settings, the flag is not needed —
 Daytona mode is auto-detected.
+
+## Non-Interactive Operation (`--yes`)
+
+All mutating `daytona` CLI commands (`create`, `start`, `stop`, `delete`) are
+invoked with the `--yes` flag. This suppresses interactive confirmation prompts
+so that Gas Town can drive workspace lifecycle unattended.
+
+The flag is passed automatically by the Go client (`internal/daytona/client.go`)
+— operators do not need to set any environment variable or configuration option.
+
+| Command | Flag |
+|---|---|
+| `daytona create` | `--yes` |
+| `daytona start` | `--yes` |
+| `daytona stop` | `--yes` |
+| `daytona delete` | `--yes` |
+
+Commands that only read state (`daytona list`, `daytona exec`) do not prompt and
+therefore do not need `--yes`.
 
 ## Discovery and Reconciliation
 
