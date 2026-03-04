@@ -1335,6 +1335,76 @@ func TestStalePendingMarkerIsCleanedUp(t *testing.T) {
 	}
 }
 
+// TestCleanupOrphanPreservesRemoteMarkerDirs verifies that cleanupOrphanPolecatState
+// does not delete remote (daytona) polecat marker directories. Regression test for
+// gtd-0qz: remote polecats have marker dirs without git worktrees, which were being
+// incorrectly classified as orphaned and deleted.
+func TestCleanupOrphanPreservesRemoteMarkerDirs(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	r := &rig.Rig{
+		Name: "myrig",
+		Path: tmpDir,
+	}
+	m := NewManager(r, nil, nil)
+
+	// Configure remote mode.
+	m.SetDaytona(nil, nil, &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{Provider: "daytona"},
+	})
+
+	polecatsDir := filepath.Join(tmpDir, "polecats")
+	if err := os.MkdirAll(polecatsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a remote polecat marker directory (no clone subdirectory, no .git).
+	markerDir := filepath.Join(polecatsDir, "onyx")
+	if err := os.MkdirAll(markerDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	m.cleanupOrphanPolecatState()
+
+	if _, err := os.Stat(markerDir); os.IsNotExist(err) {
+		t.Errorf("remote polecat marker directory was deleted by cleanupOrphanPolecatState")
+	}
+}
+
+// TestCleanupOrphanDeletesLocalOrphans verifies that cleanupOrphanPolecatState
+// still removes orphaned local polecat directories (without .git) when NOT in
+// remote mode. This ensures the fix for gtd-0qz didn't break local cleanup.
+func TestCleanupOrphanDeletesLocalOrphans(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	r := &rig.Rig{
+		Name: "myrig",
+		Path: tmpDir,
+	}
+	m := NewManager(r, nil, nil)
+
+	polecatsDir := filepath.Join(tmpDir, "polecats")
+	if err := os.MkdirAll(polecatsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an orphaned local polecat directory (no clone subdirectory).
+	orphanDir := filepath.Join(polecatsDir, "onyx")
+	if err := os.MkdirAll(orphanDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	m.cleanupOrphanPolecatState()
+
+	if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
+		t.Errorf("orphaned local polecat directory was not cleaned up by cleanupOrphanPolecatState")
+	}
+}
+
 // TestAddWithOptions_RollbackReleasesName verifies that when AddWithOptions fails,
 // the allocated name is released back to the pool and the polecat directory is cleaned up.
 // Regression test for gt-2vs22: cleanupOnError previously only removed the directory,
