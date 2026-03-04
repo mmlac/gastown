@@ -672,6 +672,56 @@ func TestBuildDaytonaCommand_ExtraEnv(t *testing.T) {
 	}
 }
 
+// TestBuildDaytonaCommand_EnvValueShellQuoting verifies that env values containing
+// shell metacharacters are properly quoted to prevent word-splitting or injection.
+func TestBuildDaytonaCommand_EnvValueShellQuoting(t *testing.T) {
+	t.Parallel()
+
+	rigPath := filepath.Join(t.TempDir(), "testrig")
+	if err := os.MkdirAll(rigPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &rig.Rig{Name: "testrig", Path: rigPath}
+	m := NewSessionManager(tmux.NewTmux(), r)
+	m.SetDaytonaSession(daytona.NewClient("gt-abc12345"), &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{
+			Provider: "daytona",
+			Env: map[string]string{
+				"SAFE_VAR":    "simple",
+				"SPACED_VAR":  "has spaces",
+				"DOLLAR_VAR":  "price=$100",
+				"QUOTE_VAR":   "it's quoted",
+			},
+		},
+	})
+
+	rc := &config.RuntimeConfig{
+		Provider: "claude",
+		Command:  "claude",
+		Args:     []string{"--dangerously-skip-permissions"},
+	}
+
+	cmd := m.buildDaytonaCommand("onyx", "ws-name", "beacon", rc, "run-id")
+
+	// Simple value should pass through unquoted.
+	if !strings.Contains(cmd, "--env SAFE_VAR=simple") {
+		t.Errorf("command missing unquoted SAFE_VAR\ncmd: %s", cmd)
+	}
+	// Value with spaces should be single-quoted.
+	if !strings.Contains(cmd, "--env SPACED_VAR='has spaces'") {
+		t.Errorf("command missing quoted SPACED_VAR\ncmd: %s", cmd)
+	}
+	// Value with dollar sign should be single-quoted.
+	if !strings.Contains(cmd, "--env DOLLAR_VAR='price=$100'") {
+		t.Errorf("command missing quoted DOLLAR_VAR\ncmd: %s", cmd)
+	}
+	// Value with single quote should use the '\'' escape idiom.
+	if !strings.Contains(cmd, "--env QUOTE_VAR='it'\\''s quoted'") {
+		t.Errorf("command missing properly escaped QUOTE_VAR\ncmd: %s", cmd)
+	}
+}
+
 // TestBuildDaytonaCommand_BeaconWithSpecialChars verifies that beacons containing
 // shell special characters (newlines, quotes, etc.) are properly escaped.
 func TestBuildDaytonaCommand_BeaconWithSpecialChars(t *testing.T) {
