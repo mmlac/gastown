@@ -100,11 +100,11 @@ func TestBackoffDelay_WithJitter(t *testing.T) {
 		Jitter:       0.5,
 	}
 
-	// With 50% jitter on 100ms, delay should be in [100ms, 150ms].
+	// With 50% jitter on 100ms, delta is in [-25ms, +25ms], so delay in [75ms, 125ms].
 	for i := 0; i < 100; i++ {
 		delay := backoffDelay(1, cfg)
-		if delay < 100*time.Millisecond || delay > 150*time.Millisecond {
-			t.Errorf("backoffDelay with jitter = %v, want in [100ms, 150ms]", delay)
+		if delay < 75*time.Millisecond || delay > 125*time.Millisecond {
+			t.Errorf("backoffDelay with jitter = %v, want in [75ms, 125ms]", delay)
 		}
 	}
 }
