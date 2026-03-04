@@ -124,7 +124,7 @@ func backoffDelay(attempt int, cfg RetryConfig) time.Duration {
 	}
 	if cfg.Jitter > 0 {
 		jitterRange := float64(delay) * cfg.Jitter
-		delta := rand.Float64() * jitterRange //nolint:gosec // G404: jitter doesn't need crypto rand
+		delta := (rand.Float64() - 0.5) * jitterRange //nolint:gosec // G404: jitter doesn't need crypto rand
 		delay += time.Duration(delta)
 	}
 	return delay

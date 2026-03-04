@@ -216,6 +216,9 @@ func (c *Client) ListOwned(ctx context.Context) ([]Workspace, error) {
 	}
 
 	var entries []daytonaListEntry
+	if strings.TrimSpace(stdout) == "" {
+		return nil, nil
+	}
 	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
 		return nil, fmt.Errorf("daytona list: parse JSON: %w", err)
 	}

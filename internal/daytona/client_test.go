@@ -395,6 +395,28 @@ func TestListOwnedEmpty(t *testing.T) {
 	}
 }
 
+func TestListOwnedEmptyStdout(t *testing.T) {
+	for _, stdout := range []string{"", " ", "\n", "  \n  "} {
+		t.Run(fmt.Sprintf("stdout=%q", stdout), func(t *testing.T) {
+			mock := &mockRunner{
+				defaultResponse: mockResponse{
+					stdout:   stdout,
+					exitCode: 0,
+				},
+			}
+			c := NewClientWithRunner("gt-abc12345", mock)
+
+			workspaces, err := c.ListOwned(context.Background())
+			if err != nil {
+				t.Fatalf("ListOwned() error = %v", err)
+			}
+			if len(workspaces) != 0 {
+				t.Errorf("ListOwned() returned %d, want 0", len(workspaces))
+			}
+		})
+	}
+}
+
 func TestListOwnedFailure(t *testing.T) {
 	mock := &mockRunner{
 		defaultResponse: mockResponse{
