@@ -48,6 +48,7 @@ type ReconcileReport struct {
 	Healthy            int
 	OrphanedWorkspaces int
 	OrphanedBeads      int
+	SpawningSkipped    int // beads skipped because agent_state is "spawning"
 }
 
 // AgentBead represents the minimal polecat bead info needed for reconciliation.
@@ -114,6 +115,17 @@ func DiscoverWorkspaces(client *Client, rigName string, workspaces []Workspace, 
 	// Check beads for workspaces that don't exist.
 	for polecatName, bead := range beadsByPolecat {
 		if _, ok := wsByPolecat[polecatName]; !ok {
+			// Skip beads in "spawning" state — the workspace is being created
+			// concurrently and may not have appeared in ListOwned yet.
+			// This prevents a race where reconcile runs between agent bead
+			// creation (step 3) and workspace provisioning (step 4) in
+			// addDaytonaLocked, which would misclassify the bead as orphaned
+			// and clear its daytona_workspace reference.
+			if bead.AgentState == "spawning" {
+				report.SpawningSkipped++
+				continue
+			}
+
 			// Orphaned bead: bead references a workspace that doesn't exist.
 			report.Results = append(report.Results, DiscoveryResult{
 				Action:     ActionOrphanedBead,

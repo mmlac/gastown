@@ -588,6 +588,59 @@ func TestReconcile_ErrorStateWithAutoDelete(t *testing.T) {
 	}
 }
 
+func TestDiscoverWorkspaces_SkipsSpawningBeads(t *testing.T) {
+	t.Parallel()
+	client := NewClientWithRunner("gt-abc12345", &mockRunner{})
+
+	// Workspace doesn't exist yet (being provisioned), but bead is in spawning state.
+	workspaces := []Workspace{
+		{ID: "ws1", Name: "gt-abc12345-myrig-onyx", State: "running", Rig: "myrig", Polecat: "onyx"},
+	}
+	beads := []AgentBead{
+		{ID: "gtd-myrig-polecat-onyx", Polecat: "onyx", DaytonaWorkspaceID: "gt-abc12345-myrig-onyx"},
+		{ID: "gtd-myrig-polecat-newbie", Polecat: "newbie", DaytonaWorkspaceID: "gt-abc12345-myrig-newbie", AgentState: "spawning"},
+	}
+
+	report := DiscoverWorkspaces(client, "myrig", workspaces, beads)
+
+	if report.Healthy != 1 {
+		t.Errorf("Healthy = %d, want 1", report.Healthy)
+	}
+	if report.OrphanedBeads != 0 {
+		t.Errorf("OrphanedBeads = %d, want 0 (spawning bead should be skipped)", report.OrphanedBeads)
+	}
+	if report.SpawningSkipped != 1 {
+		t.Errorf("SpawningSkipped = %d, want 1", report.SpawningSkipped)
+	}
+
+	// Verify no orphaned bead result was generated.
+	for _, r := range report.Results {
+		if r.Action == ActionOrphanedBead && r.Polecat == "newbie" {
+			t.Error("spawning bead should not appear as orphaned")
+		}
+	}
+}
+
+func TestDiscoverWorkspaces_NonSpawningBeadStillOrphaned(t *testing.T) {
+	t.Parallel()
+	client := NewClientWithRunner("gt-abc12345", &mockRunner{})
+
+	// Bead with non-spawning state and missing workspace should still be orphaned.
+	workspaces := []Workspace{}
+	beads := []AgentBead{
+		{ID: "gtd-myrig-polecat-dead", Polecat: "dead", DaytonaWorkspaceID: "gt-abc12345-myrig-dead", AgentState: "working"},
+	}
+
+	report := DiscoverWorkspaces(client, "myrig", workspaces, beads)
+
+	if report.OrphanedBeads != 1 {
+		t.Errorf("OrphanedBeads = %d, want 1 (non-spawning bead should still be orphaned)", report.OrphanedBeads)
+	}
+	if report.SpawningSkipped != 0 {
+		t.Errorf("SpawningSkipped = %d, want 0", report.SpawningSkipped)
+	}
+}
+
 func TestReconcile_SkipsCertRevocationWhenNoSerial(t *testing.T) {
 	t.Parallel()
 
