@@ -2195,6 +2195,12 @@ func (m *Manager) cleanupOrphanPolecatState() {
 		name := entry.Name()
 		polecatDir := filepath.Join(polecatsDir, name)
 
+		// Remote (daytona) polecats use marker directories without local git
+		// worktrees. Their cleanup is handled by Remove/removeDaytonaWorkspace.
+		if m.isRemoteMode() {
+			continue
+		}
+
 		// Check if this is a valid polecat with a working worktree
 		clonePath := filepath.Join(polecatDir, m.rig.Name)
 		gitPath := filepath.Join(clonePath, ".git")
