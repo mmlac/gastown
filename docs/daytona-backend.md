@@ -70,6 +70,9 @@ spawn as Daytona workspaces instead of local worktrees.
 | `dockerfile` | string | no | — | Path to Dockerfile for sandbox snapshot (passed as `--dockerfile`). |
 | `auto_stop` | bool | no | `false` | Stop the workspace when a polecat session ends. Preserves state for restart. |
 | `auto_delete` | bool | no | `false` | Delete the workspace when the polecat is removed. Permanent. |
+| `auto_stop_interval` | int | no | `0` | Idle minutes before Daytona auto-stops the workspace. Passed as `--auto-stop-interval` to `daytona create`. 0 = Daytona default. |
+| `auto_archive_interval` | int | no | `0` | Minutes after stop before Daytona auto-archives the workspace. Passed as `--auto-archive-interval` to `daytona create`. 0 = Daytona default. |
+| `auto_delete_interval` | int | no | `0` | Minutes after archive before Daytona auto-deletes the workspace. Passed as `--auto-delete-interval` to `daytona create`. 0 = Daytona default. |
 | `proxy_addr` | string | no | `localhost:8443` | Host:port of the mTLS proxy server (as reachable from containers). |
 | `proxy_admin_addr` | string | no | `127.0.0.1:9877` | Host:port of the proxy admin API (localhost only, no TLS). |
 | `env` | object | no | `{}` | Extra environment variables injected into every container for this rig. |
@@ -96,6 +99,9 @@ Uses Daytona defaults for everything. Proxy must be reachable at `localhost:8443
     "dockerfile": ".devcontainer/Dockerfile",
     "auto_stop": true,
     "auto_delete": false,
+    "auto_stop_interval": 60,
+    "auto_archive_interval": 1440,
+    "auto_delete_interval": 10080,
     "proxy_addr": "172.17.0.1:9876",
     "proxy_admin_addr": "127.0.0.1:9877",
     "env": {

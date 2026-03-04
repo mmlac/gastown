@@ -67,6 +67,13 @@ type CreateOptions struct {
 	Disk             int               // disk size in GB (maps to --disk)
 	NetworkBlockAll  bool              // block all outbound network (--network-block-all)
 	NetworkAllowList string            // comma-separated CIDRs to allow (--network-allow-list)
+
+	// AutoStopInterval is idle minutes before Daytona stops the workspace (0 = Daytona default).
+	AutoStopInterval int
+	// AutoArchiveInterval is minutes after stop before Daytona archives the workspace (0 = Daytona default).
+	AutoArchiveInterval int
+	// AutoDeleteInterval is minutes after archive before Daytona deletes the workspace (0 = Daytona default).
+	AutoDeleteInterval int
 }
 
 // Client wraps the daytona CLI for workspace lifecycle and discovery.
@@ -157,6 +164,15 @@ func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts 
 	}
 	if opts.Disk > 0 {
 		args = append(args, "--disk", fmt.Sprintf("%d", opts.Disk))
+	}
+	if opts.AutoStopInterval > 0 {
+		args = append(args, "--auto-stop-interval", fmt.Sprintf("%d", opts.AutoStopInterval))
+	}
+	if opts.AutoArchiveInterval > 0 {
+		args = append(args, "--auto-archive-interval", fmt.Sprintf("%d", opts.AutoArchiveInterval))
+	}
+	if opts.AutoDeleteInterval > 0 {
+		args = append(args, "--auto-delete-interval", fmt.Sprintf("%d", opts.AutoDeleteInterval))
 	}
 	for k, v := range opts.Env {
 		args = append(args, "--env", k+"="+v)
