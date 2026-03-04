@@ -294,6 +294,64 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 	return nil
 }
 
+// snapshotEntry matches the JSON output of `daytona snapshot list -f json`.
+type snapshotEntry struct {
+	Name      string `json:"name"`
+	State     string `json:"state"`
+	ImageName string `json:"imageName"`
+}
+
+// SnapshotExists checks whether a snapshot with the given name exists.
+func (c *Client) SnapshotExists(ctx context.Context, name string) (bool, error) {
+	stdout, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
+		return c.runner.Run(ctx, "daytona", "snapshot", "list", "-f", "json")
+	})
+	if err != nil {
+		return false, fmt.Errorf("daytona snapshot list: %w", err)
+	}
+	if exitCode != 0 {
+		return false, fmt.Errorf("daytona snapshot list failed (exit %d): %s", exitCode, firstLine(stderr))
+	}
+
+	var entries []snapshotEntry
+	if strings.TrimSpace(stdout) == "" {
+		return false, nil
+	}
+	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
+		return false, fmt.Errorf("daytona snapshot list: parse JSON: %w", err)
+	}
+	for _, e := range entries {
+		if e.Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// EnsureSnapshot checks if a snapshot exists for the given name. If not, creates
+// one from the provided Docker image via `daytona snapshot create <name> --image <image>`.
+// Returns the snapshot name to use for sandbox creation.
+func (c *Client) EnsureSnapshot(ctx context.Context, snapshotName, image string) error {
+	exists, err := c.SnapshotExists(ctx, snapshotName)
+	if err != nil {
+		return fmt.Errorf("checking snapshot: %w", err)
+	}
+	if exists {
+		return nil
+	}
+
+	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
+		return c.runner.Run(ctx, "daytona", "snapshot", "create", snapshotName, "--image", image)
+	})
+	if err != nil {
+		return fmt.Errorf("daytona snapshot create: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("daytona snapshot create failed (exit %d): %s", exitCode, firstLine(stderr))
+	}
+	return nil
+}
+
 // Info returns detailed workspace information from `daytona info -f json <name>`.
 // This provides richer state than ListOwned (network config, last activity, resources)
 // and is useful for finer-grained restart and zombie-detection decisions.

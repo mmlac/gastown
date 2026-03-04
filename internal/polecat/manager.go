@@ -1079,7 +1079,25 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 	// has a server-side issue with volume mounts during create. Certs are
 	// injected post-create via exec (injectCertsIntoWorkspace).
 
+	// If image is configured but snapshot is not, register the image as a
+	// Daytona snapshot and persist the snapshot name back to the rig config
+	// so subsequent creates skip this step.
+	if rb.Image != "" && rb.Snapshot == "" {
+		snapshotName := imageToSnapshotName(rb.Image)
+		if err := m.daytonaClient.EnsureSnapshot(ctx, snapshotName, rb.Image); err != nil {
+			cleanupOnError()
+			return nil, fmt.Errorf("ensuring snapshot for image %s: %w", rb.Image, err)
+		}
+		rb.Snapshot = snapshotName
+		m.rigSettings.RemoteBackend.Snapshot = snapshotName
+		settingsPath := config.RigSettingsPath(m.rig.Path)
+		if err := config.SaveRigSettings(settingsPath, m.rigSettings); err != nil {
+			style.PrintWarning("could not persist snapshot name to rig settings: %v", err)
+		}
+	}
+
 	createOpts := daytona.CreateOptions{
+		Image:            rb.Image,
 		Dockerfile:       rb.Dockerfile,
 		Snapshot:         rb.Snapshot,
 		Target:           rb.Target,
@@ -2844,4 +2862,19 @@ func assessStaleness(info *StalenessInfo, threshold int) (bool, string) {
 	// No session but has agent bead without special state = clean up
 	// (The session is the source of truth for liveness)
 	return true, "no active session"
+}
+
+// imageToSnapshotName converts a Docker image reference to a valid Daytona
+// snapshot name. Strips the registry prefix and replaces disallowed characters
+// with hyphens: "ghcr.io/org/repo:v1.2" → "org-repo-v1.2".
+func imageToSnapshotName(image string) string {
+	// Strip registry (anything before the first slash that contains a dot)
+	parts := strings.SplitN(image, "/", 2)
+	name := image
+	if len(parts) == 2 && strings.Contains(parts[0], ".") {
+		name = parts[1]
+	}
+	// Replace slashes and colons with hyphens
+	name = strings.NewReplacer("/", "-", ":", "-").Replace(name)
+	return name
 }
