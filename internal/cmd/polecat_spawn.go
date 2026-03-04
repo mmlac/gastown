@@ -108,7 +108,7 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 		if err != nil {
 			return nil, fmt.Errorf("loading town config for daytona: %w", err)
 		}
-		installPrefix := "gt-" + townConfig.ShortInstallationID()
+		installPrefix := constants.InstallPrefix(townConfig.ShortInstallationID())
 		daytonaClient := daytona.NewClient(installPrefix)
 
 		// Load proxy CA (required for mTLS cert issuance to remote polecats)
@@ -516,7 +516,7 @@ func runDaytonaPreflightChecks(townRoot string, settings *config.RigSettings) er
 	}
 
 	// 2. Verify proxy server is running (check admin API reachability)
-	adminAddr := "127.0.0.1:9877" // default admin listen address
+	adminAddr := constants.DefaultProxyAdminAddr
 	if settings != nil && settings.RemoteBackend != nil && settings.RemoteBackend.ProxyAdminAddr != "" {
 		adminAddr = settings.RemoteBackend.ProxyAdminAddr
 	}

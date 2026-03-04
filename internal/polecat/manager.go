@@ -22,6 +22,7 @@ import (
 
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/daytona"
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/git"
@@ -190,7 +191,7 @@ func NewManager(r *rig.Rig, g *git.Git, t *tmux.Tmux) *Manager {
 	// Wire up proxy admin client for mTLS cert lifecycle (issue on spawn,
 	// revoke on remove). No-op if the rig has no RemoteBackend configured.
 	if err == nil && settings.RemoteBackend != nil {
-		adminAddr := "127.0.0.1:9877"
+		adminAddr := constants.DefaultProxyAdminAddr
 		if settings.RemoteBackend.ProxyAdminAddr != "" {
 			adminAddr = settings.RemoteBackend.ProxyAdminAddr
 		}
@@ -902,7 +903,7 @@ func (m *Manager) addDaytonaLocked(name string, opts AddOptions, polecatDir stri
 		_ = m.beads.ResetAgentBeadForReuse(aid, "spawn rollback")
 
 		if workspaceCreated {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), constants.DaytonaListTimeout)
 			defer cancel()
 			_ = m.daytonaClient.Delete(ctx, wsName)
 		}
@@ -957,7 +958,7 @@ func (m *Manager) addDaytonaLocked(name string, opts AddOptions, polecatDir stri
 
 	// --- Step 2: Issue mTLS cert ---
 	certCN := fmt.Sprintf("gt-%s-%s", m.rig.Name, name)
-	certPEM, keyPEM, err := m.proxyCA.IssuePolecat(certCN, 24*time.Hour)
+	certPEM, keyPEM, err := m.proxyCA.IssuePolecat(certCN, constants.DefaultCertTTL)
 	if err != nil {
 		cleanupOnError()
 		return nil, fmt.Errorf("issuing mTLS cert for %s: %w", certCN, err)
@@ -994,11 +995,11 @@ func (m *Manager) addDaytonaLocked(name string, opts AddOptions, polecatDir stri
 	// Determine the repo URL the workspace should clone from (via proxy).
 	proxyAddr := rb.ProxyAddr
 	if proxyAddr == "" {
-		proxyAddr = "localhost:8443" // default proxy address
+		proxyAddr = constants.DefaultProxyAddr
 	}
 	repoURL := fmt.Sprintf("https://%s/v1/git/%s", proxyAddr, m.rig.Name)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.DaytonaCreateTimeout)
 	defer cancel()
 
 	createOpts := daytona.CreateOptions{
@@ -1013,7 +1014,7 @@ func (m *Manager) addDaytonaLocked(name string, opts AddOptions, polecatDir stri
 	workspaceCreated = true
 
 	// Inject mTLS cert into the workspace for proxy authentication.
-	certDir := "/run/gt-proxy"
+	certDir := constants.DefaultRemoteCertDir
 	mkdirOut, mkdirErr, mkdirCode, err := m.daytonaClient.Exec(ctx, wsName, nil, "mkdir", "-p", certDir)
 	if err != nil || mkdirCode != 0 {
 		errMsg := mkdirErr
@@ -1500,7 +1501,7 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 // work bead unassignment) is already done.
 func (m *Manager) removeDaytonaWorkspace(name, wsName, polecatDir, branchName string) error {
 	if m.daytonaClient != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), constants.DaytonaListTimeout)
 		defer cancel()
 
 		autoDelete := m.rigSettings != nil && m.rigSettings.RemoteBackend != nil && m.rigSettings.RemoteBackend.AutoDelete
@@ -1641,7 +1642,7 @@ func (m *Manager) issueCertForPolecat(name, agentID string) string {
 		return ""
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.DaytonaListTimeout)
 	defer cancel()
 
 	result, err := m.proxyAdmin.IssueCert(ctx, m.rig.Name, name, "720h")

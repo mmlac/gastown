@@ -416,7 +416,7 @@ func getPolecatManager(rigName string) (*polecat.Manager, *rig.Rig, error) {
 		if townCfg, err := config.LoadTownConfig(townConfigPath); err == nil {
 			shortID := townCfg.ShortInstallationID()
 			if shortID != "" {
-				daytonaClient := daytona.NewClient("gt-" + shortID)
+				daytonaClient := daytona.NewClient(constants.InstallPrefix(shortID))
 				mgr.SetDaytona(daytonaClient, nil, rigSettings)
 			}
 		}
