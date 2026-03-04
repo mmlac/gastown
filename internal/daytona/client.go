@@ -257,6 +257,22 @@ func (c *Client) Stop(ctx context.Context, name string) error {
 	return nil
 }
 
+// Archive moves a stopped workspace's filesystem to object storage at reduced cost.
+// The workspace must be stopped first; archiving a running workspace is an error.
+// Passes --yes to suppress interactive confirmation prompts.
+func (c *Client) Archive(ctx context.Context, name string) error {
+	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
+		return c.runner.Run(ctx, "daytona", "archive", name, "--yes")
+	})
+	if err != nil {
+		return fmt.Errorf("daytona archive: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("daytona archive failed (exit %d): %s", exitCode, firstLine(stderr))
+	}
+	return nil
+}
+
 // Delete permanently removes a workspace.
 // Passes --yes to suppress interactive confirmation prompts.
 func (c *Client) Delete(ctx context.Context, name string) error {

@@ -263,12 +263,18 @@ func TestReconcile_StopsOrphanedWorkspace(t *testing.T) {
 	if result.WorkspacesDeleted != 0 {
 		t.Errorf("WorkspacesDeleted = %d, want 0", result.WorkspacesDeleted)
 	}
-	// Verify stop was called.
-	if len(mock.calls) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(mock.calls))
+	if result.WorkspacesArchived != 1 {
+		t.Errorf("WorkspacesArchived = %d, want 1", result.WorkspacesArchived)
+	}
+	// Verify stop and archive were called.
+	if len(mock.calls) != 2 {
+		t.Fatalf("expected 2 calls (stop + archive), got %d", len(mock.calls))
 	}
 	if mock.calls[0].Args[0] != "stop" {
 		t.Errorf("expected stop command, got %v", mock.calls[0].Args)
+	}
+	if mock.calls[1].Args[0] != "archive" {
+		t.Errorf("expected archive command, got %v", mock.calls[1].Args)
 	}
 }
 
@@ -302,9 +308,21 @@ func TestReconcile_StopsAndDeletesOrphanedWorkspace(t *testing.T) {
 	if result.WorkspacesDeleted != 1 {
 		t.Errorf("WorkspacesDeleted = %d, want 1", result.WorkspacesDeleted)
 	}
-	// Verify both stop and delete were called.
-	if len(mock.calls) != 2 {
-		t.Fatalf("expected 2 calls, got %d", len(mock.calls))
+	if result.WorkspacesArchived != 1 {
+		t.Errorf("WorkspacesArchived = %d, want 1", result.WorkspacesArchived)
+	}
+	// Verify stop, archive, and delete were called.
+	if len(mock.calls) != 3 {
+		t.Fatalf("expected 3 calls (stop + archive + delete), got %d", len(mock.calls))
+	}
+	if mock.calls[0].Args[0] != "stop" {
+		t.Errorf("expected stop command, got %v", mock.calls[0].Args)
+	}
+	if mock.calls[1].Args[0] != "archive" {
+		t.Errorf("expected archive command, got %v", mock.calls[1].Args)
+	}
+	if mock.calls[2].Args[0] != "delete" {
+		t.Errorf("expected delete command, got %v", mock.calls[2].Args)
 	}
 }
 
@@ -332,12 +350,18 @@ func TestReconcile_SkipsStopForAlreadyStopped(t *testing.T) {
 
 	result := Reconcile(context.Background(), client, report, ReconcileOptions{}, nil, nil, logger)
 
-	// Already stopped — no stop call needed.
+	// Already stopped — no stop call needed, but archive should be called.
 	if result.WorkspacesStopped != 0 {
 		t.Errorf("WorkspacesStopped = %d, want 0", result.WorkspacesStopped)
 	}
-	if len(mock.calls) != 0 {
-		t.Errorf("expected 0 calls for already-stopped workspace, got %d", len(mock.calls))
+	if result.WorkspacesArchived != 1 {
+		t.Errorf("WorkspacesArchived = %d, want 1", result.WorkspacesArchived)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 call (archive only) for already-stopped workspace, got %d", len(mock.calls))
+	}
+	if mock.calls[0].Args[0] != "archive" {
+		t.Errorf("expected archive command, got %v", mock.calls[0].Args)
 	}
 }
 

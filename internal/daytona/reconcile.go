@@ -192,12 +192,13 @@ type ReconcileOptions struct {
 
 // ReconcileResult holds outcomes of reconciliation actions taken.
 type ReconcileResult struct {
-	WorkspacesStopped int
-	WorkspacesDeleted int
-	WorkspacesSkipped int // transitional states skipped
-	BeadsReset        int
-	CertsRevoked      int
-	Errors            []error
+	WorkspacesStopped  int
+	WorkspacesArchived int
+	WorkspacesDeleted  int
+	WorkspacesSkipped  int // transitional states skipped
+	BeadsReset         int
+	CertsRevoked       int
+	Errors             []error
 }
 
 // Reconcile acts on a discovery report: stops/deletes orphaned workspaces and
@@ -256,10 +257,20 @@ func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opt
 				opCancel()
 
 			case "stopped":
-				// Already stopped — nothing to do before optional delete.
+				// Already stopped — archive to reduce storage cost.
+				opCtx, opCancel := context.WithTimeout(ctx, opTimeout)
+				if err := client.Archive(opCtx, item.Workspace.Name); err != nil {
+					logger.Printf("Warning: failed to archive stopped orphaned workspace %s: %v", item.Workspace.Name, err)
+					result.Errors = append(result.Errors, fmt.Errorf("archive %s: %w", item.Workspace.Name, err))
+				} else {
+					logger.Printf("Archived stopped orphaned workspace %s (rig=%s, polecat=%s)",
+						item.Workspace.Name, item.Rig, item.Polecat)
+					result.WorkspacesArchived++
+				}
+				opCancel()
 
 			default:
-				// "running" or any other active state — stop it.
+				// "running" or any other active state — stop it, then archive.
 				opCtx, opCancel := context.WithTimeout(ctx, opTimeout)
 				if err := client.Stop(opCtx, item.Workspace.Name); err != nil {
 					logger.Printf("Warning: failed to stop orphaned workspace %s: %v", item.Workspace.Name, err)
@@ -268,6 +279,13 @@ func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opt
 					logger.Printf("Stopped orphaned workspace %s (rig=%s, polecat=%s)",
 						item.Workspace.Name, item.Rig, item.Polecat)
 					result.WorkspacesStopped++
+					// Archive after successful stop to move to cheaper storage.
+					if err := client.Archive(opCtx, item.Workspace.Name); err != nil {
+						logger.Printf("Warning: failed to archive orphaned workspace %s: %v", item.Workspace.Name, err)
+						result.Errors = append(result.Errors, fmt.Errorf("archive %s: %w", item.Workspace.Name, err))
+					} else {
+						result.WorkspacesArchived++
+					}
 				}
 				opCancel()
 			}

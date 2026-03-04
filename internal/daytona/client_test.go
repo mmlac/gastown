@@ -357,6 +357,45 @@ func TestStop(t *testing.T) {
 	}
 }
 
+func TestArchive(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Archive(context.Background(), "ws-name")
+	if err != nil {
+		t.Fatalf("Archive() error = %v", err)
+	}
+
+	call := mock.calls[0]
+	args := strings.Join(call.Args, " ")
+	if !strings.Contains(args, "archive ws-name") {
+		t.Errorf("args = %q, want to contain 'archive ws-name'", args)
+	}
+	if !strings.Contains(args, "--yes") {
+		t.Errorf("args missing --yes: %s", args)
+	}
+}
+
+func TestArchiveFailure(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{
+			stderr:   "Error: workspace must be stopped before archiving\nUsage: daytona archive ...",
+			exitCode: 1,
+		},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Archive(context.Background(), "ws-name")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "workspace must be stopped before archiving") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "workspace must be stopped before archiving")
+	}
+}
+
 func TestDelete(t *testing.T) {
 	mock := &mockRunner{
 		defaultResponse: mockResponse{exitCode: 0},
