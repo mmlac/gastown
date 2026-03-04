@@ -2539,7 +2539,7 @@ func (d *Daemon) reconcileDaytonaRig(rigName, shortID string, backend *config.Re
 	agentBeads := d.listDaytonaPolecatBeads(rigName)
 
 	// Run discovery.
-	report := daytona.DiscoverWorkspaces(client, rigName, workspaces, agentBeads)
+	report := daytona.DiscoverWorkspaces(rigName, workspaces, agentBeads)
 
 	d.logger.Printf("Daytona reconcile %s: healthy=%d orphaned_ws=%d orphaned_beads=%d spawning_skipped=%d",
 		rigName, report.Healthy, report.OrphanedWorkspaces, report.OrphanedBeads, report.SpawningSkipped)

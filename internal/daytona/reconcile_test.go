@@ -12,7 +12,6 @@ import (
 
 func TestDiscoverWorkspaces_AllHealthy(t *testing.T) {
 	t.Parallel()
-	client := NewClientWithRunner("gt-abc12345", &mockRunner{})
 
 	workspaces := []Workspace{
 		{ID: "ws1", Name: "gt-abc12345-myrig-onyx", State: "running", Rig: "myrig", Polecat: "onyx"},
@@ -23,7 +22,7 @@ func TestDiscoverWorkspaces_AllHealthy(t *testing.T) {
 		{ID: "gtd-myrig-polecat-amber", Polecat: "amber", DaytonaWorkspaceName: "gt-abc12345-myrig-amber"},
 	}
 
-	report := DiscoverWorkspaces(client, "myrig", workspaces, beads)
+	report := DiscoverWorkspaces("myrig", workspaces, beads)
 
 	if report.Healthy != 2 {
 		t.Errorf("Healthy = %d, want 2", report.Healthy)
@@ -41,7 +40,6 @@ func TestDiscoverWorkspaces_AllHealthy(t *testing.T) {
 
 func TestDiscoverWorkspaces_OrphanedWorkspace(t *testing.T) {
 	t.Parallel()
-	client := NewClientWithRunner("gt-abc12345", &mockRunner{})
 
 	workspaces := []Workspace{
 		{ID: "ws1", Name: "gt-abc12345-myrig-onyx", State: "running", Rig: "myrig", Polecat: "onyx"},
@@ -51,7 +49,7 @@ func TestDiscoverWorkspaces_OrphanedWorkspace(t *testing.T) {
 		{ID: "gtd-myrig-polecat-onyx", Polecat: "onyx", DaytonaWorkspaceName: "gt-abc12345-myrig-onyx"},
 	}
 
-	report := DiscoverWorkspaces(client, "myrig", workspaces, beads)
+	report := DiscoverWorkspaces("myrig", workspaces, beads)
 
 	if report.Healthy != 1 {
 		t.Errorf("Healthy = %d, want 1", report.Healthy)
@@ -81,7 +79,6 @@ func TestDiscoverWorkspaces_OrphanedWorkspace(t *testing.T) {
 
 func TestDiscoverWorkspaces_OrphanedBead(t *testing.T) {
 	t.Parallel()
-	client := NewClientWithRunner("gt-abc12345", &mockRunner{})
 
 	workspaces := []Workspace{
 		{ID: "ws1", Name: "gt-abc12345-myrig-onyx", State: "running", Rig: "myrig", Polecat: "onyx"},
@@ -91,7 +88,7 @@ func TestDiscoverWorkspaces_OrphanedBead(t *testing.T) {
 		{ID: "gtd-myrig-polecat-vanished", Polecat: "vanished", DaytonaWorkspaceName: "gt-abc12345-myrig-vanished", CertSerial: "abc123"},
 	}
 
-	report := DiscoverWorkspaces(client, "myrig", workspaces, beads)
+	report := DiscoverWorkspaces("myrig", workspaces, beads)
 
 	if report.Healthy != 1 {
 		t.Errorf("Healthy = %d, want 1", report.Healthy)
@@ -124,9 +121,8 @@ func TestDiscoverWorkspaces_OrphanedBead(t *testing.T) {
 
 func TestDiscoverWorkspaces_Empty(t *testing.T) {
 	t.Parallel()
-	client := NewClientWithRunner("gt-abc12345", &mockRunner{})
 
-	report := DiscoverWorkspaces(client, "myrig", nil, nil)
+	report := DiscoverWorkspaces("myrig", nil, nil)
 
 	if report.Healthy != 0 || report.OrphanedWorkspaces != 0 || report.OrphanedBeads != 0 {
 		t.Errorf("expected all zeros, got healthy=%d orphanWs=%d orphanBead=%d",
@@ -136,7 +132,6 @@ func TestDiscoverWorkspaces_Empty(t *testing.T) {
 
 func TestDiscoverWorkspaces_FiltersToRig(t *testing.T) {
 	t.Parallel()
-	client := NewClientWithRunner("gt-abc12345", &mockRunner{})
 
 	// Include workspaces from different rigs.
 	workspaces := []Workspace{
@@ -147,7 +142,7 @@ func TestDiscoverWorkspaces_FiltersToRig(t *testing.T) {
 		{ID: "gtd-myrig-polecat-onyx", Polecat: "onyx", DaytonaWorkspaceName: "gt-abc12345-myrig-onyx"},
 	}
 
-	report := DiscoverWorkspaces(client, "myrig", workspaces, beads)
+	report := DiscoverWorkspaces("myrig", workspaces, beads)
 
 	// otherrig workspace should be ignored (different rig).
 	if report.Healthy != 1 {
@@ -160,7 +155,6 @@ func TestDiscoverWorkspaces_FiltersToRig(t *testing.T) {
 
 func TestDiscoverWorkspaces_Mixed(t *testing.T) {
 	t.Parallel()
-	client := NewClientWithRunner("gt-abc12345", &mockRunner{})
 
 	workspaces := []Workspace{
 		{ID: "ws1", Name: "gt-abc12345-rig-alpha", State: "running", Rig: "rig", Polecat: "alpha"},
@@ -173,7 +167,7 @@ func TestDiscoverWorkspaces_Mixed(t *testing.T) {
 		{ID: "gtd-rig-polecat-gone", Polecat: "gone", DaytonaWorkspaceName: "gt-abc12345-rig-gone"},
 	}
 
-	report := DiscoverWorkspaces(client, "rig", workspaces, beads)
+	report := DiscoverWorkspaces("rig", workspaces, beads)
 
 	if report.Healthy != 2 {
 		t.Errorf("Healthy = %d, want 2", report.Healthy)
@@ -593,7 +587,6 @@ func TestReconcile_ErrorStateWithAutoDelete(t *testing.T) {
 
 func TestDiscoverWorkspaces_SkipsSpawningBeads(t *testing.T) {
 	t.Parallel()
-	client := NewClientWithRunner("gt-abc12345", &mockRunner{})
 
 	// Workspace doesn't exist yet (being provisioned), but bead is in spawning state.
 	workspaces := []Workspace{
@@ -604,7 +597,7 @@ func TestDiscoverWorkspaces_SkipsSpawningBeads(t *testing.T) {
 		{ID: "gtd-myrig-polecat-newbie", Polecat: "newbie", DaytonaWorkspaceName: "gt-abc12345-myrig-newbie", AgentState: "spawning"},
 	}
 
-	report := DiscoverWorkspaces(client, "myrig", workspaces, beads)
+	report := DiscoverWorkspaces("myrig", workspaces, beads)
 
 	if report.Healthy != 1 {
 		t.Errorf("Healthy = %d, want 1", report.Healthy)
@@ -626,7 +619,6 @@ func TestDiscoverWorkspaces_SkipsSpawningBeads(t *testing.T) {
 
 func TestDiscoverWorkspaces_NonSpawningBeadStillOrphaned(t *testing.T) {
 	t.Parallel()
-	client := NewClientWithRunner("gt-abc12345", &mockRunner{})
 
 	// Bead with non-spawning state and missing workspace should still be orphaned.
 	workspaces := []Workspace{}
@@ -634,7 +626,7 @@ func TestDiscoverWorkspaces_NonSpawningBeadStillOrphaned(t *testing.T) {
 		{ID: "gtd-myrig-polecat-dead", Polecat: "dead", DaytonaWorkspaceName: "gt-abc12345-myrig-dead", AgentState: "working"},
 	}
 
-	report := DiscoverWorkspaces(client, "myrig", workspaces, beads)
+	report := DiscoverWorkspaces("myrig", workspaces, beads)
 
 	if report.OrphanedBeads != 1 {
 		t.Errorf("OrphanedBeads = %d, want 1 (non-spawning bead should still be orphaned)", report.OrphanedBeads)

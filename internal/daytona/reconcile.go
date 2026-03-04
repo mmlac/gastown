@@ -64,11 +64,10 @@ type AgentBead struct {
 // It returns a report categorizing each item as healthy, orphaned workspace, or orphaned bead.
 //
 // Parameters:
-//   - client: daytona client scoped to this installation
 //   - rigName: the rig to reconcile
 //   - workspaces: all workspaces from ListOwned, pre-filtered to this rig
 //   - beads: all polecat agent beads for this rig that have a DaytonaWorkspaceName
-func DiscoverWorkspaces(client *Client, rigName string, workspaces []Workspace, beads []AgentBead) *ReconcileReport {
+func DiscoverWorkspaces(rigName string, workspaces []Workspace, beads []AgentBead) *ReconcileReport {
 	report := &ReconcileReport{Rig: rigName}
 
 	// Index workspaces by polecat name (workspace names are deterministic).
