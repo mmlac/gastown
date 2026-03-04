@@ -57,6 +57,7 @@ type CreateOptions struct {
 	Image            string            // container image override
 	Dockerfile       string            // path to Dockerfile for sandbox snapshot (maps to --dockerfile)
 	Snapshot         string            // pre-built snapshot ID (--snapshot flag, mutually exclusive with Image)
+	Target           string            // geographic region for workspace placement (maps to --target)
 	Env              map[string]string // extra environment variables
 	Labels           map[string]string // workspace labels (--label KEY=VALUE)
 	Volumes          []string          // named volumes in "name:/mount/path" format (maps to --volume)
@@ -138,6 +139,9 @@ func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts 
 	}
 	if opts.Dockerfile != "" {
 		args = append(args, "--dockerfile", opts.Dockerfile)
+	}
+	if opts.Target != "" {
+		args = append(args, "--target", opts.Target)
 	}
 	for _, vol := range opts.Volumes {
 		args = append(args, "--volume", vol)

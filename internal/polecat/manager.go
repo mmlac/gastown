@@ -1080,6 +1080,7 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 		Image:            rb.Image,
 		Dockerfile:       rb.Dockerfile,
 		Snapshot:         rb.Snapshot,
+		Target:           rb.Target,
 		Env:              rb.Env,
 		Labels: map[string]string{
 			"gt-install-id": m.daytonaClient.InstallPrefix(),
