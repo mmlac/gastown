@@ -117,6 +117,7 @@ func (c *Client) ParseWorkspaceName(name string) (rig, polecat string, ok bool) 
 }
 
 // Create provisions a new daytona workspace from a repo/branch.
+// Passes --yes to suppress interactive confirmation prompts.
 func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts CreateOptions) error {
 	args := []string{"create", repoURL, "--name", name, "--branch", branch, "--yes"}
 	if opts.Image != "" {
@@ -141,6 +142,7 @@ func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts 
 }
 
 // Start ensures a workspace is running.
+// Passes --yes to suppress interactive confirmation prompts.
 func (c *Client) Start(ctx context.Context, name string) error {
 	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
 		return c.runner.Run(ctx, "daytona", "start", name, "--yes")
@@ -155,6 +157,7 @@ func (c *Client) Start(ctx context.Context, name string) error {
 }
 
 // Stop pauses a workspace (preserves state for re-start).
+// Passes --yes to suppress interactive confirmation prompts.
 func (c *Client) Stop(ctx context.Context, name string) error {
 	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
 		return c.runner.Run(ctx, "daytona", "stop", name, "--yes")
@@ -169,6 +172,7 @@ func (c *Client) Stop(ctx context.Context, name string) error {
 }
 
 // Delete permanently removes a workspace.
+// Passes --yes to suppress interactive confirmation prompts.
 func (c *Client) Delete(ctx context.Context, name string) error {
 	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
 		return c.runner.Run(ctx, "daytona", "delete", name, "--yes")
