@@ -2,8 +2,10 @@ package daytona
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -785,5 +787,141 @@ func TestReconcile_NilLoggerDoesNotPanic(t *testing.T) {
 	}
 	if result.BeadsReset != 1 {
 		t.Errorf("BeadsReset = %d, want 1", result.BeadsReset)
+	}
+}
+
+func TestReconcile_BeadResetterError(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	client := NewClientWithRunner("gt-abc12345", mock)
+	logger := log.New(os.Stderr, "test: ", 0)
+
+	report := &ReconcileReport{
+		Rig: "myrig",
+		Results: []DiscoveryResult{
+			{
+				Action:  ActionOrphanedBead,
+				Rig:     "myrig",
+				Polecat: "vanished",
+				BeadID:  "gtd-myrig-polecat-vanished",
+			},
+		},
+		OrphanedBeads: 1,
+	}
+
+	beadResetter := func(beadID string) error {
+		return fmt.Errorf("dolt commit failed: lock contention")
+	}
+
+	result := Reconcile(context.Background(), client, report, ReconcileOptions{}, beadResetter, nil, logger)
+
+	if result.BeadsReset != 0 {
+		t.Errorf("BeadsReset = %d, want 0 (resetter failed)", result.BeadsReset)
+	}
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected 1 error, got %d", len(result.Errors))
+	}
+	if !strings.Contains(result.Errors[0].Error(), "lock contention") {
+		t.Errorf("error = %q, want to contain 'lock contention'", result.Errors[0])
+	}
+}
+
+func TestReconcile_CertRevokerError(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	client := NewClientWithRunner("gt-abc12345", mock)
+	logger := log.New(os.Stderr, "test: ", 0)
+
+	report := &ReconcileReport{
+		Rig: "myrig",
+		Results: []DiscoveryResult{
+			{
+				Action:     ActionOrphanedBead,
+				Rig:        "myrig",
+				Polecat:    "vanished",
+				BeadID:     "gtd-myrig-polecat-vanished",
+				CertSerial: "deadbeef42",
+			},
+		},
+		OrphanedBeads: 1,
+	}
+
+	var resetCalled bool
+	beadResetter := func(beadID string) error {
+		resetCalled = true
+		return nil
+	}
+	certRevoker := func(ctx context.Context, serial string) error {
+		return fmt.Errorf("proxy unreachable: connection refused")
+	}
+
+	result := Reconcile(context.Background(), client, report, ReconcileOptions{}, beadResetter, certRevoker, logger)
+
+	if result.CertsRevoked != 0 {
+		t.Errorf("CertsRevoked = %d, want 0 (revoker failed)", result.CertsRevoked)
+	}
+	// Bead reset should still proceed even when cert revocation fails.
+	if !resetCalled {
+		t.Error("bead resetter should still be called after cert revocation failure")
+	}
+	if result.BeadsReset != 1 {
+		t.Errorf("BeadsReset = %d, want 1", result.BeadsReset)
+	}
+	// Should have recorded the cert revocation error.
+	var foundCertErr bool
+	for _, e := range result.Errors {
+		if strings.Contains(e.Error(), "proxy unreachable") {
+			foundCertErr = true
+		}
+	}
+	if !foundCertErr {
+		t.Errorf("expected cert revocation error in result.Errors, got %v", result.Errors)
+	}
+}
+
+func TestReconcile_StopFailureContinues(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockRunner{
+		defaultResponse: mockResponse{
+			stderr:   "Error: timeout",
+			exitCode: 1,
+		},
+	}
+	client := NewClientWithRunner("gt-abc12345", mock)
+	logger := log.New(os.Stderr, "test: ", 0)
+
+	report := &ReconcileReport{
+		Rig: "myrig",
+		Results: []DiscoveryResult{
+			{
+				Action:    ActionOrphanedWorkspace,
+				Rig:       "myrig",
+				Polecat:   "ghost",
+				Workspace: &Workspace{Name: "gt-abc12345-myrig-ghost", State: "running"},
+			},
+		},
+		OrphanedWorkspaces: 1,
+	}
+
+	result := Reconcile(context.Background(), client, report, ReconcileOptions{AutoDelete: true}, nil, nil, logger)
+
+	// Stop should have been attempted but failed.
+	if result.WorkspacesStopped != 0 {
+		t.Errorf("WorkspacesStopped = %d, want 0 (stop failed)", result.WorkspacesStopped)
+	}
+	// Delete is also attempted (even after stop failure) and should also fail.
+	if result.WorkspacesDeleted != 0 {
+		t.Errorf("WorkspacesDeleted = %d, want 0 (delete also failed)", result.WorkspacesDeleted)
+	}
+	// Should have errors for both stop and delete.
+	if len(result.Errors) < 2 {
+		t.Errorf("expected at least 2 errors (stop + delete), got %d: %v", len(result.Errors), result.Errors)
 	}
 }

@@ -94,10 +94,7 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 	// When active, configure the polecat manager for remote mode and run preflight checks.
 	settingsPath := filepath.Join(r.Path, "settings", "config.json")
 	rigSettings, _ := config.LoadRigSettings(settingsPath)
-	useDaytona := opts.Daytona
-	if !useDaytona && rigSettings != nil && rigSettings.RemoteBackend != nil && rigSettings.RemoteBackend.Provider == "daytona" {
-		useDaytona = true
-	}
+	useDaytona := shouldUseDaytona(opts.Daytona, rigSettings)
 	if useDaytona {
 		if err := runDaytonaPreflightChecks(townRoot, rigSettings); err != nil {
 			return nil, fmt.Errorf("daytona preflight failed: %w", err)
@@ -511,6 +508,32 @@ func IsRigName(target string) (string, bool) {
 	return target, true
 }
 
+// shouldUseDaytona returns true if daytona remote mode should be activated,
+// either from an explicit flag or auto-detected from rig settings.
+func shouldUseDaytona(explicitFlag bool, settings *config.RigSettings) bool {
+	if explicitFlag {
+		return true
+	}
+	return settings != nil && settings.RemoteBackend != nil && settings.RemoteBackend.Provider == "daytona"
+}
+
+// checkCAFiles verifies that the proxy CA certificate and key exist at the
+// expected paths under townRoot. Returns nil if both files are present.
+func checkCAFiles(townRoot string) error {
+	caDir := filepath.Join(townRoot, ".runtime", "ca")
+	certPath := filepath.Join(caDir, "ca.crt")
+	keyPath := filepath.Join(caDir, "ca.key")
+	if _, err := os.Stat(certPath); err != nil {
+		return fmt.Errorf("proxy CA certificate not found at %s\n"+
+			"The proxy server creates the CA on startup. Start the proxy first: gt-proxy-server", certPath)
+	}
+	if _, err := os.Stat(keyPath); err != nil {
+		return fmt.Errorf("proxy CA key not found at %s\n"+
+			"The proxy server creates the CA on startup. Start the proxy first: gt-proxy-server", keyPath)
+	}
+	return nil
+}
+
 // runDaytonaPreflightChecks verifies the prerequisites for daytona remote mode:
 // 1. daytona CLI is installed and accessible
 // 2. proxy server is running (admin API reachable)
@@ -538,16 +561,8 @@ func runDaytonaPreflightChecks(townRoot string, settings *config.RigSettings) er
 	}
 
 	// 3. Verify proxy CA exists
-	caDir := filepath.Join(townRoot, ".runtime", "ca")
-	certPath := filepath.Join(caDir, "ca.crt")
-	keyPath := filepath.Join(caDir, "ca.key")
-	if _, err := os.Stat(certPath); err != nil {
-		return fmt.Errorf("proxy CA certificate not found at %s\n"+
-			"The proxy server creates the CA on startup. Start the proxy first: gt-proxy-server", certPath)
-	}
-	if _, err := os.Stat(keyPath); err != nil {
-		return fmt.Errorf("proxy CA key not found at %s\n"+
-			"The proxy server creates the CA on startup. Start the proxy first: gt-proxy-server", keyPath)
+	if err := checkCAFiles(townRoot); err != nil {
+		return err
 	}
 
 	// 4. Verify daytona is authenticated (has an active profile)
