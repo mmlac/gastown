@@ -732,6 +732,48 @@ func TestCreateWithEnvAndDockerfile(t *testing.T) {
 	}
 }
 
+func TestCreateWithLabels(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{
+		Labels: map[string]string{
+			"gt-install-id": "gt-abc12345",
+			"gt-rig":        "myrig",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	args := strings.Join(mock.calls[0].Args, " ")
+	if !strings.Contains(args, "--label gt-install-id=gt-abc12345") {
+		t.Errorf("args missing --label gt-install-id: %s", args)
+	}
+	if !strings.Contains(args, "--label gt-rig=myrig") {
+		t.Errorf("args missing --label gt-rig: %s", args)
+	}
+}
+
+func TestCreateWithNoLabels(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	args := strings.Join(mock.calls[0].Args, " ")
+	if strings.Contains(args, "--label") {
+		t.Errorf("args should not contain --label when Labels is nil: %s", args)
+	}
+}
+
 func TestCreateWithVolumes(t *testing.T) {
 	mock := &mockRunner{
 		defaultResponse: mockResponse{exitCode: 0},
