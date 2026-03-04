@@ -738,3 +738,52 @@ func TestReconcile_SkipsCertRevocationWhenNoSerial(t *testing.T) {
 		t.Errorf("BeadsReset = %d, want 1", result.BeadsReset)
 	}
 }
+
+func TestReconcile_NilLoggerDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	client := NewClientWithRunner("gt-abc12345", mock)
+
+	report := &ReconcileReport{
+		Rig: "myrig",
+		Results: []DiscoveryResult{
+			{
+				Action:    ActionOrphanedWorkspace,
+				Rig:       "myrig",
+				Polecat:   "ghost",
+				Workspace: &Workspace{Name: "gt-abc12345-myrig-ghost", State: "running"},
+			},
+			{
+				Action:  ActionOrphanedBead,
+				Rig:     "myrig",
+				Polecat: "vanished",
+				BeadID:  "gtd-myrig-polecat-vanished",
+			},
+			{
+				Action:    ActionHealthy,
+				Rig:       "myrig",
+				Polecat:   "alive",
+				Workspace: &Workspace{Name: "gt-abc12345-myrig-alive", State: "running"},
+				BeadID:    "gtd-myrig-polecat-alive",
+			},
+		},
+		Healthy:            1,
+		OrphanedWorkspaces: 1,
+		OrphanedBeads:      1,
+	}
+
+	beadResetter := func(beadID string) error { return nil }
+
+	// Passing nil logger should not panic — the function guards against it.
+	result := Reconcile(context.Background(), client, report, ReconcileOptions{}, beadResetter, nil, nil)
+
+	if result.WorkspacesStopped != 1 {
+		t.Errorf("WorkspacesStopped = %d, want 1", result.WorkspacesStopped)
+	}
+	if result.BeadsReset != 1 {
+		t.Errorf("BeadsReset = %d, want 1", result.BeadsReset)
+	}
+}

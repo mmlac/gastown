@@ -6,6 +6,7 @@ package daytona
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"time"
 )
@@ -174,6 +175,12 @@ type ReconcileResult struct {
 func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opts ReconcileOptions, beadResetter func(beadID string) error, certRevoker func(ctx context.Context, serial string) error, logger *log.Logger) *ReconcileResult {
 	result := &ReconcileResult{}
 
+	// Guard nil logger: all orphan paths log unconditionally, so replace nil
+	// with a discard logger to avoid nil pointer dereference panics.
+	if logger == nil {
+		logger = log.New(io.Discard, "", 0)
+	}
+
 	opTimeout := opts.PerOperationTimeout
 	if opTimeout == 0 {
 		opTimeout = 30 * time.Second
@@ -278,10 +285,8 @@ func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opt
 			}
 
 		case ActionHealthy:
-			if logger != nil {
-				logger.Printf("Healthy match: workspace %s ↔ bead %s (rig=%s, polecat=%s)",
-					item.Workspace.Name, item.BeadID, item.Rig, item.Polecat)
-			}
+			logger.Printf("Healthy match: workspace %s ↔ bead %s (rig=%s, polecat=%s)",
+				item.Workspace.Name, item.BeadID, item.Rig, item.Polecat)
 		}
 	}
 
