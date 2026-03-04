@@ -20,7 +20,6 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/google/uuid"
 	beadsdk "github.com/steveyegge/beads"
-	"gopkg.in/natefinch/lumberjack.v2"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/boot"
 	"github.com/steveyegge/gastown/internal/config"
@@ -41,6 +40,7 @@ import (
 	"github.com/steveyegge/gastown/internal/util"
 	"github.com/steveyegge/gastown/internal/wisp"
 	"github.com/steveyegge/gastown/internal/witness"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 // Daemon is the town-level background service.
@@ -57,8 +57,8 @@ type Daemon struct {
 	curator       *feed.Curator
 	convoyManager *ConvoyManager
 	beadsStores   map[string]beadsdk.Storage
-	doltServer *DoltServerManager
-	krcPruner  *KRCPruner
+	doltServer    *DoltServerManager
+	krcPruner     *KRCPruner
 
 	// Mass death detection: track recent session deaths
 	deathsMu     sync.Mutex
@@ -762,7 +762,6 @@ func (d *Daemon) pourDoctorMolecule(warnings []string) {
 	d.logger.Printf("Doctor molecule: %d warning(s): %s", len(warnings), summary)
 	mol.closeStep("report")
 }
-
 
 // checkAllRigsDolt verifies all rigs are using the Dolt backend.
 func (d *Daemon) checkAllRigsDolt() error {
@@ -2176,6 +2175,25 @@ func (d *Daemon) restartDaytonaPolecatSession(rigName, polecatName, sessionName,
 	})
 	envVars["GT_RUN"] = runID
 
+	// Inject proxy and mTLS cert environment variables so gt-proxy-client and
+	// git can authenticate against the host proxy from inside the container.
+	// Cert files are injected into the container at spawn time under DefaultRemoteCertDir.
+	// Both GT_PROXY_* (read by gt-proxy-client) and GIT_SSL_* (read natively by git)
+	// must be set — they serve different consumers but point at the same files.
+	proxyAddr := constants.DefaultProxyAddr
+	if rigSettings, err := config.LoadRigSettings(config.RigSettingsPath(rigPath)); err == nil &&
+		rigSettings.RemoteBackend != nil && rigSettings.RemoteBackend.ProxyAddr != "" {
+		proxyAddr = rigSettings.RemoteBackend.ProxyAddr
+	}
+	certDir := constants.DefaultRemoteCertDir
+	envVars["GT_PROXY_URL"] = "https://" + proxyAddr
+	envVars["GT_PROXY_CERT"] = certDir + "/client.crt"
+	envVars["GT_PROXY_KEY"] = certDir + "/client.key"
+	envVars["GT_PROXY_CA"] = certDir + "/ca.crt"
+	envVars["GIT_SSL_CERT"] = certDir + "/client.crt"
+	envVars["GIT_SSL_KEY"] = certDir + "/client.key"
+	envVars["GIT_SSL_CAINFO"] = certDir + "/ca.crt"
+
 	// Resolve agent config for command and process name detection.
 	rc := config.ResolveRoleAgentConfig("polecat", d.config.TownRoot, rigPath)
 
@@ -2621,11 +2639,11 @@ func (d *Daemon) listDaytonaPolecatBeads(rigName string) []daytona.AgentBead {
 		}
 
 		result = append(result, daytona.AgentBead{
-			ID:                 agent.ID,
-			Polecat:            polecatName,
+			ID:                   agent.ID,
+			Polecat:              polecatName,
 			DaytonaWorkspaceName: fields.DaytonaWorkspace,
-			AgentState:         fields.AgentState,
-			CertSerial:         fields.CertSerial,
+			AgentState:           fields.AgentState,
+			CertSerial:           fields.CertSerial,
 		})
 	}
 
