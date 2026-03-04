@@ -14,6 +14,10 @@ import (
 
 // CommandRunner abstracts command execution for testing.
 type CommandRunner interface {
+	// Run executes a command and returns its stdout, stderr, exit code, and error.
+	// On success or a normal non-zero exit, err is nil and exitCode holds the
+	// process exit status. A non-nil err indicates an OS-level failure (e.g.
+	// binary not found, signal); in that case exitCode is -1.
 	Run(ctx context.Context, name string, args ...string) (stdout, stderr string, exitCode int, err error)
 }
 

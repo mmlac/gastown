@@ -2094,7 +2094,7 @@ func (d *Daemon) restartDaytonaPolecatSession(rigName, polecatName, sessionName,
 		return fmt.Errorf("loading town config for daytona restart: %w", err)
 	}
 	if townCfg.InstallationID == "" {
-		return fmt.Errorf("no InstallationID in town config, cannot determine workspace name")
+		return fmt.Errorf("no installation ID in town config, cannot determine workspace name")
 	}
 	shortID := townCfg.ShortInstallationID()
 	installPrefix := constants.InstallPrefix(shortID)

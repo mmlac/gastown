@@ -11,10 +11,21 @@ import (
 
 // RetryConfig controls exponential backoff for transient Daytona CLI failures.
 type RetryConfig struct {
-	MaxAttempts  int           // total attempts (1 = no retry)
-	InitialDelay time.Duration // delay after first failure
-	MaxDelay     time.Duration // cap on backoff delay
-	Jitter       float64       // random fraction added to delay (0.0–1.0)
+	// MaxAttempts is the total number of attempts including the first call.
+	// Set to 1 to disable retries.
+	MaxAttempts int
+
+	// InitialDelay is the backoff duration after the first failure.
+	// Subsequent retries double this value up to MaxDelay.
+	InitialDelay time.Duration
+
+	// MaxDelay caps the exponential backoff so retries don't wait indefinitely.
+	MaxDelay time.Duration
+
+	// Jitter is a random fraction of the delay added (centered) to each backoff
+	// to decorrelate concurrent retriers. Valid range: 0.0 (no jitter) to 1.0
+	// (delay may vary by up to +-50% of its value).
+	Jitter float64
 }
 
 // DefaultRetryConfig returns sensible defaults for Daytona CLI retries.

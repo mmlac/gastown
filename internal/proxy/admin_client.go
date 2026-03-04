@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -68,7 +69,8 @@ func (c *AdminClient) IssueCert(ctx context.Context, rig, name, ttl string) (*Is
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("issue-cert returned status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("issue-cert returned status %d: %s", resp.StatusCode, bytes.TrimSpace(body))
 	}
 
 	var result IssueCertResult
@@ -103,7 +105,8 @@ func (c *AdminClient) DenyCert(ctx context.Context, serial string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("deny-cert returned status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("deny-cert returned status %d: %s", resp.StatusCode, bytes.TrimSpace(body))
 	}
 	return nil
 }
