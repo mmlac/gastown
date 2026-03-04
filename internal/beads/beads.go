@@ -147,7 +147,7 @@ type IssueDep struct {
 // ListOptions specifies filters for listing issues.
 type ListOptions struct {
 	Status     string // "open", "closed", "all"
-	Type       string // Deprecated: use Label instead. "task", "bug", "feature", "epic"
+	Type       string // Deprecated: use Label instead. Was "task", "bug", "feature", "epic"; converted to "gt:" prefix.
 	Label      string // Label filter (e.g., "gt:agent", "gt:merge-request")
 	Priority   int    // 0-4, -1 for no filter
 	Parent     string // filter by parent ID
