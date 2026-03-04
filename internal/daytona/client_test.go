@@ -204,6 +204,52 @@ func TestCreate(t *testing.T) {
 	}
 }
 
+func TestCreateNetworkIsolation(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Create(context.Background(), "gt-abc12345-rig--onyx", "https://github.com/org/repo", "main", CreateOptions{
+		NetworkBlockAll:  true,
+		NetworkAllowList: "10.0.0.0/8,172.16.0.0/12",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(mock.calls))
+	}
+	args := strings.Join(mock.calls[0].Args, " ")
+	if !strings.Contains(args, "--network-block-all") {
+		t.Errorf("args missing --network-block-all: %s", args)
+	}
+	if !strings.Contains(args, "--network-allow-list 10.0.0.0/8,172.16.0.0/12") {
+		t.Errorf("args missing --network-allow-list: %s", args)
+	}
+}
+
+func TestCreateNetworkIsolationOmittedWhenFalse(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	args := strings.Join(mock.calls[0].Args, " ")
+	if strings.Contains(args, "--network-block-all") {
+		t.Errorf("args should not contain --network-block-all when disabled: %s", args)
+	}
+	if strings.Contains(args, "--network-allow-list") {
+		t.Errorf("args should not contain --network-allow-list when empty: %s", args)
+	}
+}
+
 func TestCreateFailure(t *testing.T) {
 	mock := &mockRunner{
 		defaultResponse: mockResponse{
