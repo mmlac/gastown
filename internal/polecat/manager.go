@@ -36,6 +36,10 @@ import (
 	"github.com/steveyegge/gastown/internal/workspace"
 )
 
+// polecatCertTTL is the mTLS certificate validity duration for polecat client certs.
+// Used by both the remote (Daytona) and local code paths to ensure consistent TTL.
+const polecatCertTTL = 720 * time.Hour // 30 days
+
 // Retry constants for Dolt operations (matching hook update pattern in sling.go).
 // Configurable via operational.polecat in settings/config.json.
 const (
@@ -958,7 +962,7 @@ func (m *Manager) addDaytonaLocked(name string, opts AddOptions, polecatDir stri
 
 	// --- Step 2: Issue mTLS cert ---
 	certCN := fmt.Sprintf("gt-%s-%s", m.rig.Name, name)
-	certPEM, keyPEM, err := m.proxyCA.IssuePolecat(certCN, constants.DefaultCertTTL)
+	certPEM, keyPEM, err := m.proxyCA.IssuePolecat(certCN, polecatCertTTL)
 	if err != nil {
 		cleanupOnError()
 		return nil, fmt.Errorf("issuing mTLS cert for %s: %w", certCN, err)
@@ -1645,7 +1649,7 @@ func (m *Manager) issueCertForPolecat(name, agentID string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), constants.DaytonaListTimeout)
 	defer cancel()
 
-	result, err := m.proxyAdmin.IssueCert(ctx, m.rig.Name, name, "720h")
+	result, err := m.proxyAdmin.IssueCert(ctx, m.rig.Name, name, polecatCertTTL.String())
 	if err != nil {
 		style.PrintWarning("could not issue proxy cert for %s: %v", name, err)
 		return ""
