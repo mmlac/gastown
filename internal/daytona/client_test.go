@@ -118,6 +118,13 @@ func TestParseWorkspaceName(t *testing.T) {
 			wantOK: false,
 		},
 		{
+			name:        "rig with double hyphen",
+			input:       "gt-abc12345-my--rig--onyx",
+			wantRig:     "my--rig",
+			wantPolecat: "onyx",
+			wantOK:      true,
+		},
+		{
 			name:   "completely different",
 			input:  "some-other-workspace",
 			wantOK: false,

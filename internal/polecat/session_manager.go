@@ -946,7 +946,6 @@ func (m *SessionManager) verifyStartupNudgeDelivery(sessionID string, rc *config
 // to the container process.
 func (m *SessionManager) buildDaytonaCommand(polecat, wsName, beacon string, rc *config.RuntimeConfig, runID string) string {
 	rb := m.rigSettings.RemoteBackend
-	townRoot := filepath.Dir(m.rig.Path)
 
 	// Env vars for the container.
 	// These are passed via daytona exec --env flags so they're available in the
@@ -955,7 +954,6 @@ func (m *SessionManager) buildDaytonaCommand(polecat, wsName, beacon string, rc 
 		"GT_RIG":              m.rig.Name,
 		"GT_POLECAT":         polecat,
 		"GT_ROLE":            fmt.Sprintf("%s/polecats/%s", m.rig.Name, polecat),
-		"GT_TOWN_ROOT":       townRoot,
 		"GT_RUN":             runID,
 		"BD_DOLT_AUTO_COMMIT": "off",
 	}

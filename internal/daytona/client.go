@@ -107,8 +107,9 @@ func (c *Client) ParseWorkspaceName(name string) (rig, polecat string, ok bool) 
 		return "", "", false
 	}
 	rest := strings.TrimPrefix(name, prefix)
-	// rest should be "<rig>--<polecat>" — split on double-hyphen delimiter.
-	idx := strings.Index(rest, "--")
+	// rest should be "<rig>--<polecat>" — split on LAST double-hyphen delimiter
+	// to handle rig names that themselves contain "--".
+	idx := strings.LastIndex(rest, "--")
 	if idx <= 0 || idx >= len(rest)-2 {
 		return "", "", false
 	}

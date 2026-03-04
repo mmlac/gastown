@@ -191,8 +191,8 @@ func TestCertLifecycle_IssueExtractDeny(t *testing.T) {
 func TestAdminClient_Ping(t *testing.T) {
 	t.Run("server reachable", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Admin endpoint returns 405 for GET, which proves it's alive
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			assert.Equal(t, "/v1/admin/health", r.URL.Path)
+			w.WriteHeader(http.StatusOK)
 		}))
 		defer srv.Close()
 

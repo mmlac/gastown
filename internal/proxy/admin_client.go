@@ -111,14 +111,14 @@ func (c *AdminClient) DenyCert(ctx context.Context, serial string) error {
 	return nil
 }
 
-// Ping checks if the admin server is reachable by making a GET request.
+// Ping checks if the admin server is reachable by hitting the health endpoint.
 // Returns nil if reachable, error otherwise. Returns nil if the client is nil.
 func (c *AdminClient) Ping(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/admin/deny-cert", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/admin/health", nil)
 	if err != nil {
 		return err
 	}
@@ -128,6 +128,5 @@ func (c *AdminClient) Ping(ctx context.Context) error {
 		return err
 	}
 	resp.Body.Close()
-	// The deny-cert endpoint returns 405 for GET, which proves the server is alive.
 	return nil
 }

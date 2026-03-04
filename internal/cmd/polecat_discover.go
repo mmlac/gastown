@@ -151,7 +151,7 @@ func runPolecatDiscover(cmd *cobra.Command, args []string) error {
 	agentBeads := gatherPolecatAgentBeads(r, rigName)
 
 	// Use daytona.DiscoverWorkspaces for the cross-referencing algorithm
-	report := daytona.DiscoverWorkspaces(client, rigName, workspaces, agentBeads)
+	report := daytona.DiscoverWorkspaces(rigName, workspaces, agentBeads)
 
 	// Convert report to display result
 	result := reportToDiscoverResult(report, installPrefix)
