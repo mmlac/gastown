@@ -2102,10 +2102,11 @@ func (d *Daemon) restartDaytonaPolecatSession(rigName, polecatName, sessionName,
 	wsName := client.WorkspaceName(rigName, polecatName)
 
 	// Check workspace state and start if stopped.
-	ctx, cancel := context.WithTimeout(d.ctx, constants.DaytonaCreateTimeout)
-	defer cancel()
+	// Use independent timeouts so ListOwned doesn't eat into Start's budget.
+	listCtx, listCancel := context.WithTimeout(d.ctx, constants.DaytonaListTimeout)
+	defer listCancel()
 
-	workspaces, err := client.ListOwned(ctx)
+	workspaces, err := client.ListOwned(listCtx)
 	if err != nil {
 		return fmt.Errorf("listing daytona workspaces for restart: %w", err)
 	}
@@ -2135,7 +2136,9 @@ func (d *Daemon) restartDaytonaPolecatSession(rigName, polecatName, sessionName,
 	switch wsState {
 	case "stopped":
 		d.logger.Printf("Starting stopped daytona workspace %s for polecat %s/%s", wsName, rigName, polecatName)
-		if err := client.Start(ctx, wsName); err != nil {
+		startCtx, startCancel := context.WithTimeout(d.ctx, constants.DaytonaCreateTimeout)
+		defer startCancel()
+		if err := client.Start(startCtx, wsName); err != nil {
 			return fmt.Errorf("starting daytona workspace %s: %w", wsName, err)
 		}
 		d.logger.Printf("Daytona workspace %s started successfully", wsName)

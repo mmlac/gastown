@@ -123,6 +123,10 @@ const (
 	// DaytonaListTimeout is the timeout for listing or reconciling daytona workspaces.
 	DaytonaListTimeout = 30 * time.Second
 
+	// DaytonaStopTimeout is the timeout for stopping or deleting a daytona workspace.
+	// These operations are heavier than list and need more time under load.
+	DaytonaStopTimeout = 60 * time.Second
+
 	// InstallPrefixBase is the prefix prepended to ShortInstallationID
 	// to form the daytona workspace naming prefix ("gt-<shortID>").
 	InstallPrefixBase = "gt-"
