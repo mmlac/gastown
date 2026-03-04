@@ -179,13 +179,25 @@ func NewManager(r *rig.Rig, g *git.Git, t *tmux.Tmux) *Manager {
 
 	_ = pool.Load() // non-fatal: state file may not exist for new rigs
 
-	return &Manager{
+	mgr := &Manager{
 		rig:      r,
 		git:      g,
 		beads:    beads.NewWithBeadsDir(beadsPath, resolvedBeads),
 		namePool: pool,
 		tmux:     t,
 	}
+
+	// Wire up proxy admin client for mTLS cert lifecycle (issue on spawn,
+	// revoke on remove). No-op if the rig has no RemoteBackend configured.
+	if err == nil && settings.RemoteBackend != nil {
+		adminAddr := "127.0.0.1:9877"
+		if settings.RemoteBackend.ProxyAdminAddr != "" {
+			adminAddr = settings.RemoteBackend.ProxyAdminAddr
+		}
+		mgr.proxyAdmin = proxy.NewAdminClient(adminAddr)
+	}
+
+	return mgr
 }
 
 // GetNamePool returns the manager's name pool for external use (e.g., pool init).
