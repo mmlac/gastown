@@ -63,6 +63,7 @@ type Client struct {
 	installPrefix string // "gt-<installID-short>" — scopes workspaces to this installation
 	runner        CommandRunner
 	retry         RetryConfig
+	listPageSize  int // page size for ListOwned pagination; 0 means use default
 }
 
 // NewClient creates a Client that scopes workspaces with the given prefix.
@@ -205,49 +206,70 @@ func (c *Client) Exec(ctx context.Context, name string, env map[string]string, c
 	return stdout, stderr, exitCode, nil
 }
 
-// daytonaListEntry matches the JSON output of `daytona list -f json`.
+// daytonaListEntry matches the JSON output of `daytona list -o json`.
 type daytonaListEntry struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
 	State string `json:"state"`
 }
 
+// defaultListPageSize is the number of workspaces fetched per page in ListOwned.
+const defaultListPageSize = 100
+
 // ListOwned returns all workspaces belonging to this installation (filtered by installPrefix).
+// It paginates through all pages of `daytona list` to ensure no workspaces are missed.
 func (c *Client) ListOwned(ctx context.Context) ([]Workspace, error) {
-	stdout, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
-		return c.runner.Run(ctx, "daytona", "list", "-f", "json")
-	})
-	if err != nil {
-		return nil, fmt.Errorf("daytona list: %w", err)
-	}
-	if exitCode != 0 {
-		return nil, fmt.Errorf("daytona list failed (exit %d): %s", exitCode, firstLine(stderr))
-	}
-
-	var entries []daytonaListEntry
-	if strings.TrimSpace(stdout) == "" {
-		return nil, nil
-	}
-	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
-		return nil, fmt.Errorf("daytona list: parse JSON: %w", err)
-	}
-
 	prefix := c.installPrefix + "-"
 	var owned []Workspace
-	for _, e := range entries {
-		if !strings.HasPrefix(e.Name, prefix) {
-			continue
+
+	pageSize := c.listPageSize
+	if pageSize <= 0 {
+		pageSize = defaultListPageSize
+	}
+
+	for page := 1; ; page++ {
+		pageStr := fmt.Sprintf("%d", page)
+		limitStr := fmt.Sprintf("%d", pageSize)
+		stdout, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
+			return c.runner.Run(ctx, "daytona", "list", "-o", "json", "--page", pageStr, "--limit", limitStr)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("daytona list (page %d): %w", page, err)
 		}
-		ws := Workspace{
-			ID:    e.ID,
-			Name:  e.Name,
-			State: e.State,
+		if exitCode != 0 {
+			return nil, fmt.Errorf("daytona list failed (page %d, exit %d): %s", page, exitCode, firstLine(stderr))
 		}
-		if rig, polecat, ok := c.ParseWorkspaceName(e.Name); ok {
-			ws.Rig = rig
-			ws.Polecat = polecat
+
+		var entries []daytonaListEntry
+		if strings.TrimSpace(stdout) == "" {
+			break
 		}
-		owned = append(owned, ws)
+		if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
+			return nil, fmt.Errorf("daytona list: parse JSON (page %d): %w", page, err)
+		}
+		if len(entries) == 0 {
+			break
+		}
+
+		for _, e := range entries {
+			if !strings.HasPrefix(e.Name, prefix) {
+				continue
+			}
+			ws := Workspace{
+				ID:    e.ID,
+				Name:  e.Name,
+				State: e.State,
+			}
+			if rig, polecat, ok := c.ParseWorkspaceName(e.Name); ok {
+				ws.Rig = rig
+				ws.Polecat = polecat
+			}
+			owned = append(owned, ws)
+		}
+
+		if len(entries) < pageSize {
+			break
+		}
 	}
 	return owned, nil
 }
