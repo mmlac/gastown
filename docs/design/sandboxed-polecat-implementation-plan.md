@@ -22,7 +22,7 @@ This is the "harness for remote execution" — it tells the lifecycle where and 
 type RemoteBackend struct {
     Provider     string            `json:"provider"`               // "daytona" only initially
     Image        string            `json:"image,omitempty"`        // container image override
-    Profile      string            `json:"profile,omitempty"`      // devcontainer profile
+    Dockerfile   string            `json:"dockerfile,omitempty"`   // path to Dockerfile for sandbox snapshot
     AutoStop     bool              `json:"auto_stop,omitempty"`    // stop workspace on session end
     AutoDelete   bool              `json:"auto_delete,omitempty"`  // delete workspace on session end
     ProxyAddr    string            `json:"proxy_addr,omitempty"`   // proxy address override

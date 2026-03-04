@@ -67,7 +67,7 @@ spawn as Daytona workspaces instead of local worktrees.
 |---|---|---|---|---|
 | `provider` | string | **yes** | — | Must be `"daytona"`. Only supported provider. |
 | `image` | string | no | Daytona default | Container image for workspaces. |
-| `profile` | string | no | — | Devcontainer profile name (passed as `--devcontainer-path`). |
+| `dockerfile` | string | no | — | Path to Dockerfile for sandbox snapshot (passed as `--dockerfile`). |
 | `auto_stop` | bool | no | `false` | Stop the workspace when a polecat session ends. Preserves state for restart. |
 | `auto_delete` | bool | no | `false` | Delete the workspace when the polecat is removed. Permanent. |
 | `proxy_addr` | string | no | `localhost:8443` | Host:port of the mTLS proxy server (as reachable from containers). |
@@ -93,7 +93,7 @@ Uses Daytona defaults for everything. Proxy must be reachable at `localhost:8443
   "remote_backend": {
     "provider": "daytona",
     "image": "ghcr.io/your-org/gt-polecat:v2",
-    "profile": ".devcontainer/polecat",
+    "dockerfile": ".devcontainer/Dockerfile",
     "auto_stop": true,
     "auto_delete": false,
     "proxy_addr": "172.17.0.1:9876",
@@ -141,7 +141,7 @@ When `gt sling <bead> <rig>` runs with a Daytona-configured rig:
 1. **Preflight checks** — verifies `daytona` CLI is on PATH, proxy server is
    reachable (pings admin API), and CA cert/key exist.
 2. **Workspace creation** — calls `daytona create <repoURL> --name <wsName>
-   --branch <branch> --yes` with optional `--image` and `--devcontainer-path`.
+   --branch <branch> --yes` with optional `--image` and `--dockerfile`.
    The `--yes` flag suppresses interactive confirmation prompts so the command
    runs unattended.
 3. **Certificate injection** — issues an mTLS client cert from the proxy CA,

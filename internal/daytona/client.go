@@ -53,9 +53,9 @@ type Workspace struct {
 
 // CreateOptions configures workspace creation.
 type CreateOptions struct {
-	Image            string            // container image override
-	DevcontainerPath string            // devcontainer path (maps to --devcontainer-path)
-	Env              map[string]string // extra environment variables
+	Image      string            // container image override
+	Dockerfile string            // path to Dockerfile for sandbox snapshot (maps to --dockerfile)
+	Env        map[string]string // extra environment variables
 }
 
 // Client wraps the daytona CLI for workspace lifecycle and discovery.
@@ -124,8 +124,8 @@ func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts 
 	if opts.Image != "" {
 		args = append(args, "--image", opts.Image)
 	}
-	if opts.DevcontainerPath != "" {
-		args = append(args, "--devcontainer-path", opts.DevcontainerPath)
+	if opts.Dockerfile != "" {
+		args = append(args, "--dockerfile", opts.Dockerfile)
 	}
 	for k, v := range opts.Env {
 		args = append(args, "--env", k+"="+v)
