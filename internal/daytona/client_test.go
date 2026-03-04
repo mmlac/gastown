@@ -361,11 +361,8 @@ func TestExec(t *testing.T) {
 	if !strings.Contains(args, "exec ws-name") {
 		t.Errorf("args missing 'exec ws-name': %s", args)
 	}
-	if !strings.Contains(args, "--env FOO=bar") {
-		t.Errorf("args missing env: %s", args)
-	}
-	if !strings.Contains(args, "-- echo hello") {
-		t.Errorf("args missing command after --: %s", args)
+	if !strings.Contains(args, "-- env FOO=bar echo hello") {
+		t.Errorf("args missing 'env FOO=bar' prefix or command: %s", args)
 	}
 }
 

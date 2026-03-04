@@ -937,67 +937,42 @@ func (m *SessionManager) verifyStartupNudgeDelivery(sessionID string, rc *config
 }
 
 // buildDaytonaCommand builds a `daytona exec` command string for running an agent
-// inside a daytona workspace. Env vars are passed via --env flags, and the agent
-// command runs directly inside the container (no host-local --settings paths).
+// inside a daytona workspace. Per-session env vars (GT_RUN) are passed via an
+// inline `env K=V` prefix since daytona exec does not support --env. Static env
+// vars (GT_RIG, proxy/cert, etc.) are set at workspace creation time via
+// `daytona create --env` and persist across exec calls.
 //
 // The resulting command string is used as the tmux pane command. The outer shell
 // (tmux's bash) parses it, launching `daytona exec` which tunnels stdin/stdout
 // to the container process.
 func (m *SessionManager) buildDaytonaCommand(polecat, wsName, beacon string, rc *config.RuntimeConfig, runID string) string {
-	rb := m.rigSettings.RemoteBackend
-
-	// Env vars for the container.
-	// These are passed via daytona exec --env flags so they're available in the
-	// container's process environment.
+	// Per-session env vars that change on each spawn/restart.
+	// Static vars (GT_RIG, GT_POLECAT, GT_ROLE, BD_DOLT_AUTO_COMMIT, proxy/cert
+	// vars, and rb.Env) are set at workspace creation time via daytona create
+	// --env and persist across exec calls.
 	env := map[string]string{
-		"GT_RIG":              m.rig.Name,
-		"GT_POLECAT":          polecat,
-		"GT_ROLE":             fmt.Sprintf("%s/polecats/%s", m.rig.Name, polecat),
-		"GT_RUN":              runID,
-		"BD_DOLT_AUTO_COMMIT": "off",
+		"GT_RUN": runID,
 	}
 
-	// Add proxy and mTLS cert environment variables so the container can
-	// authenticate against the host proxy.
-	// GT_PROXY_* are read by gt-proxy-client; GIT_SSL_* are read natively by
-	// git for any HTTPS operation — both must be set to cover all consumers.
-	// Cert files are injected into the container at spawn time under DefaultRemoteCertDir.
-	proxyAddr := rb.ProxyAddr
-	if proxyAddr == "" {
-		proxyAddr = constants.DefaultProxyAddr
-	}
-	certDir := constants.DefaultRemoteCertDir
-	env["GT_PROXY_URL"] = fmt.Sprintf("https://%s", proxyAddr)
-	env["GT_PROXY_CERT"] = certDir + "/client.crt"
-	env["GT_PROXY_KEY"] = certDir + "/client.key"
-	env["GT_PROXY_CA"] = certDir + "/ca.crt"
-	env["GIT_SSL_CERT"] = certDir + "/client.crt"
-	env["GIT_SSL_KEY"] = certDir + "/client.key"
-	env["GIT_SSL_CAINFO"] = certDir + "/ca.crt"
-
-	// Include any extra env from RemoteBackend config.
-	for k, v := range rb.Env {
-		env[k] = v
-	}
-
-	// Build: daytona exec <ws> --env K=V ... -- sh -c '<agent-command>'
+	// Build: daytona exec <ws> -- env K=V ... sh -c '<agent-command>'
 	// We use sh -c to handle the agent command with its prompt argument,
 	// which may contain shell special characters (newlines, quotes).
 	var parts []string
-	parts = append(parts, "daytona", "exec", wsName)
+	parts = append(parts, "daytona", "exec", wsName, "--")
 
-	// Pass environment variables via --env flags.
+	// Set per-session env vars via inline env command since daytona exec
+	// does not support --env flags.
 	// Sort keys for deterministic command output, and shell-quote values
 	// to prevent word-splitting or metacharacter interpretation.
+	parts = append(parts, "env")
 	envKeys := make([]string, 0, len(env))
 	for k := range env {
 		envKeys = append(envKeys, k)
 	}
 	sort.Strings(envKeys)
 	for _, k := range envKeys {
-		parts = append(parts, "--env", fmt.Sprintf("%s=%s", k, config.ShellQuote(env[k])))
+		parts = append(parts, fmt.Sprintf("%s=%s", k, config.ShellQuote(env[k])))
 	}
-	parts = append(parts, "--")
 
 	// Build the inner agent command using RuntimeConfig.
 	// This produces something like: claude --dangerously-skip-permissions "beacon"

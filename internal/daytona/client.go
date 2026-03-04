@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 )
 
@@ -190,12 +191,25 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 // Exec runs a command inside a workspace and returns stdout, stderr, and exit code.
 // Retries on OS-level errors (e.g., daytona binary I/O failure) but not on non-zero
 // exit codes, which belong to the command running inside the workspace.
+//
+// Environment variables are injected via an inline `env K=V` prefix rather than
+// --env flags, because daytona exec does not support --env.
 func (c *Client) Exec(ctx context.Context, name string, env map[string]string, cmd ...string) (string, string, int, error) {
-	args := []string{"exec", name}
-	for k, v := range env {
-		args = append(args, "--env", k+"="+v)
+	args := []string{"exec", name, "--"}
+	if len(env) > 0 {
+		// daytona exec does not support --env; use the env command to set
+		// variables inline inside the container.
+		args = append(args, "env")
+		// Sort keys for deterministic command output.
+		keys := make([]string, 0, len(env))
+		for k := range env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			args = append(args, k+"="+env[k])
+		}
 	}
-	args = append(args, "--")
 	args = append(args, cmd...)
 	stdout, stderr, exitCode, err := c.runWithRetry(ctx, false, func() (string, string, int, error) {
 		return c.runner.Run(ctx, "daytona", args...)
