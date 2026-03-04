@@ -85,7 +85,7 @@ func TestDiscoverWorkspaces_OrphanedBead(t *testing.T) {
 	}
 	beads := []AgentBead{
 		{ID: "gtd-myrig-polecat-onyx", Polecat: "onyx", DaytonaWorkspaceID: "gt-abc12345-myrig-onyx"},
-		{ID: "gtd-myrig-polecat-vanished", Polecat: "vanished", DaytonaWorkspaceID: "gt-abc12345-myrig-vanished"},
+		{ID: "gtd-myrig-polecat-vanished", Polecat: "vanished", DaytonaWorkspaceID: "gt-abc12345-myrig-vanished", CertSerial: "abc123"},
 	}
 
 	report := DiscoverWorkspaces(client, "myrig", workspaces, beads)
@@ -113,6 +113,9 @@ func TestDiscoverWorkspaces_OrphanedBead(t *testing.T) {
 	}
 	if orphan.BeadID != "gtd-myrig-polecat-vanished" {
 		t.Errorf("orphan.BeadID = %q", orphan.BeadID)
+	}
+	if orphan.CertSerial != "abc123" {
+		t.Errorf("orphan.CertSerial = %q, want %q", orphan.CertSerial, "abc123")
 	}
 }
 
@@ -218,7 +221,7 @@ func TestReconcile_DryRun(t *testing.T) {
 		return nil
 	}
 
-	result := Reconcile(context.Background(), client, report, ReconcileOptions{DryRun: true}, beadResetter, logger)
+	result := Reconcile(context.Background(), client, report, ReconcileOptions{DryRun: true}, beadResetter, nil, logger)
 
 	// Dry run should not have called any daytona commands.
 	if len(mock.calls) != 0 {
@@ -255,7 +258,7 @@ func TestReconcile_StopsOrphanedWorkspace(t *testing.T) {
 		OrphanedWorkspaces: 1,
 	}
 
-	result := Reconcile(context.Background(), client, report, ReconcileOptions{}, nil, logger)
+	result := Reconcile(context.Background(), client, report, ReconcileOptions{}, nil, nil, logger)
 
 	if result.WorkspacesStopped != 1 {
 		t.Errorf("WorkspacesStopped = %d, want 1", result.WorkspacesStopped)
@@ -294,7 +297,7 @@ func TestReconcile_StopsAndDeletesOrphanedWorkspace(t *testing.T) {
 		OrphanedWorkspaces: 1,
 	}
 
-	result := Reconcile(context.Background(), client, report, ReconcileOptions{AutoDelete: true}, nil, logger)
+	result := Reconcile(context.Background(), client, report, ReconcileOptions{AutoDelete: true}, nil, nil, logger)
 
 	if result.WorkspacesStopped != 1 {
 		t.Errorf("WorkspacesStopped = %d, want 1", result.WorkspacesStopped)
@@ -330,7 +333,7 @@ func TestReconcile_SkipsStopForAlreadyStopped(t *testing.T) {
 		OrphanedWorkspaces: 1,
 	}
 
-	result := Reconcile(context.Background(), client, report, ReconcileOptions{}, nil, logger)
+	result := Reconcile(context.Background(), client, report, ReconcileOptions{}, nil, nil, logger)
 
 	// Already stopped — no stop call needed.
 	if result.WorkspacesStopped != 0 {
@@ -369,12 +372,108 @@ func TestReconcile_ResetsOrphanedBead(t *testing.T) {
 		return nil
 	}
 
-	result := Reconcile(context.Background(), client, report, ReconcileOptions{}, beadResetter, logger)
+	result := Reconcile(context.Background(), client, report, ReconcileOptions{}, beadResetter, nil, logger)
 
 	if result.BeadsReset != 1 {
 		t.Errorf("BeadsReset = %d, want 1", result.BeadsReset)
 	}
 	if resetID != "gtd-myrig-polecat-vanished" {
 		t.Errorf("resetID = %q, want %q", resetID, "gtd-myrig-polecat-vanished")
+	}
+}
+
+func TestReconcile_RevokesCertBeforeBeadReset(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	client := NewClientWithRunner("gt-abc12345", mock)
+	logger := log.New(os.Stderr, "test: ", 0)
+
+	report := &ReconcileReport{
+		Rig: "myrig",
+		Results: []DiscoveryResult{
+			{
+				Action:     ActionOrphanedBead,
+				Rig:        "myrig",
+				Polecat:    "vanished",
+				BeadID:     "gtd-myrig-polecat-vanished",
+				CertSerial: "deadbeef42",
+			},
+		},
+		OrphanedBeads: 1,
+	}
+
+	// Track call order to verify cert is revoked BEFORE bead is reset.
+	var callOrder []string
+	beadResetter := func(beadID string) error {
+		callOrder = append(callOrder, "reset:"+beadID)
+		return nil
+	}
+	certRevoker := func(ctx context.Context, serial string) error {
+		callOrder = append(callOrder, "revoke:"+serial)
+		return nil
+	}
+
+	result := Reconcile(context.Background(), client, report, ReconcileOptions{}, beadResetter, certRevoker, logger)
+
+	if result.CertsRevoked != 1 {
+		t.Errorf("CertsRevoked = %d, want 1", result.CertsRevoked)
+	}
+	if result.BeadsReset != 1 {
+		t.Errorf("BeadsReset = %d, want 1", result.BeadsReset)
+	}
+	if len(callOrder) != 2 {
+		t.Fatalf("expected 2 calls, got %d: %v", len(callOrder), callOrder)
+	}
+	if callOrder[0] != "revoke:deadbeef42" {
+		t.Errorf("first call should be cert revoke, got %q", callOrder[0])
+	}
+	if callOrder[1] != "reset:gtd-myrig-polecat-vanished" {
+		t.Errorf("second call should be bead reset, got %q", callOrder[1])
+	}
+}
+
+func TestReconcile_SkipsCertRevocationWhenNoSerial(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	client := NewClientWithRunner("gt-abc12345", mock)
+	logger := log.New(os.Stderr, "test: ", 0)
+
+	report := &ReconcileReport{
+		Rig: "myrig",
+		Results: []DiscoveryResult{
+			{
+				Action:  ActionOrphanedBead,
+				Rig:     "myrig",
+				Polecat: "vanished",
+				BeadID:  "gtd-myrig-polecat-vanished",
+				// CertSerial intentionally empty
+			},
+		},
+		OrphanedBeads: 1,
+	}
+
+	revokeCalled := false
+	certRevoker := func(ctx context.Context, serial string) error {
+		revokeCalled = true
+		return nil
+	}
+	beadResetter := func(beadID string) error { return nil }
+
+	result := Reconcile(context.Background(), client, report, ReconcileOptions{}, beadResetter, certRevoker, logger)
+
+	if revokeCalled {
+		t.Error("certRevoker should not be called when CertSerial is empty")
+	}
+	if result.CertsRevoked != 0 {
+		t.Errorf("CertsRevoked = %d, want 0", result.CertsRevoked)
+	}
+	if result.BeadsReset != 1 {
+		t.Errorf("BeadsReset = %d, want 1", result.BeadsReset)
 	}
 }

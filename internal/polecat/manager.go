@@ -884,8 +884,20 @@ func (m *Manager) addDaytonaLocked(name string, opts AddOptions, polecatDir stri
 	var (
 		branchCreated    bool
 		workspaceCreated bool
+		certSerial       string // populated after cert issuance for rollback revocation
 	)
 	cleanupOnError := func() {
+		// Revoke the issued cert BEFORE resetting the agent bead (which clears the serial).
+		// Use the certSerial captured directly from the closure scope rather than reading
+		// from the bead, since the bead may not have been updated yet.
+		if certSerial != "" && m.proxyAdmin != nil {
+			revokeCtx, revokeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer revokeCancel()
+			if err := m.proxyAdmin.DenyCert(revokeCtx, certSerial); err != nil {
+				style.PrintWarning("spawn rollback: could not revoke cert for %s (serial %s): %v", name, certSerial, err)
+			}
+		}
+
 		aid := m.agentBeadID(name)
 		_ = m.beads.ResetAgentBeadForReuse(aid, "spawn rollback")
 
@@ -951,8 +963,7 @@ func (m *Manager) addDaytonaLocked(name string, opts AddOptions, polecatDir stri
 		return nil, fmt.Errorf("issuing mTLS cert for %s: %w", certCN, err)
 	}
 
-	// Extract cert serial for later revocation (denyCertForPolecat reads it from the agent bead).
-	var certSerial string
+	// Extract cert serial for rollback revocation and agent bead storage.
 	if block, _ := pem.Decode(certPEM); block != nil {
 		if leaf, parseErr := x509.ParseCertificate(block.Bytes); parseErr == nil {
 			certSerial = leaf.SerialNumber.Text(16)

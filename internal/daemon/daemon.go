@@ -32,6 +32,7 @@ import (
 	"github.com/steveyegge/gastown/internal/feed"
 	gitpkg "github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mayor"
+	"github.com/steveyegge/gastown/internal/proxy"
 	"github.com/steveyegge/gastown/internal/refinery"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
@@ -2410,11 +2411,22 @@ func (d *Daemon) reconcileDaytonaRig(rigName, shortID string, backend *config.Re
 		return nil
 	}
 
+	// Build cert revoker callback — revokes mTLS certs via the proxy admin API
+	// before bead reset to prevent orphaned certs from authenticating.
+	adminAddr := "127.0.0.1:9877"
+	if backend.ProxyAdminAddr != "" {
+		adminAddr = backend.ProxyAdminAddr
+	}
+	proxyAdmin := proxy.NewAdminClient(adminAddr)
+	certRevoker := func(ctx context.Context, serial string) error {
+		return proxyAdmin.DenyCert(ctx, serial)
+	}
+
 	opts := daytona.ReconcileOptions{
 		AutoDelete: backend.AutoDelete,
 	}
 
-	result := daytona.Reconcile(ctx, client, report, opts, beadResetter, d.logger)
+	result := daytona.Reconcile(ctx, client, report, opts, beadResetter, certRevoker, d.logger)
 
 	if len(result.Errors) > 0 {
 		d.logger.Printf("Daytona reconcile %s: %d errors occurred", rigName, len(result.Errors))
@@ -2461,6 +2473,7 @@ func (d *Daemon) listDaytonaPolecatBeads(rigName string) []daytona.AgentBead {
 			Polecat:            polecatName,
 			DaytonaWorkspaceID: fields.DaytonaWorkspace,
 			AgentState:         fields.AgentState,
+			CertSerial:         fields.CertSerial,
 		})
 	}
 

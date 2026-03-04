@@ -34,6 +34,9 @@ type DiscoveryResult struct {
 
 	// BeadID is set for healthy matches and orphaned beads.
 	BeadID string
+
+	// CertSerial is the proxy mTLS cert serial for revocation (set for orphaned beads).
+	CertSerial string
 }
 
 // ReconcileReport summarizes the full reconciliation for a rig.
@@ -54,6 +57,7 @@ type AgentBead struct {
 	Polecat            string // polecat name
 	DaytonaWorkspaceID string // workspace name from bead description field
 	AgentState         string // agent_state field (spawning, working, idle, etc.)
+	CertSerial         string // proxy mTLS cert serial (lowercase hex) for revocation on cleanup
 }
 
 // DiscoverWorkspaces cross-references daytona workspaces with agent beads for a single rig.
@@ -112,10 +116,11 @@ func DiscoverWorkspaces(client *Client, rigName string, workspaces []Workspace, 
 		if _, ok := wsByPolecat[polecatName]; !ok {
 			// Orphaned bead: bead references a workspace that doesn't exist.
 			report.Results = append(report.Results, DiscoveryResult{
-				Action:  ActionOrphanedBead,
-				Rig:     rigName,
-				Polecat: polecatName,
-				BeadID:  bead.ID,
+				Action:     ActionOrphanedBead,
+				Rig:        rigName,
+				Polecat:    polecatName,
+				BeadID:     bead.ID,
+				CertSerial: bead.CertSerial,
 			})
 			report.OrphanedBeads++
 		}
@@ -138,13 +143,16 @@ type ReconcileResult struct {
 	WorkspacesStopped int
 	WorkspacesDeleted int
 	BeadsReset        int
+	CertsRevoked      int
 	Errors            []error
 }
 
 // Reconcile acts on a discovery report: stops/deletes orphaned workspaces and
 // resets orphaned beads. The beadResetter callback handles bead state reset
-// since the daytona package doesn't import beads directly.
-func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opts ReconcileOptions, beadResetter func(beadID string) error, logger *log.Logger) *ReconcileResult {
+// since the daytona package doesn't import beads directly. The certRevoker
+// callback (optional) revokes mTLS certs before bead reset to prevent
+// orphaned certs from authenticating to the proxy.
+func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opts ReconcileOptions, beadResetter func(beadID string) error, certRevoker func(ctx context.Context, serial string) error, logger *log.Logger) *ReconcileResult {
 	result := &ReconcileResult{}
 
 	for _, item := range report.Results {
@@ -190,6 +198,17 @@ func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opt
 				logger.Printf("[dry-run] would reset orphaned bead %s (rig=%s, polecat=%s)",
 					item.BeadID, item.Rig, item.Polecat)
 				continue
+			}
+
+			// Revoke cert BEFORE resetting the bead (reset clears the serial).
+			if certRevoker != nil && item.CertSerial != "" {
+				if err := certRevoker(ctx, item.CertSerial); err != nil {
+					logger.Printf("Warning: failed to revoke cert for orphaned bead %s (serial %s): %v",
+						item.BeadID, item.CertSerial, err)
+					result.Errors = append(result.Errors, fmt.Errorf("revoke cert %s: %w", item.CertSerial, err))
+				} else {
+					result.CertsRevoked++
+				}
 			}
 
 			if err := beadResetter(item.BeadID); err != nil {
