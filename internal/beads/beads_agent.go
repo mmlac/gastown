@@ -435,6 +435,7 @@ func (b *Beads) ResetAgentBeadForReuse(id, reason string) error {
 	fields.CleanupStatus = "" // Clear cleanup_status
 	fields.AgentState = string(AgentStateNuked)
 	fields.DaytonaWorkspace = "" // Clear daytona workspace
+	fields.CertSerial = ""      // Clear cert serial (gtd-nyq: stale serial causes wrong cert revocation)
 	// Clear completion metadata (gt-x7t9)
 	fields.ExitType = ""
 	fields.MRID = ""
