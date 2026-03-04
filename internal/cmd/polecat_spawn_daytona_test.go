@@ -84,20 +84,9 @@ func TestRunDaytonaPreflightChecks_MissingCA(t *testing.T) {
 	}
 }
 
-func TestRunDaytonaPreflightChecks_MissingCAFiles(t *testing.T) {
-	// This tests the CA file existence check in isolation.
-	// We can't easily test the proxy check in unit tests (requires running server),
-	// so we test the CA path directly.
+func TestCheckCAFiles_MissingCert(t *testing.T) {
 	townRoot := t.TempDir()
 	caDir := filepath.Join(townRoot, ".runtime", "ca")
-
-	// No CA dir at all
-	certPath := filepath.Join(caDir, "ca.crt")
-	if _, err := os.Stat(certPath); !os.IsNotExist(err) {
-		t.Skip("CA cert unexpectedly exists")
-	}
-
-	// Test that missing cert is detected
 	if err := os.MkdirAll(caDir, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -106,59 +95,103 @@ func TestRunDaytonaPreflightChecks_MissingCAFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// This will fail at proxy check first (can't reach proxy),
-	// but the function ordering guarantees proxy check → CA check.
-	// We verify the function structure is correct by checking compilation.
+	err := checkCAFiles(townRoot)
+	if err == nil {
+		t.Fatal("expected error when ca.crt is missing")
+	}
+	if !strings.Contains(err.Error(), "CA certificate not found") {
+		t.Errorf("error = %q, want to contain 'CA certificate not found'", err.Error())
+	}
 }
 
-func TestDaytonaAutoDetectFromRigSettings(t *testing.T) {
-	// Verify that auto-detection logic works correctly
+func TestCheckCAFiles_MissingKey(t *testing.T) {
+	townRoot := t.TempDir()
+	caDir := filepath.Join(townRoot, ".runtime", "ca")
+	if err := os.MkdirAll(caDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Only create cert, not key
+	if err := os.WriteFile(filepath.Join(caDir, "ca.crt"), []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := checkCAFiles(townRoot)
+	if err == nil {
+		t.Fatal("expected error when ca.key is missing")
+	}
+	if !strings.Contains(err.Error(), "CA key not found") {
+		t.Errorf("error = %q, want to contain 'CA key not found'", err.Error())
+	}
+}
+
+func TestCheckCAFiles_BothPresent(t *testing.T) {
+	townRoot := t.TempDir()
+	caDir := filepath.Join(townRoot, ".runtime", "ca")
+	if err := os.MkdirAll(caDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(caDir, "ca.crt"), []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(caDir, "ca.key"), []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := checkCAFiles(townRoot); err != nil {
+		t.Errorf("expected no error when both CA files exist, got: %v", err)
+	}
+}
+
+func TestCheckCAFiles_NoCaDir(t *testing.T) {
+	townRoot := t.TempDir()
+	// Don't create the CA directory at all
+	err := checkCAFiles(townRoot)
+	if err == nil {
+		t.Fatal("expected error when CA directory does not exist")
+	}
+	if !strings.Contains(err.Error(), "CA certificate not found") {
+		t.Errorf("error = %q, want to contain 'CA certificate not found'", err.Error())
+	}
+}
+
+func TestShouldUseDaytona_ExplicitFlag(t *testing.T) {
+	if !shouldUseDaytona(true, nil) {
+		t.Error("expected true when explicit flag is set")
+	}
+}
+
+func TestShouldUseDaytona_AutoDetectFromSettings(t *testing.T) {
 	settings := &config.RigSettings{
 		RemoteBackend: &config.RemoteBackend{
 			Provider: "daytona",
 		},
 	}
+	if !shouldUseDaytona(false, settings) {
+		t.Error("expected true when settings have daytona provider")
+	}
+}
 
-	// Auto-detect should trigger when RemoteBackend is set
-	useDaytona := false
-	if settings != nil && settings.RemoteBackend != nil && settings.RemoteBackend.Provider == "daytona" {
-		useDaytona = true
+func TestShouldUseDaytona_NilSettings(t *testing.T) {
+	if shouldUseDaytona(false, nil) {
+		t.Error("expected false for nil settings")
 	}
-	if !useDaytona {
-		t.Error("expected auto-detect to enable daytona mode")
-	}
+}
 
-	// Should not trigger for nil settings
-	useDaytona = false
-	var nilSettings *config.RigSettings
-	if nilSettings != nil && nilSettings.RemoteBackend != nil && nilSettings.RemoteBackend.Provider == "daytona" {
-		useDaytona = true
-	}
-	if useDaytona {
-		t.Error("expected nil settings to not enable daytona mode")
-	}
-
-	// Should not trigger for non-daytona provider
-	useDaytona = false
-	otherSettings := &config.RigSettings{
+func TestShouldUseDaytona_NonDaytonaProvider(t *testing.T) {
+	settings := &config.RigSettings{
 		RemoteBackend: &config.RemoteBackend{
 			Provider: "other",
 		},
 	}
-	if otherSettings != nil && otherSettings.RemoteBackend != nil && otherSettings.RemoteBackend.Provider == "daytona" {
-		useDaytona = true
-	}
-	if useDaytona {
-		t.Error("expected non-daytona provider to not enable daytona mode")
+	if shouldUseDaytona(false, settings) {
+		t.Error("expected false for non-daytona provider")
 	}
 }
 
-func TestSlingSpawnOptions_DaytonaField(t *testing.T) {
-	opts := SlingSpawnOptions{
-		Daytona: true,
-	}
-	if !opts.Daytona {
-		t.Error("expected Daytona field to be true")
+func TestShouldUseDaytona_NilRemoteBackend(t *testing.T) {
+	settings := &config.RigSettings{}
+	if shouldUseDaytona(false, settings) {
+		t.Error("expected false when RemoteBackend is nil")
 	}
 }
 

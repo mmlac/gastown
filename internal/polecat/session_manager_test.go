@@ -753,15 +753,38 @@ func TestBuildDaytonaCommand_BeaconWithSpecialChars(t *testing.T) {
 	if !strings.Contains(cmd, "-- sh -c") {
 		t.Errorf("command missing '-- sh -c'\ncmd: %s", cmd)
 	}
-	// The command should still be parseable (not crash the shell)
 	if cmd == "" {
 		t.Error("buildDaytonaCommand returned empty string")
+	}
+
+	// The beacon is first quoted by quoteForShell (double-quote escaping),
+	// then the whole agent command is wrapped in single quotes by ShellQuote.
+	// Verify special characters survive the double quoting layers.
+
+	// Single quotes in the beacon must be escaped via the '\'' idiom.
+	if !strings.Contains(cmd, `'\''`) {
+		t.Errorf("single quotes in beacon not properly escaped\ncmd: %s", cmd)
+	}
+	// Dollar sign should be backslash-escaped by quoteForShell.
+	if !strings.Contains(cmd, `\$var`) {
+		t.Errorf("dollar sign in beacon not escaped\ncmd: %s", cmd)
+	}
+	// Double quotes in the beacon should be backslash-escaped by quoteForShell.
+	if !strings.Contains(cmd, `\"quoted\"`) {
+		t.Errorf("double quotes in beacon not escaped\ncmd: %s", cmd)
+	}
+	// Newlines in the beacon should be preserved (appear literally in the command).
+	if !strings.Contains(cmd, "Line 1\nLine 2") {
+		t.Errorf("newlines in beacon not preserved\ncmd: %s", cmd)
 	}
 }
 
 // testDaytonaRunner records daytona CLI calls for verifying Stop behavior.
 type testDaytonaRunner struct {
-	calls []testDaytonaCall
+	calls    []testDaytonaCall
+	stderr   string
+	exitCode int
+	err      error
 }
 
 type testDaytonaCall struct {
@@ -771,7 +794,7 @@ type testDaytonaCall struct {
 
 func (r *testDaytonaRunner) Run(_ context.Context, name string, args ...string) (string, string, int, error) {
 	r.calls = append(r.calls, testDaytonaCall{Name: name, Args: args})
-	return "", "", 0, nil
+	return "", r.stderr, r.exitCode, r.err
 }
 
 // TestStopDaytonaWorkspaceOnStop_AutoStopTrue verifies that Stop calls
@@ -841,6 +864,38 @@ func TestStopDaytonaWorkspaceOnStop_LocalMode(t *testing.T) {
 
 	// Should be a no-op — no panic, no calls
 	m.stopDaytonaWorkspaceOnStop("onyx")
+}
+
+// TestStopDaytonaWorkspaceOnStop_StopFailure verifies that Stop does not panic
+// when the daytona stop command fails (non-zero exit code).
+func TestStopDaytonaWorkspaceOnStop_StopFailure(t *testing.T) {
+	t.Parallel()
+
+	runner := &testDaytonaRunner{
+		stderr:   "Error: workspace not found",
+		exitCode: 1,
+	}
+	client := daytona.NewClientWithRunner("gt-test1234", runner)
+
+	r := &rig.Rig{Name: "testrig", Path: t.TempDir()}
+	m := NewSessionManager(tmux.NewTmux(), r)
+	m.SetDaytonaSession(client, &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{
+			Provider: "daytona",
+			AutoStop: true,
+		},
+	})
+
+	// Should not panic — error is logged as a warning to stderr.
+	m.stopDaytonaWorkspaceOnStop("onyx")
+
+	// The stop command should still have been attempted.
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 daytona call, got %d", len(runner.calls))
+	}
+	if runner.calls[0].Args[0] != "stop" {
+		t.Errorf("expected 'stop' command, got %v", runner.calls[0].Args)
+	}
 }
 
 func TestValidateSessionName(t *testing.T) {

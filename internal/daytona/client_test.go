@@ -269,6 +269,60 @@ func TestDelete(t *testing.T) {
 	}
 }
 
+func TestStartFailure(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{
+			stderr:   "Error: workspace not found\nUsage: daytona start ...",
+			exitCode: 1,
+		},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Start(context.Background(), "ws-name")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "workspace not found") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "workspace not found")
+	}
+}
+
+func TestStopFailure(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{
+			stderr:   "Error: timeout stopping workspace\nUsage: daytona stop ...",
+			exitCode: 1,
+		},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Stop(context.Background(), "ws-name")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timeout stopping workspace") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "timeout stopping workspace")
+	}
+}
+
+func TestDeleteFailure(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{
+			stderr:   "Error: cannot delete running workspace\nUsage: daytona delete ...",
+			exitCode: 1,
+		},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Delete(context.Background(), "ws-name")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot delete running workspace") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "cannot delete running workspace")
+	}
+}
+
 func TestExec(t *testing.T) {
 	mock := &mockRunner{
 		defaultResponse: mockResponse{
