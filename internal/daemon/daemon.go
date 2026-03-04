@@ -2121,7 +2121,15 @@ func (d *Daemon) restartDaytonaPolecatSession(rigName, polecatName, sessionName,
 	}
 
 	if !wsFound {
-		return fmt.Errorf("daytona workspace %s not found for polecat %s/%s", wsName, rigName, polecatName)
+		// Workspace was auto-deleted by Daytona (inactivity timeout, resource
+		// limits, or admin action). Clean up the orphaned agent bead state so
+		// the daemon doesn't retry restart on every heartbeat, then return
+		// a clear error for the witness notification.
+		d.logger.Printf("Daytona workspace %s not found for polecat %s/%s (likely auto-deleted), cleaning up agent bead",
+			wsName, rigName, polecatName)
+		d.cleanupAutoDeletedWorkspace(rigName, polecatName, rigPath)
+		return fmt.Errorf("daytona workspace %s was deleted (inactivity/resource limit/admin action) for polecat %s/%s; "+
+			"agent bead cleaned up, work requires re-dispatch", wsName, rigName, polecatName)
 	}
 
 	switch wsState {
@@ -2225,6 +2233,88 @@ func (d *Daemon) restartDaytonaPolecatSession(rigName, polecatName, sessionName,
 
 	d.logger.Printf("Daytona polecat %s/%s restarted via workspace %s", rigName, polecatName, wsName)
 	return nil
+}
+
+// cleanupAutoDeletedWorkspace handles a Daytona workspace that was auto-deleted
+// (by inactivity timeout, resource limits, or admin action). It:
+//  1. Revokes the mTLS cert (prevents orphaned certs from authenticating)
+//  2. Clears the daytona_workspace field (removes orphaned reference)
+//  3. Sets agent_state to nuked (marks polecat as permanently failed)
+//  4. Clears hook_bead (breaks restart loop in checkPolecatHealth)
+//
+// The witness notification (sent by the caller in checkPolecatHealth) includes
+// the hook_bead for re-dispatch. All operations are best-effort.
+func (d *Daemon) cleanupAutoDeletedWorkspace(rigName, polecatName, rigPath string) {
+	prefix := config.GetRigPrefix(d.config.TownRoot, rigName)
+	agentBeadID := beads.PolecatBeadIDWithPrefix(prefix, rigName, polecatName)
+
+	// Read agent bead description for cert serial (needed for revocation).
+	var certSerial string
+	showCmd := exec.Command(d.bdPath, "show", agentBeadID, "--json") //nolint:gosec // G204: bd is a trusted internal tool
+	showCmd.Dir = d.config.TownRoot
+	showCmd.Env = os.Environ()
+	if output, err := showCmd.Output(); err == nil {
+		var issues []struct {
+			Description string `json:"description"`
+		}
+		if json.Unmarshal(output, &issues) == nil && len(issues) > 0 {
+			if fields := beads.ParseAgentFields(issues[0].Description); fields != nil {
+				certSerial = fields.CertSerial
+			}
+		}
+	}
+
+	// Revoke mTLS cert if present.
+	if certSerial != "" {
+		adminAddr := "127.0.0.1:9877"
+		settingsPath := config.RigSettingsPath(rigPath)
+		if rigSettings, err := config.LoadRigSettings(settingsPath); err == nil &&
+			rigSettings.RemoteBackend != nil && rigSettings.RemoteBackend.ProxyAdminAddr != "" {
+			adminAddr = rigSettings.RemoteBackend.ProxyAdminAddr
+		}
+		revokeCtx, revokeCancel := context.WithTimeout(d.ctx, 10*time.Second)
+		defer revokeCancel()
+		if err := proxy.NewAdminClient(adminAddr).DenyCert(revokeCtx, certSerial); err != nil {
+			d.logger.Printf("Warning: failed to revoke cert for %s/%s (serial %s): %v",
+				rigName, polecatName, certSerial, err)
+		} else {
+			d.logger.Printf("Revoked mTLS cert for auto-deleted workspace %s/%s (serial %s)",
+				rigName, polecatName, certSerial)
+		}
+	}
+
+	// Clear daytona_workspace field.
+	resetCmd := exec.Command(d.bdPath, "agent", "update", agentBeadID, //nolint:gosec // G204: bd is a trusted internal tool
+		"--set", "daytona_workspace=")
+	resetCmd.Dir = d.config.TownRoot
+	resetCmd.Env = os.Environ()
+	if out, err := resetCmd.CombinedOutput(); err != nil {
+		d.logger.Printf("Warning: failed to clear daytona_workspace for %s: %v (output: %s)",
+			agentBeadID, err, string(out))
+	}
+
+	// Set agent_state to nuked.
+	stateCmd := exec.Command(d.bdPath, "agent", "state", agentBeadID, //nolint:gosec // G204: bd is a trusted internal tool
+		string(beads.AgentStateNuked))
+	stateCmd.Dir = d.config.TownRoot
+	stateCmd.Env = os.Environ()
+	if out, err := stateCmd.CombinedOutput(); err != nil {
+		d.logger.Printf("Warning: failed to set agent_state=nuked for %s: %v (output: %s)",
+			agentBeadID, err, string(out))
+	}
+
+	// Clear hook_bead to break restart loop (checkPolecatHealth skips
+	// polecats with no hook_bead).
+	clearCmd := exec.Command(d.bdPath, "slot", "clear", agentBeadID, "hook") //nolint:gosec // G204: bd is a trusted internal tool
+	clearCmd.Dir = d.config.TownRoot
+	clearCmd.Env = os.Environ()
+	if out, err := clearCmd.CombinedOutput(); err != nil {
+		d.logger.Printf("Warning: failed to clear hook_bead for %s: %v (output: %s)",
+			agentBeadID, err, string(out))
+	}
+
+	d.logger.Printf("Cleaned up auto-deleted workspace state for polecat %s/%s (bead %s)",
+		rigName, polecatName, agentBeadID)
 }
 
 // buildDaytonaExecCommand constructs the tmux pane command that runs the agent
