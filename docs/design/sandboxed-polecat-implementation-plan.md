@@ -10,7 +10,7 @@ Integrate daytona workspace management into the existing polecat lifecycle (`Man
 
 Add `InstallationID string` to `TownConfig` ([internal/config/types.go](internal/config/types.go)). Auto-generated (uuid v4) on first load if empty, persisted to `~/gt/config.json`. This UUID scopes all daytona workspace names to this GasTown installation — two developers sharing a daytona provider won't see or manage each other's workspaces.
 
-Workspace naming convention: `gt-<installID-short>-<rig>-<polecat>` where `installID-short` = first 8 chars. Discovery: `daytona list` filtered by `gt-<installID-short>-` prefix.
+Workspace naming convention: `gt-<installID-short>-<rig>-<polecat>` where `installID-short` = first 12 chars. Discovery: `daytona list` filtered by `gt-<installID-short>-` prefix.
 
 **Files**: [internal/config/types.go](internal/config/types.go) (add field), [internal/config/loader.go](internal/config/loader.go) (auto-generate on load)
 
