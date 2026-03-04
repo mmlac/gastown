@@ -435,6 +435,159 @@ func TestReconcile_RevokesCertBeforeBeadReset(t *testing.T) {
 	}
 }
 
+func TestReconcile_SkipsTransitionalStates(t *testing.T) {
+	t.Parallel()
+
+	for _, state := range []string{"creating", "starting", "stopping"} {
+		state := state
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+
+			mock := &mockRunner{
+				defaultResponse: mockResponse{exitCode: 0},
+			}
+			client := NewClientWithRunner("gt-abc12345", mock)
+			logger := log.New(os.Stderr, "test: ", 0)
+
+			report := &ReconcileReport{
+				Rig: "myrig",
+				Results: []DiscoveryResult{
+					{
+						Action:    ActionOrphanedWorkspace,
+						Rig:       "myrig",
+						Polecat:   "ghost",
+						Workspace: &Workspace{Name: "gt-abc12345-myrig-ghost", State: state},
+					},
+				},
+				OrphanedWorkspaces: 1,
+			}
+
+			result := Reconcile(context.Background(), client, report, ReconcileOptions{}, nil, nil, logger)
+
+			if result.WorkspacesStopped != 0 {
+				t.Errorf("WorkspacesStopped = %d, want 0 for state %q", result.WorkspacesStopped, state)
+			}
+			if result.WorkspacesSkipped != 1 {
+				t.Errorf("WorkspacesSkipped = %d, want 1 for state %q", result.WorkspacesSkipped, state)
+			}
+			if len(mock.calls) != 0 {
+				t.Errorf("expected 0 daytona calls for transitional state %q, got %d", state, len(mock.calls))
+			}
+		})
+	}
+}
+
+func TestReconcile_HandlesErrorStateWorkspace(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	client := NewClientWithRunner("gt-abc12345", mock)
+	logger := log.New(os.Stderr, "test: ", 0)
+
+	report := &ReconcileReport{
+		Rig: "myrig",
+		Results: []DiscoveryResult{
+			{
+				Action:    ActionOrphanedWorkspace,
+				Rig:       "myrig",
+				Polecat:   "ghost",
+				Workspace: &Workspace{Name: "gt-abc12345-myrig-ghost", State: "error"},
+			},
+		},
+		OrphanedWorkspaces: 1,
+	}
+
+	result := Reconcile(context.Background(), client, report, ReconcileOptions{}, nil, nil, logger)
+
+	// Error state workspaces should still attempt stop.
+	if result.WorkspacesStopped != 1 {
+		t.Errorf("WorkspacesStopped = %d, want 1", result.WorkspacesStopped)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(mock.calls))
+	}
+	if mock.calls[0].Args[0] != "stop" {
+		t.Errorf("expected stop command, got %v", mock.calls[0].Args)
+	}
+}
+
+func TestReconcile_TransitionalStateSkipsDeleteToo(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	client := NewClientWithRunner("gt-abc12345", mock)
+	logger := log.New(os.Stderr, "test: ", 0)
+
+	report := &ReconcileReport{
+		Rig: "myrig",
+		Results: []DiscoveryResult{
+			{
+				Action:    ActionOrphanedWorkspace,
+				Rig:       "myrig",
+				Polecat:   "ghost",
+				Workspace: &Workspace{Name: "gt-abc12345-myrig-ghost", State: "creating"},
+			},
+		},
+		OrphanedWorkspaces: 1,
+	}
+
+	result := Reconcile(context.Background(), client, report, ReconcileOptions{AutoDelete: true}, nil, nil, logger)
+
+	// Transitional states should be completely skipped, including delete.
+	if result.WorkspacesStopped != 0 {
+		t.Errorf("WorkspacesStopped = %d, want 0", result.WorkspacesStopped)
+	}
+	if result.WorkspacesDeleted != 0 {
+		t.Errorf("WorkspacesDeleted = %d, want 0", result.WorkspacesDeleted)
+	}
+	if result.WorkspacesSkipped != 1 {
+		t.Errorf("WorkspacesSkipped = %d, want 1", result.WorkspacesSkipped)
+	}
+	if len(mock.calls) != 0 {
+		t.Errorf("expected 0 calls, got %d", len(mock.calls))
+	}
+}
+
+func TestReconcile_ErrorStateWithAutoDelete(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	client := NewClientWithRunner("gt-abc12345", mock)
+	logger := log.New(os.Stderr, "test: ", 0)
+
+	report := &ReconcileReport{
+		Rig: "myrig",
+		Results: []DiscoveryResult{
+			{
+				Action:    ActionOrphanedWorkspace,
+				Rig:       "myrig",
+				Polecat:   "ghost",
+				Workspace: &Workspace{Name: "gt-abc12345-myrig-ghost", State: "error"},
+			},
+		},
+		OrphanedWorkspaces: 1,
+	}
+
+	result := Reconcile(context.Background(), client, report, ReconcileOptions{AutoDelete: true}, nil, nil, logger)
+
+	// Error state: stop attempted + delete attempted.
+	if result.WorkspacesStopped != 1 {
+		t.Errorf("WorkspacesStopped = %d, want 1", result.WorkspacesStopped)
+	}
+	if result.WorkspacesDeleted != 1 {
+		t.Errorf("WorkspacesDeleted = %d, want 1", result.WorkspacesDeleted)
+	}
+	if len(mock.calls) != 2 {
+		t.Fatalf("expected 2 calls (stop+delete), got %d", len(mock.calls))
+	}
+}
+
 func TestReconcile_SkipsCertRevocationWhenNoSerial(t *testing.T) {
 	t.Parallel()
 

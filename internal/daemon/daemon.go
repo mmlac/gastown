@@ -2085,12 +2085,32 @@ func (d *Daemon) restartDaytonaPolecatSession(rigName, polecatName, sessionName,
 		return fmt.Errorf("daytona workspace %s not found for polecat %s/%s", wsName, rigName, polecatName)
 	}
 
-	if wsState == "stopped" {
+	switch wsState {
+	case "stopped":
 		d.logger.Printf("Starting stopped daytona workspace %s for polecat %s/%s", wsName, rigName, polecatName)
 		if err := client.Start(ctx, wsName); err != nil {
 			return fmt.Errorf("starting daytona workspace %s: %w", wsName, err)
 		}
 		d.logger.Printf("Daytona workspace %s started successfully", wsName)
+
+	case "running":
+		// Ready for exec — proceed.
+
+	case "creating", "starting":
+		return fmt.Errorf("daytona workspace %s is in transitional state %q, cannot restart polecat %s/%s yet",
+			wsName, wsState, rigName, polecatName)
+
+	case "stopping":
+		return fmt.Errorf("daytona workspace %s is stopping, cannot restart polecat %s/%s yet",
+			wsName, rigName, polecatName)
+
+	case "error":
+		return fmt.Errorf("daytona workspace %s is in error state, cannot restart polecat %s/%s",
+			wsName, rigName, polecatName)
+
+	default:
+		return fmt.Errorf("daytona workspace %s has unknown state %q, cannot restart polecat %s/%s",
+			wsName, wsState, rigName, polecatName)
 	}
 
 	// Generate a fresh run ID for telemetry correlation.
