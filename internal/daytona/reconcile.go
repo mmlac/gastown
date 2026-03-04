@@ -1,6 +1,3 @@
-// Package daytona provides workspace lifecycle management via the daytona CLI.
-// reconcile.go implements workspace discovery and reconciliation:
-// cross-references daytona workspaces with agent beads to detect orphans.
 package daytona
 
 import (

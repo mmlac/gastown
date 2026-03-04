@@ -870,10 +870,10 @@ func (m *Manager) addWithOptionsLocked(name string, opts AddOptions, polecatDir 
 	return polecat, nil
 }
 
-// issueDaytonaCert issues an mTLS client certificate for a remote polecat via the
+// issuePolecatCert issues an mTLS client certificate for a remote polecat via the
 // proxy CA. Returns the PEM-encoded cert, key, and hex serial number. The serial is
 // extracted from the issued certificate for rollback revocation and agent bead storage.
-func (m *Manager) issueDaytonaCert(name string) (certPEM, keyPEM []byte, serial string, err error) {
+func (m *Manager) issuePolecatCert(name string) (certPEM, keyPEM []byte, serial string, err error) {
 	certCN := fmt.Sprintf("gt-%s-%s", m.rig.Name, name)
 	certPEM, keyPEM, err = m.proxyCA.IssuePolecat(certCN, polecatCertTTL)
 	if err != nil {
@@ -1025,7 +1025,7 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 	branchCreated = true
 
 	// --- Step 2: Issue mTLS cert ---
-	certPEM, keyPEM, serial, err := m.issueDaytonaCert(name)
+	certPEM, keyPEM, serial, err := m.issuePolecatCert(name)
 	if err != nil {
 		cleanupOnError()
 		return nil, err
