@@ -1,6 +1,7 @@
 package polecat
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/daytona"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
@@ -1774,5 +1776,143 @@ func TestSetDaytona(t *testing.T) {
 
 	if m.rigSettings != settings {
 		t.Error("rigSettings not set correctly")
+	}
+}
+
+// mockRunner records daytona CLI invocations for test assertions.
+type mockRunner struct {
+	calls []mockCall
+}
+
+type mockCall struct {
+	name string
+	args []string
+}
+
+func (r *mockRunner) Run(_ context.Context, name string, args ...string) (string, string, int, error) {
+	r.calls = append(r.calls, mockCall{name: name, args: args})
+	return "", "", 0, nil
+}
+
+// TestRemoveDaytonaWorkspace_NilClient verifies that when daytonaClient is nil
+// (the bug scenario), removeDaytonaWorkspace still cleans up local state but
+// silently skips the remote workspace stop/delete — leaking the workspace.
+func TestRemoveDaytonaWorkspace_NilClient(t *testing.T) {
+	t.Parallel()
+
+	rigDir := t.TempDir()
+	polecatDir := filepath.Join(rigDir, "polecats", "test-polecat")
+	if err := os.MkdirAll(polecatDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &rig.Rig{Name: "testrig", Path: rigDir}
+	m := NewManager(r, git.NewGit(rigDir), nil)
+	// daytonaClient is nil — this is the bug condition
+
+	err := m.removeDaytonaWorkspace("test-polecat", "ws-leaked", polecatDir, "polecat/test-branch")
+	if err != nil {
+		t.Fatalf("removeDaytonaWorkspace() error = %v", err)
+	}
+
+	// Marker directory should still be cleaned up
+	if _, statErr := os.Stat(polecatDir); !os.IsNotExist(statErr) {
+		t.Error("expected marker directory to be removed")
+	}
+
+	// But no daytona stop/delete was issued — workspace is leaked.
+	// This test documents the bug behavior: local cleanup happens but remote doesn't.
+}
+
+// TestRemoveDaytonaWorkspace_WithClient verifies that when daytonaClient is set
+// (the fix), removeDaytonaWorkspace properly stops the remote workspace.
+func TestRemoveDaytonaWorkspace_WithClient(t *testing.T) {
+	t.Parallel()
+
+	rigDir := t.TempDir()
+	polecatDir := filepath.Join(rigDir, "polecats", "test-polecat")
+	if err := os.MkdirAll(polecatDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &rig.Rig{Name: "testrig", Path: rigDir}
+	m := NewManager(r, git.NewGit(rigDir), nil)
+
+	runner := &mockRunner{}
+	client := daytona.NewClientWithRunner("gt-test1234", runner)
+	settings := &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{Provider: "daytona"},
+	}
+	m.SetDaytona(client, nil, settings)
+
+	err := m.removeDaytonaWorkspace("test-polecat", "ws-remote", polecatDir, "polecat/test-branch")
+	if err != nil {
+		t.Fatalf("removeDaytonaWorkspace() error = %v", err)
+	}
+
+	// Marker directory should be cleaned up
+	if _, statErr := os.Stat(polecatDir); !os.IsNotExist(statErr) {
+		t.Error("expected marker directory to be removed")
+	}
+
+	// Daytona stop should have been called (default behavior: stop, not delete)
+	if len(runner.calls) == 0 {
+		t.Fatal("expected daytona CLI to be called, got 0 calls")
+	}
+	found := false
+	for _, c := range runner.calls {
+		if c.name == "daytona" && len(c.args) > 0 && c.args[0] == "stop" {
+			found = true
+			if c.args[1] != "ws-remote" {
+				t.Errorf("daytona stop called with workspace %q, want %q", c.args[1], "ws-remote")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected 'daytona stop' call, got calls: %v", runner.calls)
+	}
+}
+
+// TestRemoveDaytonaWorkspace_AutoDelete verifies that when AutoDelete is set,
+// removeDaytonaWorkspace calls delete instead of stop.
+func TestRemoveDaytonaWorkspace_AutoDelete(t *testing.T) {
+	t.Parallel()
+
+	rigDir := t.TempDir()
+	polecatDir := filepath.Join(rigDir, "polecats", "test-polecat")
+	if err := os.MkdirAll(polecatDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &rig.Rig{Name: "testrig", Path: rigDir}
+	m := NewManager(r, git.NewGit(rigDir), nil)
+
+	runner := &mockRunner{}
+	client := daytona.NewClientWithRunner("gt-test1234", runner)
+	settings := &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{
+			Provider:   "daytona",
+			AutoDelete: true,
+		},
+	}
+	m.SetDaytona(client, nil, settings)
+
+	err := m.removeDaytonaWorkspace("test-polecat", "ws-remote", polecatDir, "polecat/test-branch")
+	if err != nil {
+		t.Fatalf("removeDaytonaWorkspace() error = %v", err)
+	}
+
+	// Daytona delete should have been called (AutoDelete mode)
+	found := false
+	for _, c := range runner.calls {
+		if c.name == "daytona" && len(c.args) > 0 && c.args[0] == "delete" {
+			found = true
+			if c.args[1] != "ws-remote" {
+				t.Errorf("daytona delete called with workspace %q, want %q", c.args[1], "ws-remote")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected 'daytona delete' call, got calls: %v", runner.calls)
 	}
 }
