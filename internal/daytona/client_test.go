@@ -436,6 +436,16 @@ func TestListOwned(t *testing.T) {
 	if workspaces[1].Polecat != "amber" {
 		t.Errorf("workspaces[1].Polecat = %q, want %q", workspaces[1].Polecat, "amber")
 	}
+
+	// Verify pagination args were used
+	call := mock.calls[0]
+	args := strings.Join(call.Args, " ")
+	if !strings.Contains(args, "--page") {
+		t.Errorf("ListOwned should use --page flag, got args: %s", args)
+	}
+	if !strings.Contains(args, "--limit") {
+		t.Errorf("ListOwned should use --limit flag, got args: %s", args)
+	}
 }
 
 func TestListOwnedEmpty(t *testing.T) {
@@ -515,6 +525,82 @@ func TestInstallPrefix(t *testing.T) {
 	c := NewClientWithRunner("gt-xyz99999", &mockRunner{})
 	if c.InstallPrefix() != "gt-xyz99999" {
 		t.Errorf("InstallPrefix() = %q, want %q", c.InstallPrefix(), "gt-xyz99999")
+	}
+}
+
+func TestListOwnedPagination(t *testing.T) {
+	// Page 1: 2 workspaces (== pageSize), Page 2: 1 workspace (< pageSize, stops).
+	page1 := `[
+		{"id": "ws1", "name": "gt-abc12345-rig--alpha", "state": "running"},
+		{"id": "ws2", "name": "gt-abc12345-rig--beta", "state": "stopped"}
+	]`
+	page2 := `[
+		{"id": "ws3", "name": "gt-abc12345-rig--gamma", "state": "running"}
+	]`
+
+	mock := &mockRunner{
+		responses: map[string]mockResponse{
+			"daytona list -o json --page 1": {stdout: page1, exitCode: 0},
+			"daytona list -o json --page 2": {stdout: page2, exitCode: 0},
+		},
+	}
+
+	c := NewClientWithRunner("gt-abc12345", mock)
+	c.listPageSize = 2 // small page size so page 1 is "full"
+
+	workspaces, err := c.ListOwned(context.Background())
+	if err != nil {
+		t.Fatalf("ListOwned() error = %v", err)
+	}
+
+	if len(workspaces) != 3 {
+		t.Fatalf("ListOwned() returned %d workspaces, want 3", len(workspaces))
+	}
+
+	// Verify all three workspaces were collected across pages.
+	names := make([]string, len(workspaces))
+	for i, ws := range workspaces {
+		names[i] = ws.Polecat
+	}
+	want := []string{"alpha", "beta", "gamma"}
+	for i, w := range want {
+		if names[i] != w {
+			t.Errorf("workspace[%d].Polecat = %q, want %q", i, names[i], w)
+		}
+	}
+
+	// Should have made exactly 2 calls (page 1 full, page 2 partial → stop).
+	if len(mock.calls) != 2 {
+		t.Errorf("expected 2 calls, got %d", len(mock.calls))
+	}
+}
+
+func TestListOwnedPaginationStopsOnPartialPage(t *testing.T) {
+	// If a page returns fewer than listPageSize entries, no more pages are fetched.
+	mock := &mockRunner{
+		responses: map[string]mockResponse{
+			"daytona list -o json --page 1": {
+				stdout:   `[{"id": "ws1", "name": "gt-abc12345-rig--onyx", "state": "running"}]`,
+				exitCode: 0,
+			},
+			// Page 2 should never be called since page 1 had < listPageSize entries.
+			"daytona list -o json --page 2": {
+				stderr:   "should not reach page 2",
+				exitCode: 1,
+			},
+		},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	workspaces, err := c.ListOwned(context.Background())
+	if err != nil {
+		t.Fatalf("ListOwned() error = %v", err)
+	}
+	if len(workspaces) != 1 {
+		t.Fatalf("ListOwned() returned %d workspaces, want 1", len(workspaces))
+	}
+	if len(mock.calls) != 1 {
+		t.Errorf("expected 1 call (partial page should stop pagination), got %d", len(mock.calls))
 	}
 }
 
