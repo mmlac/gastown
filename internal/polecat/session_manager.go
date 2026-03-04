@@ -34,7 +34,6 @@ func debugSession(context string, err error) {
 	}
 }
 
-
 // Session errors
 var (
 	ErrSessionRunning  = errors.New("session already running")
@@ -952,18 +951,29 @@ func (m *SessionManager) buildDaytonaCommand(polecat, wsName, beacon string, rc 
 	// container's process environment.
 	env := map[string]string{
 		"GT_RIG":              m.rig.Name,
-		"GT_POLECAT":         polecat,
-		"GT_ROLE":            fmt.Sprintf("%s/polecats/%s", m.rig.Name, polecat),
-		"GT_RUN":             runID,
+		"GT_POLECAT":          polecat,
+		"GT_ROLE":             fmt.Sprintf("%s/polecats/%s", m.rig.Name, polecat),
+		"GT_RUN":              runID,
 		"BD_DOLT_AUTO_COMMIT": "off",
 	}
 
-	// Add proxy URL for mTLS proxy access from the container.
+	// Add proxy and mTLS cert environment variables so the container can
+	// authenticate against the host proxy.
+	// GT_PROXY_* are read by gt-proxy-client; GIT_SSL_* are read natively by
+	// git for any HTTPS operation — both must be set to cover all consumers.
+	// Cert files are injected into the container at spawn time under DefaultRemoteCertDir.
 	proxyAddr := rb.ProxyAddr
 	if proxyAddr == "" {
 		proxyAddr = constants.DefaultProxyAddr
 	}
+	certDir := constants.DefaultRemoteCertDir
 	env["GT_PROXY_URL"] = fmt.Sprintf("https://%s", proxyAddr)
+	env["GT_PROXY_CERT"] = certDir + "/client.crt"
+	env["GT_PROXY_KEY"] = certDir + "/client.key"
+	env["GT_PROXY_CA"] = certDir + "/ca.crt"
+	env["GIT_SSL_CERT"] = certDir + "/client.crt"
+	env["GIT_SSL_KEY"] = certDir + "/client.key"
+	env["GIT_SSL_CAINFO"] = certDir + "/ca.crt"
 
 	// Include any extra env from RemoteBackend config.
 	for k, v := range rb.Env {

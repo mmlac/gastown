@@ -11,7 +11,7 @@ This guide covers setup, configuration, and operations.
 
 | Requirement | Notes |
 |---|---|
-| **`daytona` CLI** | Installed and authenticated (`daytona login`). See [installation docs](https://www.daytona.io/docs/installation/installation/). |
+| **`daytona` CLI** | Installed and authenticated (`daytona login`). See [installation docs](https://www.daytona.io/docs/en/getting-started/#cli). |
 | **Gas Town installation** | A working `gt install` with at least one rig. |
 | **`gt-proxy-server`** | Running on the host. Manages mTLS certs, proxies git, and relays `gt`/`bd` commands. See [proxy-server.md](proxy-server.md). |
 | **Container image** | Must include `claude-code` (or your agent), `git`, and `gt-proxy-client` installed as both `/usr/local/bin/gt` and `/usr/local/bin/bd`. |
@@ -161,13 +161,13 @@ The proxy serves the rig's `.repo.git` bare repository over git smart-HTTP.
 Branch-scoped push authorization is enforced: a polecat cert with CN
 `gt-<rig>-<name>` may only push refs under `polecat/<name>-*`.
 
-These git environment variables are set automatically in the container:
+These git environment variables are injected via `daytona exec --env`:
 
-| Variable | Purpose |
-|---|---|
-| `GIT_SSL_CERT` | Client certificate for mTLS |
-| `GIT_SSL_KEY` | Client private key |
-| `GIT_SSL_CAINFO` | CA cert to verify proxy server |
+| Variable | Value | Purpose |
+|---|---|---|
+| `GIT_SSL_CERT` | `/run/gt-proxy/client.crt` | Client certificate for mTLS |
+| `GIT_SSL_KEY` | `/run/gt-proxy/client.key` | Client private key |
+| `GIT_SSL_CAINFO` | `/run/gt-proxy/ca.crt` | CA cert to verify proxy server |
 
 ### Command Proxy
 
@@ -194,17 +194,25 @@ Allowed commands:
 
 ### Environment Variables in Containers
 
-These are injected automatically via `daytona exec --env`:
+These are injected via `daytona exec --env`:
 
 | Variable | Value |
 |---|---|
 | `GT_PROXY_URL` | `https://<proxy_addr>` |
+| `GT_PROXY_CERT` | `/run/gt-proxy/client.crt` |
+| `GT_PROXY_KEY` | `/run/gt-proxy/client.key` |
+| `GT_PROXY_CA` | `/run/gt-proxy/ca.crt` |
+| `GIT_SSL_CERT` | `/run/gt-proxy/client.crt` |
+| `GIT_SSL_KEY` | `/run/gt-proxy/client.key` |
+| `GIT_SSL_CAINFO` | `/run/gt-proxy/ca.crt` |
 | `GT_RIG` | Rig name |
 | `GT_POLECAT` | Polecat name |
 | `GT_ROLE` | `<rig>/polecats/<polecat>` |
 | `GT_TOWN_ROOT` | Town root path |
 | `GT_RUN` | Session run ID |
 | `BD_DOLT_AUTO_COMMIT` | `off` |
+
+`GT_PROXY_CERT/KEY/CA` are read by `gt-proxy-client` to authenticate against the proxy. `GIT_SSL_CERT/KEY/CAINFO` are the git-native equivalents — git reads these directly for any HTTPS operation, so `git push origin` and `git fetch` use mTLS automatically without any extra configuration in `.gitconfig`.
 
 Plus any entries from `remote_backend.env`.
 
