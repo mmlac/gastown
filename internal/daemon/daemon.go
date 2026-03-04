@@ -1944,7 +1944,7 @@ func (d *Daemon) restartPolecatSession(rigName, polecatName, sessionName string)
 
 	// Check if this rig uses a remote backend (daytona).
 	rigPath := filepath.Join(d.config.TownRoot, rigName)
-	rigSettingsPath := filepath.Join(rigPath, "settings.json")
+	rigSettingsPath := config.RigSettingsPath(rigPath)
 	if rigSettings, err := config.LoadRigSettings(rigSettingsPath); err == nil && rigSettings.RemoteBackend != nil {
 		return d.restartDaytonaPolecatSession(rigName, polecatName, sessionName, rigPath)
 	}
@@ -2347,7 +2347,7 @@ func (d *Daemon) reconcileDaytonaWorkspaces() {
 	reconciled := false
 	for _, rigName := range rigs {
 		// Load rig settings to check for RemoteBackend.
-		rigSettingsPath := filepath.Join(d.config.TownRoot, rigName, "settings.json")
+		rigSettingsPath := config.RigSettingsPath(filepath.Join(d.config.TownRoot, rigName))
 		rigSettings, err := config.LoadRigSettings(rigSettingsPath)
 		if err != nil {
 			// Settings file may not exist for some rigs — skip silently.
