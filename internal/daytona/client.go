@@ -60,6 +60,10 @@ type CreateOptions struct {
 	Env              map[string]string // extra environment variables
 	Labels           map[string]string // workspace labels (--label KEY=VALUE)
 	Volumes          []string          // named volumes in "name:/mount/path" format (maps to --volume)
+	Class            string            // resource tier: "small", "medium", "large" (maps to --class)
+	CPU              int               // CPU cores (maps to --cpu)
+	Memory           int               // memory in MB (maps to --memory)
+	Disk             int               // disk size in GB (maps to --disk)
 	NetworkBlockAll  bool              // block all outbound network (--network-block-all)
 	NetworkAllowList string            // comma-separated CIDRs to allow (--network-allow-list)
 }
@@ -137,6 +141,18 @@ func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts 
 	}
 	for _, vol := range opts.Volumes {
 		args = append(args, "--volume", vol)
+	}
+	if opts.Class != "" {
+		args = append(args, "--class", opts.Class)
+	}
+	if opts.CPU > 0 {
+		args = append(args, "--cpu", fmt.Sprintf("%d", opts.CPU))
+	}
+	if opts.Memory > 0 {
+		args = append(args, "--memory", fmt.Sprintf("%d", opts.Memory))
+	}
+	if opts.Disk > 0 {
+		args = append(args, "--disk", fmt.Sprintf("%d", opts.Disk))
 	}
 	for k, v := range opts.Env {
 		args = append(args, "--env", k+"="+v)

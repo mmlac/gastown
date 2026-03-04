@@ -204,6 +204,59 @@ func TestCreate(t *testing.T) {
 	}
 }
 
+func TestCreateWithResourceSizing(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Create(context.Background(), "gt-abc12345-rig--onyx", "https://github.com/org/repo", "main", CreateOptions{
+		Class:  "large",
+		CPU:    4,
+		Memory: 8192,
+		Disk:   50,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(mock.calls))
+	}
+	args := strings.Join(mock.calls[0].Args, " ")
+	if !strings.Contains(args, "--class large") {
+		t.Errorf("args missing --class: %s", args)
+	}
+	if !strings.Contains(args, "--cpu 4") {
+		t.Errorf("args missing --cpu: %s", args)
+	}
+	if !strings.Contains(args, "--memory 8192") {
+		t.Errorf("args missing --memory: %s", args)
+	}
+	if !strings.Contains(args, "--disk 50") {
+		t.Errorf("args missing --disk: %s", args)
+	}
+}
+
+func TestCreateOmitsZeroResourceFlags(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	args := strings.Join(mock.calls[0].Args, " ")
+	for _, flag := range []string{"--class", "--cpu", "--memory", "--disk"} {
+		if strings.Contains(args, flag) {
+			t.Errorf("args should not contain %s when zero-valued: %s", flag, args)
+		}
+	}
+}
+
 func TestCreateNetworkIsolation(t *testing.T) {
 	mock := &mockRunner{
 		defaultResponse: mockResponse{exitCode: 0},

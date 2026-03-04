@@ -1086,6 +1086,10 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 			"gt-rig":        m.rig.Name,
 		},
 		Volumes:          []string{certMount},
+		Class:            rb.Class,
+		CPU:              rb.CPU,
+		Memory:           rb.Memory,
+		Disk:             rb.Disk,
 		NetworkBlockAll:  rb.NetworkBlockAll,
 		NetworkAllowList: rb.NetworkAllowList,
 	}
