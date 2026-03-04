@@ -722,14 +722,17 @@ func (m *Manager) AllocateAndAdd(opts AddOptions) (string, *Polecat, error) {
 	_ = poolLock.Unlock()
 
 	// Fork: remote mode (daytona) vs local mode (worktree).
-	// Both paths run under polecat lock only.
 	var p *Polecat
 	if m.isRemoteMode() {
-		p, err = m.addDaytonaLocked(name, opts, polecatDir)
+		// addDaytona releases the polecat lock internally after fast local
+		// operations (branch, cert, agent bead) but before slow network calls
+		// (workspace create, cert injection, gt prime) to avoid holding the
+		// lock for 2+ minutes during Daytona API calls. (gtd-b4o)
+		p, err = m.addDaytona(name, opts, polecatDir, polecatLock)
 	} else {
 		p, err = m.addWithOptionsLocked(name, opts, polecatDir)
+		_ = polecatLock.Unlock()
 	}
-	_ = polecatLock.Unlock()
 	if err != nil {
 		return "", nil, err
 	}
@@ -862,16 +865,18 @@ func (m *Manager) addWithOptionsLocked(name string, opts AddOptions, polecatDir 
 	return polecat, nil
 }
 
-// addDaytonaLocked provisions a remote polecat via daytona instead of a local worktree.
-// It follows the same contract as addWithOptionsLocked (caller holds polecat lock,
-// polecatDir already exists) but skips WorktreeAddFromRef and instead:
+// addDaytona provisions a remote polecat via daytona instead of a local worktree.
+// It follows a similar contract to addWithOptionsLocked (polecatDir already exists)
+// but skips WorktreeAddFromRef and instead:
 //  1. Creates a branch in .repo.git for the polecat to push to
 //  2. Issues an mTLS client cert for proxy authentication
 //  3. Creates an agent bead with daytona_workspace label
 //  4. Provisions a daytona workspace (create, inject cert, post-create setup)
 //
-// Steps 2–4 are slow (30–120s) but run after pool lock release.
-func (m *Manager) addDaytonaLocked(name string, opts AddOptions, polecatDir string) (_ *Polecat, retErr error) {
+// The caller must hold polecatLock. Steps 1–3 are fast local operations (~1-2s) and
+// run under the lock. The lock is released before step 4 (slow Daytona API calls,
+// 30–120s+) to avoid blocking concurrent polecat operations. (gtd-b4o)
+func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, polecatLock *flock.Flock) (_ *Polecat, retErr error) {
 	defer func() { telemetry.RecordPolecatSpawn(context.Background(), name, retErr) }()
 
 	if m.daytonaClient == nil {
@@ -994,6 +999,14 @@ func (m *Manager) addDaytonaLocked(name string, opts AddOptions, polecatDir stri
 			style.PrintWarning("could not store cert serial for %s: %v", name, err)
 		}
 	}
+
+	// --- Release polecat lock before slow network operations (gtd-b4o) ---
+	// Steps 1-3 are complete: branch created, cert issued, agent bead exists
+	// with state "spawning" and DaytonaWorkspace set. The lock is no longer
+	// needed since step 4 only interacts with remote Daytona APIs. Holding
+	// the lock through 2+ minutes of network calls would block concurrent
+	// Remove/Repair operations unnecessarily.
+	_ = polecatLock.Unlock()
 
 	// --- Step 4: Provision daytona workspace ---
 	// Determine the repo URL the workspace should clone from (via proxy).
