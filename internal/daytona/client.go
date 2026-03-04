@@ -58,6 +58,7 @@ type CreateOptions struct {
 	Dockerfile       string            // path to Dockerfile for sandbox snapshot (maps to --dockerfile)
 	Snapshot         string            // pre-built snapshot ID (--snapshot flag, mutually exclusive with Image)
 	Env              map[string]string // extra environment variables
+	Volumes          []string          // named volumes in "name:/mount/path" format (maps to --volume)
 	NetworkBlockAll  bool              // block all outbound network (--network-block-all)
 	NetworkAllowList string            // comma-separated CIDRs to allow (--network-allow-list)
 }
@@ -132,6 +133,9 @@ func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts 
 	}
 	if opts.Dockerfile != "" {
 		args = append(args, "--dockerfile", opts.Dockerfile)
+	}
+	for _, vol := range opts.Volumes {
+		args = append(args, "--volume", vol)
 	}
 	for k, v := range opts.Env {
 		args = append(args, "--env", k+"="+v)
@@ -302,6 +306,14 @@ func (c *Client) ListOwned(ctx context.Context) ([]Workspace, error) {
 // InstallPrefix returns the prefix used for workspace name scoping.
 func (c *Client) InstallPrefix() string {
 	return c.installPrefix
+}
+
+// CertVolumeName returns the deterministic volume name for shared cert storage.
+// Format: gt-certs-<installPrefix>
+// All workspaces in the same installation share this volume, so certs persist
+// across workspace restarts and new workspace creation.
+func (c *Client) CertVolumeName() string {
+	return "gt-certs-" + c.installPrefix
 }
 
 // firstLine returns the first non-empty line from s.

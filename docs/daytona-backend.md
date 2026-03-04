@@ -141,12 +141,15 @@ When `gt sling <bead> <rig>` runs with a Daytona-configured rig:
 1. **Preflight checks** — verifies `daytona` CLI is on PATH, proxy server is
    reachable (pings admin API), and CA cert/key exist.
 2. **Workspace creation** — calls `daytona create <repoURL> --name <wsName>
-   --branch <branch> --yes` with optional `--image` and `--dockerfile`.
+   --branch <branch> --yes` with optional `--image`, `--dockerfile`, and
+   `--volume`. A shared cert volume (`gt-certs-<installPrefix>`) is mounted at
+   `/run/gt-proxy/` so certs persist across workspace restarts.
    The `--yes` flag suppresses interactive confirmation prompts so the command
    runs unattended.
 3. **Certificate injection** — issues an mTLS client cert from the proxy CA,
    then injects `client.crt`, `client.key`, and `ca.crt` into the container at
-   `/run/gt-proxy/` via `daytona exec -- tee`.
+   `/run/gt-proxy/` via `daytona exec`. The cert volume ensures these files
+   survive workspace stop/start cycles without re-injection.
 4. **Session start** — launches `daytona exec <wsName> --env ... -- sh -c
    '<agent command>'` inside a local tmux pane. The local `daytona exec`
    process is the liveness signal.

@@ -731,3 +731,34 @@ func TestCreateWithEnvAndDockerfile(t *testing.T) {
 		t.Errorf("args missing --env: %s", args)
 	}
 }
+
+func TestCreateWithVolumes(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{
+		Volumes: []string{"gt-certs-gt-abc12345:/run/gt-proxy", "data-vol:/data"},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	args := strings.Join(mock.calls[0].Args, " ")
+	if !strings.Contains(args, "--volume gt-certs-gt-abc12345:/run/gt-proxy") {
+		t.Errorf("args missing first --volume: %s", args)
+	}
+	if !strings.Contains(args, "--volume data-vol:/data") {
+		t.Errorf("args missing second --volume: %s", args)
+	}
+}
+
+func TestCertVolumeName(t *testing.T) {
+	c := NewClient("gt-abc12345")
+	got := c.CertVolumeName()
+	want := "gt-certs-gt-abc12345"
+	if got != want {
+		t.Errorf("CertVolumeName() = %q, want %q", got, want)
+	}
+}
