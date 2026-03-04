@@ -142,6 +142,7 @@ type ReconcileOptions struct {
 type ReconcileResult struct {
 	WorkspacesStopped int
 	WorkspacesDeleted int
+	WorkspacesSkipped int // transitional states skipped
 	BeadsReset        int
 	CertsRevoked      int
 	Errors            []error
@@ -159,16 +160,41 @@ func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opt
 		switch item.Action {
 		case ActionOrphanedWorkspace:
 			if opts.DryRun {
-				logger.Printf("[dry-run] would stop orphaned workspace %s (rig=%s, polecat=%s)",
-					item.Workspace.Name, item.Rig, item.Polecat)
+				logger.Printf("[dry-run] would stop orphaned workspace %s (rig=%s, polecat=%s, state=%s)",
+					item.Workspace.Name, item.Rig, item.Polecat, item.Workspace.State)
 				if opts.AutoDelete {
 					logger.Printf("[dry-run] would delete orphaned workspace %s", item.Workspace.Name)
 				}
 				continue
 			}
 
-			// Stop the workspace first.
-			if item.Workspace.State != "stopped" {
+			// Handle workspace based on its current state.
+			switch item.Workspace.State {
+			case "creating", "starting", "stopping":
+				// Transitional states — skip, will resolve on their own or
+				// be caught in the next reconciliation cycle.
+				logger.Printf("Skipping orphaned workspace %s in transitional state %q (rig=%s, polecat=%s)",
+					item.Workspace.Name, item.Workspace.State, item.Rig, item.Polecat)
+				result.WorkspacesSkipped++
+				continue
+
+			case "error":
+				// Error state — attempt to stop but log distinctly so operators
+				// can investigate. Proceed to delete if configured.
+				logger.Printf("Orphaned workspace %s is in error state (rig=%s, polecat=%s), attempting stop",
+					item.Workspace.Name, item.Rig, item.Polecat)
+				if err := client.Stop(ctx, item.Workspace.Name); err != nil {
+					logger.Printf("Warning: failed to stop errored orphaned workspace %s: %v", item.Workspace.Name, err)
+					result.Errors = append(result.Errors, fmt.Errorf("stop errored %s: %w", item.Workspace.Name, err))
+				} else {
+					result.WorkspacesStopped++
+				}
+
+			case "stopped":
+				// Already stopped — nothing to do before optional delete.
+
+			default:
+				// "running" or any other active state — stop it.
 				if err := client.Stop(ctx, item.Workspace.Name); err != nil {
 					logger.Printf("Warning: failed to stop orphaned workspace %s: %v", item.Workspace.Name, err)
 					result.Errors = append(result.Errors, fmt.Errorf("stop %s: %w", item.Workspace.Name, err))
