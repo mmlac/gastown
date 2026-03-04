@@ -1072,20 +1072,28 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 	defer cancel()
 
 	createOpts := daytona.CreateOptions{
-		Image:            rb.Image,
-		DevcontainerPath: rb.Profile,
-		Env:              rb.Env,
+		Image: rb.Image,
+		Env:   rb.Env,
 	}
-	if err := m.daytonaClient.Create(ctx, wsName, repoURL, branchName, createOpts); err != nil {
+	if err := m.daytonaClient.Create(ctx, wsName, createOpts); err != nil {
 		cleanupOnError()
 		return nil, fmt.Errorf("daytona create workspace %s: %w", wsName, err)
 	}
 	workspaceCreated = true
 
 	// Inject mTLS certs into the workspace for proxy authentication.
+	// This must happen before CloneRepo because the clone goes through the
+	// mTLS proxy.
 	if err := m.injectCertsIntoWorkspace(ctx, wsName, certPEM, keyPEM); err != nil {
 		cleanupOnError()
 		return nil, err
+	}
+
+	// Clone the repository inside the workspace (replaces old positional
+	// repoURL/--branch args to daytona create which no longer exist).
+	if err := m.daytonaClient.CloneRepo(ctx, wsName, repoURL, branchName, "/workspaces/repo"); err != nil {
+		cleanupOnError()
+		return nil, fmt.Errorf("clone repo in workspace %s: %w", wsName, err)
 	}
 
 	// Post-create setup: run gt prime inside the workspace.

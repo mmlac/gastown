@@ -377,10 +377,10 @@ func TestAddDaytona_CertInjectionFails(t *testing.T) {
 func TestAddDaytona_PostCreateFails(t *testing.T) {
 	execCallCount := 0
 	runner := newConfigurableMockRunner()
-	// exec calls: 1=mkdir, 2-4=writeFile(cert,key,ca), 5=gt prime (fail).
+	// exec calls: 1=mkdir, 2-4=writeFile(cert,key,ca), 5=CloneRepo, 6=gt prime (fail).
 	runner.handlers["daytona:exec"] = func(args []string) (string, string, int, error) {
 		execCallCount++
-		if execCallCount <= 4 {
+		if execCallCount <= 5 {
 			return "", "", 0, nil
 		}
 		// gt prime fails

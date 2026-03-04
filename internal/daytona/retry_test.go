@@ -142,7 +142,7 @@ func TestRetry_CreateSucceedsAfterTransientFailure(t *testing.T) {
 		Jitter:       0,
 	})
 
-	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{})
+	err := c.Create(context.Background(), "ws", CreateOptions{})
 	if err != nil {
 		t.Fatalf("Create() should succeed after retries, got: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestRetry_NoPermanentRetry(t *testing.T) {
 		Jitter:       0,
 	})
 
-	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{})
+	err := c.Create(context.Background(), "ws", CreateOptions{})
 	if err == nil {
 		t.Fatal("expected error for permanent failure")
 	}
@@ -215,7 +215,7 @@ func TestRetry_MaxAttemptsExhausted(t *testing.T) {
 		Jitter:       0,
 	})
 
-	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{})
+	err := c.Create(context.Background(), "ws", CreateOptions{})
 	if err == nil {
 		t.Fatal("expected error after exhausting retries")
 	}
@@ -246,7 +246,7 @@ func TestRetry_ContextCanceled(t *testing.T) {
 		cancel()
 	}()
 
-	err := c.Create(ctx, "ws", "url", "main", CreateOptions{})
+	err := c.Create(ctx, "ws", CreateOptions{})
 	if err == nil {
 		t.Fatal("expected error after context cancellation")
 	}
@@ -384,7 +384,7 @@ func TestRetry_NoRetryConfig(t *testing.T) {
 	c := NewClientWithRunner("gt-test", mock)
 	// NoRetryConfig is already the default for NewClientWithRunner
 
-	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{})
+	err := c.Create(context.Background(), "ws", CreateOptions{})
 	if err == nil {
 		t.Fatal("expected error with no retries")
 	}

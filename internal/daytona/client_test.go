@@ -172,7 +172,7 @@ func TestCreate(t *testing.T) {
 	}
 	c := NewClientWithRunner("gt-abc12345", mock)
 
-	err := c.Create(context.Background(), "gt-abc12345-rig--onyx", "https://github.com/org/repo", "main", CreateOptions{
+	err := c.Create(context.Background(), "gt-abc12345-rig--onyx", CreateOptions{
 		Image: "ubuntu:22.04",
 	})
 	if err != nil {
@@ -193,14 +193,15 @@ func TestCreate(t *testing.T) {
 	if !strings.Contains(args, "--name gt-abc12345-rig--onyx") {
 		t.Errorf("args missing --name: %s", args)
 	}
-	if !strings.Contains(args, "--branch main") {
-		t.Errorf("args missing --branch: %s", args)
-	}
 	if !strings.Contains(args, "--image ubuntu:22.04") {
 		t.Errorf("args missing --image: %s", args)
 	}
-	if !strings.Contains(args, "--yes") {
-		t.Errorf("args missing --yes: %s", args)
+	// Verify removed flags are NOT present
+	if strings.Contains(args, "--branch") {
+		t.Errorf("args should not contain --branch: %s", args)
+	}
+	if strings.Contains(args, "--yes") {
+		t.Errorf("args should not contain --yes: %s", args)
 	}
 }
 
@@ -213,7 +214,7 @@ func TestCreateFailure(t *testing.T) {
 	}
 	c := NewClientWithRunner("gt-abc12345", mock)
 
-	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{})
+	err := c.Create(context.Background(), "ws", CreateOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -612,7 +613,7 @@ func TestRunnerError(t *testing.T) {
 	}
 	c := NewClientWithRunner("gt-abc12345", mock)
 
-	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{})
+	err := c.Create(context.Background(), "ws", CreateOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -621,25 +622,65 @@ func TestRunnerError(t *testing.T) {
 	}
 }
 
-func TestCreateWithEnvAndDevcontainerPath(t *testing.T) {
+func TestCreateWithEnv(t *testing.T) {
 	mock := &mockRunner{
 		defaultResponse: mockResponse{exitCode: 0},
 	}
 	c := NewClientWithRunner("gt-abc12345", mock)
 
-	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{
-		DevcontainerPath: ".devcontainer/go",
-		Env:              map[string]string{"KEY": "val"},
+	err := c.Create(context.Background(), "ws", CreateOptions{
+		Env: map[string]string{"KEY": "val"},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 
 	args := strings.Join(mock.calls[0].Args, " ")
-	if !strings.Contains(args, "--devcontainer-path .devcontainer/go") {
-		t.Errorf("args missing --devcontainer-path: %s", args)
-	}
 	if !strings.Contains(args, "--env KEY=val") {
 		t.Errorf("args missing --env: %s", args)
+	}
+}
+
+func TestCloneRepo(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.CloneRepo(context.Background(), "ws-name", "https://proxy:9876/v1/git/myrig", "main", "/workspaces/repo")
+	if err != nil {
+		t.Fatalf("CloneRepo() error = %v", err)
+	}
+
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(mock.calls))
+	}
+	args := strings.Join(mock.calls[0].Args, " ")
+	if !strings.Contains(args, "exec ws-name") {
+		t.Errorf("args missing 'exec ws-name': %s", args)
+	}
+	if !strings.Contains(args, "git clone") {
+		t.Errorf("args missing 'git clone': %s", args)
+	}
+	if !strings.Contains(args, "--branch") {
+		t.Errorf("args missing '--branch': %s", args)
+	}
+}
+
+func TestCloneRepoFailure(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{
+			stderr:   "fatal: repository not found",
+			exitCode: 128,
+		},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.CloneRepo(context.Background(), "ws", "https://proxy/repo", "main", "/workspaces/repo")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "repository not found") {
+		t.Errorf("error = %q, want to contain 'repository not found'", err.Error())
 	}
 }

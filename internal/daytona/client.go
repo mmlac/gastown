@@ -53,9 +53,8 @@ type Workspace struct {
 
 // CreateOptions configures workspace creation.
 type CreateOptions struct {
-	Image            string            // container image override
-	DevcontainerPath string            // devcontainer path (maps to --devcontainer-path)
-	Env              map[string]string // extra environment variables
+	Image string            // container image override
+	Env   map[string]string // extra environment variables
 }
 
 // Client wraps the daytona CLI for workspace lifecycle and discovery.
@@ -117,15 +116,14 @@ func (c *Client) ParseWorkspaceName(name string) (rig, polecat string, ok bool) 
 	return rest[:idx], rest[idx+2:], true
 }
 
-// Create provisions a new daytona workspace from a repo/branch.
-// Passes --yes to suppress interactive confirmation prompts.
-func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts CreateOptions) error {
-	args := []string{"create", repoURL, "--name", name, "--branch", branch, "--yes"}
+// Create provisions a new daytona workspace.
+// The new Daytona CLI creates sandboxes from images — not directly from git
+// repos. Use CloneRepo after cert injection to clone the repository inside
+// the workspace.
+func (c *Client) Create(ctx context.Context, name string, opts CreateOptions) error {
+	args := []string{"create", "--name", name}
 	if opts.Image != "" {
 		args = append(args, "--image", opts.Image)
-	}
-	if opts.DevcontainerPath != "" {
-		args = append(args, "--devcontainer-path", opts.DevcontainerPath)
 	}
 	for k, v := range opts.Env {
 		args = append(args, "--env", k+"="+v)
@@ -142,11 +140,30 @@ func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts 
 	return nil
 }
 
+// CloneRepo clones a git repository inside an existing workspace via exec.
+// This replaces the old approach of passing repoURL/branch as positional args
+// to daytona create, which is not supported in the current Daytona CLI.
+// Call this after Create and after injecting mTLS certs (the clone may need
+// them to authenticate against the git proxy).
+func (c *Client) CloneRepo(ctx context.Context, name, repoURL, branch, targetDir string) error {
+	// Clone with branch and target directory.
+	// Use --single-branch to avoid fetching all refs.
+	cloneCmd := fmt.Sprintf("git clone --single-branch --branch %q %q %q", branch, repoURL, targetDir)
+	_, stderr, exitCode, err := c.Exec(ctx, name, nil, "sh", "-c", cloneCmd)
+	if err != nil {
+		return fmt.Errorf("clone repo in workspace: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("clone repo failed (exit %d): %s", exitCode, firstLine(stderr))
+	}
+	return nil
+}
+
 // Start ensures a workspace is running.
 // Passes --yes to suppress interactive confirmation prompts.
 func (c *Client) Start(ctx context.Context, name string) error {
 	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
-		return c.runner.Run(ctx, "daytona", "start", name, "--yes")
+		return c.runner.Run(ctx, "daytona", "start", name)
 	})
 	if err != nil {
 		return fmt.Errorf("daytona start: %w", err)
@@ -161,7 +178,7 @@ func (c *Client) Start(ctx context.Context, name string) error {
 // Passes --yes to suppress interactive confirmation prompts.
 func (c *Client) Stop(ctx context.Context, name string) error {
 	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
-		return c.runner.Run(ctx, "daytona", "stop", name, "--yes")
+		return c.runner.Run(ctx, "daytona", "stop", name)
 	})
 	if err != nil {
 		return fmt.Errorf("daytona stop: %w", err)
@@ -176,7 +193,7 @@ func (c *Client) Stop(ctx context.Context, name string) error {
 // Passes --yes to suppress interactive confirmation prompts.
 func (c *Client) Delete(ctx context.Context, name string) error {
 	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
-		return c.runner.Run(ctx, "daytona", "delete", name, "--yes")
+		return c.runner.Run(ctx, "daytona", "delete", name)
 	})
 	if err != nil {
 		return fmt.Errorf("daytona delete: %w", err)
@@ -231,7 +248,7 @@ func (c *Client) ListOwned(ctx context.Context) ([]Workspace, error) {
 		pageStr := fmt.Sprintf("%d", page)
 		limitStr := fmt.Sprintf("%d", pageSize)
 		stdout, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
-			return c.runner.Run(ctx, "daytona", "list", "-o", "json", "--page", pageStr, "--limit", limitStr)
+			return c.runner.Run(ctx, "daytona", "list", "-f", "json", "--page", pageStr, "--limit", limitStr)
 		})
 		if err != nil {
 			return nil, fmt.Errorf("daytona list (page %d): %w", page, err)
