@@ -487,12 +487,14 @@ control-plane operations.
 
 ### `gt doctor` Daytona Check
 
-> **Status:** The `gt doctor` Daytona version check is planned but not yet
-> implemented. The check will verify that `daytona` is on PATH and meets the
-> minimum version requirement. Until then, manually verify your CLI version
-> with `daytona version`.
+The `daytona-binary` doctor check verifies that `daytona` is on PATH and meets
+the minimum version requirement. Run it with:
 
-Recommended minimum version: **0.49.0** (for `--auto-stop-interval`,
+```bash
+gt doctor
+```
+
+Minimum required version: **0.49.0** (for `--auto-stop-interval`,
 `--label`, `--volume`, and pagination support in `daytona list`).
 
 ## Discovery and Reconciliation

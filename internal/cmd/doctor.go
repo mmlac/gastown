@@ -43,6 +43,7 @@ Town root protection:
 Infrastructure checks:
   - stale-binary             Check if gt binary is up to date with repo
   - beads-binary             Check that beads (bd) is installed and meets minimum version
+  - daytona-binary           Check that daytona CLI is installed and meets minimum version
   - daemon                   Check if daemon is running (fixable)
   - boot-health              Check Boot watchdog health (vet mode)
   - town-beads-config        Verify town .beads/config.yaml exists (fixable)
@@ -160,6 +161,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	d.Register(doctor.NewStaleBinaryCheck())
 	d.Register(doctor.NewBeadsBinaryCheck())
 	d.Register(doctor.NewDoltBinaryCheck())
+	d.Register(doctor.NewDaytonaBinaryCheck())
 	d.Register(doctor.NewDoltServerReachableCheck())
 
 	d.Register(doctor.NewTownGitCheck())
