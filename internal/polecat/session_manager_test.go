@@ -879,7 +879,7 @@ func TestStopDaytonaWorkspaceOnStop_StopFailure(t *testing.T) {
 
 	r := &rig.Rig{Name: "testrig", Path: t.TempDir()}
 	m := NewSessionManager(tmux.NewTmux(), r)
-	m.SetDaytonaSession(client, &config.RigSettings{
+	m.SetDaytona(client, &config.RigSettings{
 		RemoteBackend: &config.RemoteBackend{
 			Provider: "daytona",
 			AutoStop: true,
