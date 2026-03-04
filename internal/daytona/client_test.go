@@ -785,6 +785,42 @@ func TestCreateWithEnvAndDockerfile(t *testing.T) {
 	}
 }
 
+func TestCreateWithTarget(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{
+		Target: "eu",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	args := strings.Join(mock.calls[0].Args, " ")
+	if !strings.Contains(args, "--target eu") {
+		t.Errorf("args missing --target: %s", args)
+	}
+}
+
+func TestCreateWithoutTarget(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	args := strings.Join(mock.calls[0].Args, " ")
+	if strings.Contains(args, "--target") {
+		t.Errorf("args should not contain --target when empty: %s", args)
+	}
+}
+
 func TestCreateWithLabels(t *testing.T) {
 	mock := &mockRunner{
 		defaultResponse: mockResponse{exitCode: 0},
