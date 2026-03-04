@@ -140,9 +140,9 @@ func TestCertLifecycle_IssueExtractDeny(t *testing.T) {
 	ca, err := GenerateCA(dir)
 	require.NoError(t, err)
 
-	// Step 1: Issue polecat cert (same as addDaytonaLocked).
+	// Step 1: Issue polecat cert (same TTL as addDaytonaLocked: 720h / 30 days).
 	certCN := "gt-myrig-onyx"
-	certPEM, keyPEM, err := ca.IssuePolecat(certCN, 24*time.Hour)
+	certPEM, keyPEM, err := ca.IssuePolecat(certCN, 720*time.Hour)
 	require.NoError(t, err)
 	require.NotEmpty(t, certPEM)
 	require.NotEmpty(t, keyPEM)
