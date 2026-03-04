@@ -108,7 +108,11 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 		if err != nil {
 			return nil, fmt.Errorf("loading town config for daytona: %w", err)
 		}
-		installPrefix := constants.InstallPrefix(townConfig.ShortInstallationID())
+		shortID := townConfig.ShortInstallationID()
+		if shortID == "" {
+			return nil, fmt.Errorf("empty InstallationID in town config — cannot scope daytona workspaces. Run 'gt install' to initialize")
+		}
+		installPrefix := constants.InstallPrefix(shortID)
 		daytonaClient := daytona.NewClient(installPrefix)
 
 		// Load proxy CA (required for mTLS cert issuance to remote polecats)
