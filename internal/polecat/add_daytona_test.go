@@ -443,11 +443,11 @@ func TestAddDaytona_SuccessPath(t *testing.T) {
 	if p.State != StateWorking {
 		t.Errorf("State = %v, want StateWorking", p.State)
 	}
-	if p.DaytonaWorkspaceID == "" {
-		t.Error("DaytonaWorkspaceID should be set")
+	if p.DaytonaWorkspaceName == "" {
+		t.Error("DaytonaWorkspaceName should be set")
 	}
-	if !strings.Contains(p.DaytonaWorkspaceID, "testrig") {
-		t.Errorf("DaytonaWorkspaceID should contain rig name, got: %q", p.DaytonaWorkspaceID)
+	if !strings.Contains(p.DaytonaWorkspaceName, "testrig") {
+		t.Errorf("DaytonaWorkspaceName should contain rig name, got: %q", p.DaytonaWorkspaceName)
 	}
 	if p.Branch == "" {
 		t.Error("Branch should be set")
