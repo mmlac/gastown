@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 )
 
 // ReconcileAction describes what should be done for a discovered workspace or bead.
@@ -148,6 +149,11 @@ type ReconcileOptions struct {
 
 	// AutoDelete removes orphaned workspaces. If false, they're only stopped.
 	AutoDelete bool
+
+	// PerOperationTimeout is the timeout for each individual stop/delete/revoke
+	// operation. Each orphan gets its own timeout budget so late operations are
+	// not starved by earlier ones. Zero means 30s default.
+	PerOperationTimeout time.Duration
 }
 
 // ReconcileResult holds outcomes of reconciliation actions taken.
@@ -167,6 +173,11 @@ type ReconcileResult struct {
 // orphaned certs from authenticating to the proxy.
 func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opts ReconcileOptions, beadResetter func(beadID string) error, certRevoker func(ctx context.Context, serial string) error, logger *log.Logger) *ReconcileResult {
 	result := &ReconcileResult{}
+
+	opTimeout := opts.PerOperationTimeout
+	if opTimeout == 0 {
+		opTimeout = 30 * time.Second
+	}
 
 	for _, item := range report.Results {
 		switch item.Action {
@@ -195,19 +206,22 @@ func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opt
 				// can investigate. Proceed to delete if configured.
 				logger.Printf("Orphaned workspace %s is in error state (rig=%s, polecat=%s), attempting stop",
 					item.Workspace.Name, item.Rig, item.Polecat)
-				if err := client.Stop(ctx, item.Workspace.Name); err != nil {
+				opCtx, opCancel := context.WithTimeout(ctx, opTimeout)
+				if err := client.Stop(opCtx, item.Workspace.Name); err != nil {
 					logger.Printf("Warning: failed to stop errored orphaned workspace %s: %v", item.Workspace.Name, err)
 					result.Errors = append(result.Errors, fmt.Errorf("stop errored %s: %w", item.Workspace.Name, err))
 				} else {
 					result.WorkspacesStopped++
 				}
+				opCancel()
 
 			case "stopped":
 				// Already stopped — nothing to do before optional delete.
 
 			default:
 				// "running" or any other active state — stop it.
-				if err := client.Stop(ctx, item.Workspace.Name); err != nil {
+				opCtx, opCancel := context.WithTimeout(ctx, opTimeout)
+				if err := client.Stop(opCtx, item.Workspace.Name); err != nil {
 					logger.Printf("Warning: failed to stop orphaned workspace %s: %v", item.Workspace.Name, err)
 					result.Errors = append(result.Errors, fmt.Errorf("stop %s: %w", item.Workspace.Name, err))
 				} else {
@@ -215,17 +229,20 @@ func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opt
 						item.Workspace.Name, item.Rig, item.Polecat)
 					result.WorkspacesStopped++
 				}
+				opCancel()
 			}
 
 			// Delete if configured.
 			if opts.AutoDelete {
-				if err := client.Delete(ctx, item.Workspace.Name); err != nil {
+				opCtx, opCancel := context.WithTimeout(ctx, opTimeout)
+				if err := client.Delete(opCtx, item.Workspace.Name); err != nil {
 					logger.Printf("Warning: failed to delete orphaned workspace %s: %v", item.Workspace.Name, err)
 					result.Errors = append(result.Errors, fmt.Errorf("delete %s: %w", item.Workspace.Name, err))
 				} else {
 					logger.Printf("Deleted orphaned workspace %s", item.Workspace.Name)
 					result.WorkspacesDeleted++
 				}
+				opCancel()
 			}
 
 		case ActionOrphanedBead:
@@ -240,13 +257,15 @@ func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opt
 
 			// Revoke cert BEFORE resetting the bead (reset clears the serial).
 			if certRevoker != nil && item.CertSerial != "" {
-				if err := certRevoker(ctx, item.CertSerial); err != nil {
+				opCtx, opCancel := context.WithTimeout(ctx, opTimeout)
+				if err := certRevoker(opCtx, item.CertSerial); err != nil {
 					logger.Printf("Warning: failed to revoke cert for orphaned bead %s (serial %s): %v",
 						item.BeadID, item.CertSerial, err)
 					result.Errors = append(result.Errors, fmt.Errorf("revoke cert %s: %w", item.CertSerial, err))
 				} else {
 					result.CertsRevoked++
 				}
+				opCancel()
 			}
 
 			if err := beadResetter(item.BeadID); err != nil {

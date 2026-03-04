@@ -2522,11 +2522,11 @@ func (d *Daemon) reconcileDaytonaRig(rigName, shortID string, backend *config.Re
 	installPrefix := constants.InstallPrefix(shortID)
 	client := daytona.NewClient(installPrefix)
 
-	ctx, cancel := context.WithTimeout(d.ctx, constants.DaytonaListTimeout)
-	defer cancel()
+	listCtx, listCancel := context.WithTimeout(d.ctx, constants.DaytonaListTimeout)
+	defer listCancel()
 
 	// Get all workspaces owned by this installation.
-	workspaces, err := client.ListOwned(ctx)
+	workspaces, err := client.ListOwned(listCtx)
 	if err != nil {
 		d.logger.Printf("Warning: daytona reconcile %s: list workspaces failed: %v", rigName, err)
 		return
@@ -2569,10 +2569,13 @@ func (d *Daemon) reconcileDaytonaRig(rigName, shortID string, backend *config.Re
 	}
 
 	opts := daytona.ReconcileOptions{
-		AutoDelete: backend.AutoDelete,
+		AutoDelete:          backend.AutoDelete,
+		PerOperationTimeout: 30 * time.Second,
 	}
 
-	result := daytona.Reconcile(ctx, client, report, opts, beadResetter, certRevoker, d.logger)
+	// Use parent context (not the list context) so each operation gets its own
+	// timeout budget via PerOperationTimeout, rather than sharing a single deadline.
+	result := daytona.Reconcile(d.ctx, client, report, opts, beadResetter, certRevoker, d.logger)
 
 	if len(result.Errors) > 0 {
 		d.logger.Printf("Daytona reconcile %s: %d errors occurred", rigName, len(result.Errors))
