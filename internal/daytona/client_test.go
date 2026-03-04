@@ -664,6 +664,51 @@ func TestRunnerError(t *testing.T) {
 	}
 }
 
+func TestCreateWithSnapshot(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{
+		Snapshot: "snap-abc123",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	args := strings.Join(mock.calls[0].Args, " ")
+	if !strings.Contains(args, "--snapshot snap-abc123") {
+		t.Errorf("args missing --snapshot: %s", args)
+	}
+	if strings.Contains(args, "--image") {
+		t.Errorf("args should not contain --image when --snapshot is set: %s", args)
+	}
+}
+
+func TestCreateWithSnapshotOverridesImage(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{
+		Snapshot: "snap-abc123",
+		Image:    "ubuntu:22.04",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	args := strings.Join(mock.calls[0].Args, " ")
+	if !strings.Contains(args, "--snapshot snap-abc123") {
+		t.Errorf("args missing --snapshot: %s", args)
+	}
+	if strings.Contains(args, "--image") {
+		t.Errorf("snapshot should take precedence over image: %s", args)
+	}
+}
+
 func TestCreateWithEnvAndDockerfile(t *testing.T) {
 	mock := &mockRunner{
 		defaultResponse: mockResponse{exitCode: 0},

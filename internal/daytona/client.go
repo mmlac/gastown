@@ -56,6 +56,7 @@ type Workspace struct {
 type CreateOptions struct {
 	Image            string            // container image override
 	Dockerfile       string            // path to Dockerfile for sandbox snapshot (maps to --dockerfile)
+	Snapshot         string            // pre-built snapshot ID (--snapshot flag, mutually exclusive with Image)
 	Env              map[string]string // extra environment variables
 	NetworkBlockAll  bool              // block all outbound network (--network-block-all)
 	NetworkAllowList string            // comma-separated CIDRs to allow (--network-allow-list)
@@ -124,7 +125,9 @@ func (c *Client) ParseWorkspaceName(name string) (rig, polecat string, ok bool) 
 // Passes --yes to suppress interactive confirmation prompts.
 func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts CreateOptions) error {
 	args := []string{"create", repoURL, "--name", name, "--branch", branch, "--yes"}
-	if opts.Image != "" {
+	if opts.Snapshot != "" {
+		args = append(args, "--snapshot", opts.Snapshot)
+	} else if opts.Image != "" {
 		args = append(args, "--image", opts.Image)
 	}
 	if opts.Dockerfile != "" {

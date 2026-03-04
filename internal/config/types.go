@@ -654,6 +654,15 @@ type RemoteBackend struct {
 	// Maps to the --dockerfile flag on `daytona create`.
 	Dockerfile string `json:"dockerfile,omitempty"`
 
+	// Snapshot specifies a pre-built snapshot ID for faster workspace creation.
+	// When set, daytona creates from the snapshot (--snapshot) instead of pulling
+	// an image and running post-create setup, cutting cold-start from minutes to
+	// seconds. Mutually exclusive with Image — Snapshot takes precedence.
+	Snapshot string `json:"snapshot,omitempty"`
+
+	// Profile selects a devcontainer profile for workspace creation.
+	Profile string `json:"profile,omitempty"`
+
 	// AutoStop stops the daytona workspace when the polecat session ends.
 	AutoStop bool `json:"auto_stop,omitempty"`
 
