@@ -1014,6 +1014,8 @@ func (m *Manager) addDaytonaLocked(name string, opts AddOptions, polecatDir stri
 	}
 
 	// Inject certs via base64-encoded shell commands (daytona exec doesn't support stdin piping).
+	// Cert injection is FATAL — without certs the polecat cannot authenticate to the proxy
+	// and every git operation will fail with a cryptic mTLS error.
 	for _, f := range []struct {
 		path string
 		data []byte
@@ -1023,17 +1025,20 @@ func (m *Manager) addDaytonaLocked(name string, opts AddOptions, polecatDir stri
 		{certDir + "/ca.crt", m.proxyCA.CertPEM},
 	} {
 		if err := m.writeFileInWorkspace(ctx, wsName, f.path, f.data); err != nil {
-			style.PrintWarning("could not inject %s: %v", f.path, err)
+			cleanupOnError()
+			return nil, fmt.Errorf("injecting %s into workspace: %w", f.path, err)
 		}
 	}
 
 	// Post-create setup: run gt prime inside the workspace.
+	// This is FATAL — without prime the polecat has no role context and cannot operate.
 	_, stderr, code, err := m.daytonaClient.Exec(ctx, wsName, map[string]string{
 		"GT_RIG":     m.rig.Name,
 		"GT_POLECAT": name,
 	}, "gt", "prime", "--write-prime-md")
 	if err != nil || code != 0 {
-		style.PrintWarning("post-create gt prime failed (exit=%d): %v %s", code, err, stderr)
+		cleanupOnError()
+		return nil, fmt.Errorf("post-create gt prime failed (exit=%d): %v %s", code, err, stderr)
 	}
 
 	now := time.Now()
