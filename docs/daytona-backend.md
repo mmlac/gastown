@@ -220,11 +220,15 @@ When `gt sling <bead> <rig>` runs with a Daytona-configured rig:
 The following `daytona create` flags have been removed or replaced compared to
 earlier versions:
 
-| Old flag | Status | Replacement |
+| Old flag | Status | Notes |
 |---|---|---|
-| `--branch` | Removed | Branch is now a positional argument to `Create()` |
 | `--devcontainer-path` | Replaced | Use `--dockerfile` instead |
 | `--yes` | Auto-injected | Passed automatically by the Go client for all mutating commands |
+
+> **Note:** `Create()` still accepts `repoURL` (positional) and `--branch`
+> (named flag) for backward compatibility with self-hosted Daytona deployments
+> that support git-based workspace creation. The Daytona cloud CLI may not
+> support these — verify against your target CLI version.
 
 ### Workspace Labels
 
@@ -483,23 +487,13 @@ control-plane operations.
 
 ### `gt doctor` Daytona Check
 
-`gt doctor` includes a Daytona CLI version check. It verifies:
+> **Status:** The `gt doctor` Daytona version check is planned but not yet
+> implemented. The check will verify that `daytona` is on PATH and meets the
+> minimum version requirement. Until then, manually verify your CLI version
+> with `daytona version`.
 
-1. The `daytona` binary is on PATH
-2. The version is >= 0.49.0 (minimum required version)
-
-The check emits **warnings** (not errors) since Daytona is optional — rigs
-without `remote_backend` configured do not need it.
-
-Possible outcomes:
-
-| Status | Meaning |
-|---|---|
-| OK | `daytona` found and version >= 0.49.0 |
-| Not Found | `daytona` not on PATH — install from https://www.daytona.io/docs/installation/installation/ |
-| Too Old | Version < 0.49.0 — upgrade to a newer release |
-| Exec Failed | `daytona version` command failed — check installation |
-| Unknown | Could not parse version output |
+Recommended minimum version: **0.49.0** (for `--auto-stop-interval`,
+`--label`, `--volume`, and pagination support in `daytona list`).
 
 ## Discovery and Reconciliation
 
@@ -674,7 +668,7 @@ daytona delete <workspace-name>
 
 ```bash
 # List all workspaces for this installation
-daytona list -f json | jq '.[] | select(.name | startswith("gt-"))'
+daytona list -o json | jq '.[] | select(.name | startswith("gt-"))'
 
 # Check a specific workspace
 daytona info <workspace-name>
