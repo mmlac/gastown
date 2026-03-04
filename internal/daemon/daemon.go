@@ -289,6 +289,7 @@ func (d *Daemon) Run() error {
 
 	// Reconcile daytona workspaces for rigs with remote backends.
 	// Runs once at startup to detect orphaned workspaces/beads from unclean shutdowns.
+	// Also runs periodically via the daytona_reconcile patrol ticker (see below).
 	d.reconcileDaytonaWorkspaces()
 
 	// Write PID file with nonce for ownership verification
@@ -469,6 +470,19 @@ func (d *Daemon) Run() error {
 		d.logger.Printf("Scheduled maintenance ticker started (check interval %v, window %s)", interval, window)
 	}
 
+	// Start daytona reconcile ticker if configured.
+	// Periodically reconciles daytona workspaces with bead state,
+	// catching orphans from auto-deleted workspaces between daemon restarts.
+	var daytonaReconcileTicker *time.Ticker
+	var daytonaReconcileChan <-chan time.Time
+	if IsPatrolEnabled(d.patrolConfig, "daytona_reconcile") {
+		interval := daytonaReconcileInterval(d.patrolConfig)
+		daytonaReconcileTicker = time.NewTicker(interval)
+		daytonaReconcileChan = daytonaReconcileTicker.C
+		defer daytonaReconcileTicker.Stop()
+		d.logger.Printf("Daytona reconcile ticker started (interval %v)", interval)
+	}
+
 	// Note: PATCH-010 uses per-session hooks in deacon/manager.go (SetAutoRespawnHook).
 	// Global pane-died hooks don't fire reliably in tmux 3.2a, so we rely on the
 	// per-session approach which has been tested to work for continuous recovery.
@@ -554,6 +568,13 @@ func (d *Daemon) Run() error {
 			// and runs `gt maintain --force` when commit counts exceed threshold.
 			if !d.isShutdownInProgress() {
 				d.runScheduledMaintenance()
+			}
+
+		case <-daytonaReconcileChan:
+			// Periodic daytona reconciliation — catches orphaned workspaces/beads
+			// from auto-deleted workspaces between daemon restarts.
+			if !d.isShutdownInProgress() {
+				d.reconcileDaytonaWorkspaces()
 			}
 
 		case <-timer.C:
@@ -2485,9 +2506,35 @@ func (d *Daemon) dispatchQueuedWork() {
 	}
 }
 
+const defaultDaytonaReconcileInterval = 30 * time.Minute
+
+// DaytonaReconcileConfig holds configuration for the daytona_reconcile patrol.
+// This patrol periodically reconciles daytona workspaces with bead state,
+// cleaning up orphaned workspaces and resetting stale bead references.
+type DaytonaReconcileConfig struct {
+	// Enabled controls whether periodic reconciliation runs.
+	Enabled bool `json:"enabled"`
+
+	// IntervalStr is how often to reconcile, as a string (e.g., "30m").
+	IntervalStr string `json:"interval,omitempty"`
+}
+
+// daytonaReconcileInterval returns the configured reconcile interval, or the default (30m).
+func daytonaReconcileInterval(config *DaemonPatrolConfig) time.Duration {
+	if config != nil && config.Patrols != nil && config.Patrols.DaytonaReconcile != nil {
+		if config.Patrols.DaytonaReconcile.IntervalStr != "" {
+			if d, err := time.ParseDuration(config.Patrols.DaytonaReconcile.IntervalStr); err == nil && d > 0 {
+				return d
+			}
+		}
+	}
+	return defaultDaytonaReconcileInterval
+}
+
 // reconcileDaytonaWorkspaces discovers and reconciles daytona workspaces
-// for all rigs with RemoteBackend configured. Called once at daemon startup
-// to handle orphans from unclean shutdowns.
+// for all rigs with RemoteBackend configured. Called at daemon startup and
+// periodically (default every 30m) to keep bead state consistent with
+// actual workspace state.
 //
 // For each daytona-enabled rig:
 //  1. ListOwned to get all workspaces matching this installation

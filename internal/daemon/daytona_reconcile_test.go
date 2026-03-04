@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/steveyegge/gastown/internal/config"
 )
@@ -188,6 +189,74 @@ func TestReconcileDaytonaRig_LogsHealthyReport(t *testing.T) {
 	// Should log about list failure (daytona not installed in test env).
 	if !strings.Contains(logBuf.String(), "list workspaces failed") {
 		t.Errorf("expected log about workspace list failure, got: %q", logBuf.String())
+	}
+}
+
+// TestDaytonaReconcileInterval_DefaultWhenNilConfig verifies the default interval.
+func TestDaytonaReconcileInterval_DefaultWhenNilConfig(t *testing.T) {
+	t.Parallel()
+	if got := daytonaReconcileInterval(nil); got != 30*time.Minute {
+		t.Errorf("expected 30m default, got %v", got)
+	}
+}
+
+// TestDaytonaReconcileInterval_CustomInterval verifies a custom interval is used.
+func TestDaytonaReconcileInterval_CustomInterval(t *testing.T) {
+	t.Parallel()
+	config := &DaemonPatrolConfig{
+		Patrols: &PatrolsConfig{
+			DaytonaReconcile: &DaytonaReconcileConfig{
+				Enabled:     true,
+				IntervalStr: "15m",
+			},
+		},
+	}
+	if got := daytonaReconcileInterval(config); got != 15*time.Minute {
+		t.Errorf("expected 15m, got %v", got)
+	}
+}
+
+// TestDaytonaReconcileInterval_InvalidFallsBackToDefault verifies invalid interval uses default.
+func TestDaytonaReconcileInterval_InvalidFallsBackToDefault(t *testing.T) {
+	t.Parallel()
+	config := &DaemonPatrolConfig{
+		Patrols: &PatrolsConfig{
+			DaytonaReconcile: &DaytonaReconcileConfig{
+				Enabled:     true,
+				IntervalStr: "not-a-duration",
+			},
+		},
+	}
+	if got := daytonaReconcileInterval(config); got != 30*time.Minute {
+		t.Errorf("expected 30m default for invalid interval, got %v", got)
+	}
+}
+
+// TestIsPatrolEnabled_DaytonaReconcile verifies the patrol enable check.
+func TestIsPatrolEnabled_DaytonaReconcile(t *testing.T) {
+	t.Parallel()
+
+	// Nil config → disabled (opt-in patrol).
+	if IsPatrolEnabled(nil, "daytona_reconcile") {
+		t.Error("expected disabled for nil config")
+	}
+
+	// Nil DaytonaReconcile → disabled.
+	config := &DaemonPatrolConfig{Patrols: &PatrolsConfig{}}
+	if IsPatrolEnabled(config, "daytona_reconcile") {
+		t.Error("expected disabled for nil DaytonaReconcile")
+	}
+
+	// Explicitly enabled.
+	config.Patrols.DaytonaReconcile = &DaytonaReconcileConfig{Enabled: true}
+	if !IsPatrolEnabled(config, "daytona_reconcile") {
+		t.Error("expected enabled when Enabled=true")
+	}
+
+	// Explicitly disabled.
+	config.Patrols.DaytonaReconcile = &DaytonaReconcileConfig{Enabled: false}
+	if IsPatrolEnabled(config, "daytona_reconcile") {
+		t.Error("expected disabled when Enabled=false")
 	}
 }
 

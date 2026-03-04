@@ -294,10 +294,24 @@ Preview what would happen:
 gt polecat discover myrig --reconcile --dry-run
 ```
 
-### Daemon Startup Reconciliation
+### Daemon Reconciliation
 
-The daemon runs `reconcileDaytonaWorkspaces()` on startup, catching any
-workspaces that were left running after an unclean shutdown.
+The daemon runs `reconcileDaytonaWorkspaces()` on startup and periodically
+(default every 30 minutes via the `daytona_reconcile` patrol), catching any
+workspaces that were auto-deleted or left orphaned between daemon restarts.
+
+Configure the interval in `mayor/daemon.json`:
+
+```json
+{
+  "patrols": {
+    "daytona_reconcile": {
+      "enabled": true,
+      "interval": "30m"
+    }
+  }
+}
+```
 
 ## Container Image Requirements
 
