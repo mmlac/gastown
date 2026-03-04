@@ -75,7 +75,11 @@ func TestReconcileDaytonaWorkspaces_SkipsLocalRigs(t *testing.T) {
 	if err := os.MkdirAll(rigDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(rigDir, "settings.json"), []byte(`{}`), 0644); err != nil {
+	settingsPath := config.RigSettingsPath(rigDir)
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(`{}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -110,7 +114,11 @@ func TestReconcileDaytonaWorkspaces_RunsForRemoteRig(t *testing.T) {
 	if err := os.MkdirAll(rigDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(rigDir, "settings.json"),
+	settingsPath := config.RigSettingsPath(rigDir)
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settingsPath,
 		[]byte(`{"remote_backend":{"provider":"daytona"}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
