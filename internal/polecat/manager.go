@@ -1081,6 +1081,10 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 		Dockerfile:       rb.Dockerfile,
 		Snapshot:         rb.Snapshot,
 		Env:              rb.Env,
+		Labels: map[string]string{
+			"gt-install-id": m.daytonaClient.InstallPrefix(),
+			"gt-rig":        m.rig.Name,
+		},
 		Volumes:          []string{certMount},
 		NetworkBlockAll:  rb.NetworkBlockAll,
 		NetworkAllowList: rb.NetworkAllowList,
