@@ -52,6 +52,35 @@ type Workspace struct {
 	Polecat string `json:"-"` // parsed from name
 }
 
+// WorkspaceInfo holds the richer per-workspace state from `daytona info -f json`.
+// Fields beyond basic Workspace include network config, resource usage, and
+// last activity timestamps — useful for zombie detection and smarter restart decisions.
+type WorkspaceInfo struct {
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	State        string            `json:"state"`
+	Repository   string            `json:"repository"`
+	Branch       string            `json:"branch"`
+	Target       string            `json:"target"`
+	LastActivity string            `json:"last_activity"` // ISO 8601 timestamp or relative
+	Resources    WorkspaceResources `json:"resources"`
+	Network      WorkspaceNetwork   `json:"network"`
+	Labels       map[string]string  `json:"labels"`
+}
+
+// WorkspaceResources captures resource allocation/usage from daytona info.
+type WorkspaceResources struct {
+	CPU    string `json:"cpu"`
+	Memory string `json:"memory"`
+	Disk   string `json:"disk"`
+}
+
+// WorkspaceNetwork captures network configuration from daytona info.
+type WorkspaceNetwork struct {
+	BlockAll  bool   `json:"block_all"`
+	AllowList string `json:"allow_list"`
+}
+
 // CreateOptions configures workspace creation.
 type CreateOptions struct {
 	Image            string            // container image override
@@ -241,6 +270,27 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 		return fmt.Errorf("daytona delete failed (exit %d): %s", exitCode, firstLine(stderr))
 	}
 	return nil
+}
+
+// Info returns detailed workspace information from `daytona info -f json <name>`.
+// This provides richer state than ListOwned (network config, last activity, resources)
+// and is useful for finer-grained restart and zombie-detection decisions.
+func (c *Client) Info(ctx context.Context, name string) (*WorkspaceInfo, error) {
+	stdout, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
+		return c.runner.Run(ctx, "daytona", "info", "-f", "json", name)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("daytona info: %w", err)
+	}
+	if exitCode != 0 {
+		return nil, fmt.Errorf("daytona info failed (exit %d): %s", exitCode, firstLine(stderr))
+	}
+
+	var info WorkspaceInfo
+	if err := json.Unmarshal([]byte(stdout), &info); err != nil {
+		return nil, fmt.Errorf("daytona info: parse JSON: %w", err)
+	}
+	return &info, nil
 }
 
 // Exec runs a command inside a workspace and returns stdout, stderr, and exit code.

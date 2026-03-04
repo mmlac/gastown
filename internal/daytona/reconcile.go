@@ -31,6 +31,10 @@ type DiscoveryResult struct {
 	// Workspace is non-nil for healthy matches and orphaned workspaces.
 	Workspace *Workspace
 
+	// Info holds richer workspace state from `daytona info -f json`, if available.
+	// Nil when info fetch failed or was not attempted.
+	Info *WorkspaceInfo
+
 	// BeadID is set for healthy matches and orphaned beads.
 	BeadID string
 
@@ -139,6 +143,32 @@ func DiscoverWorkspaces(rigName string, workspaces []Workspace, beads []AgentBea
 	return report
 }
 
+// DiscoverWorkspacesWithInfo works like DiscoverWorkspaces but also calls
+// client.Info for each discovered workspace, enriching the report with
+// last_activity, resource usage, and network config. Info failures are
+// non-fatal — the result's Info field is left nil and a warning is logged.
+func DiscoverWorkspacesWithInfo(ctx context.Context, client *Client, rigName string, workspaces []Workspace, beads []AgentBead, logger *log.Logger) *ReconcileReport {
+	report := DiscoverWorkspaces(rigName, workspaces, beads)
+
+	if logger == nil {
+		logger = log.New(io.Discard, "", 0)
+	}
+
+	for i := range report.Results {
+		r := &report.Results[i]
+		if r.Workspace == nil {
+			continue
+		}
+		info, err := client.Info(ctx, r.Workspace.Name)
+		if err != nil {
+			logger.Printf("Warning: daytona info for %s failed (non-fatal): %v", r.Workspace.Name, err)
+			continue
+		}
+		r.Info = info
+	}
+	return report
+}
+
 // ReconcileOptions controls reconciliation behavior.
 type ReconcileOptions struct {
 	// DryRun logs actions without performing them.
@@ -151,6 +181,13 @@ type ReconcileOptions struct {
 	// operation. Each orphan gets its own timeout budget so late operations are
 	// not starved by earlier ones. Zero means 30s default.
 	PerOperationTimeout time.Duration
+
+	// ZombieThreshold is the duration of inactivity after which a "running"
+	// workspace is considered a zombie (agent crashed but workspace lingered).
+	// When non-zero and Info data is available, Reconcile logs zombie warnings
+	// for healthy workspaces that exceed this threshold.
+	// Zero disables zombie detection.
+	ZombieThreshold time.Duration
 }
 
 // ReconcileResult holds outcomes of reconciliation actions taken.
