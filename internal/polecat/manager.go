@@ -1086,13 +1086,16 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 			"gt-install-id": m.daytonaClient.InstallPrefix(),
 			"gt-rig":        m.rig.Name,
 		},
-		Volumes:          []string{certMount},
-		Class:            rb.Class,
-		CPU:              rb.CPU,
-		Memory:           rb.Memory,
-		Disk:             rb.Disk,
-		NetworkBlockAll:  rb.NetworkBlockAll,
-		NetworkAllowList: rb.NetworkAllowList,
+		Volumes:             []string{certMount},
+		Class:               rb.Class,
+		CPU:                 rb.CPU,
+		Memory:              rb.Memory,
+		Disk:                rb.Disk,
+		NetworkBlockAll:     rb.NetworkBlockAll,
+		NetworkAllowList:    rb.NetworkAllowList,
+		AutoStopInterval:    rb.AutoStopInterval,
+		AutoArchiveInterval: rb.AutoArchiveInterval,
+		AutoDeleteInterval:  rb.AutoDeleteInterval,
 	}
 	if err := m.daytonaClient.Create(ctx, wsName, repoURL, branchName, createOpts); err != nil {
 		cleanupOnError()

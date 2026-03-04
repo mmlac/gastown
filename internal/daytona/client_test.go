@@ -821,6 +821,58 @@ func TestCreateWithoutTarget(t *testing.T) {
 	}
 }
 
+func TestCreateWithAutoIntervals(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{
+		AutoStopInterval:    60,
+		AutoArchiveInterval: 1440,
+		AutoDeleteInterval:  10080,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	args := strings.Join(mock.calls[0].Args, " ")
+	if !strings.Contains(args, "--auto-stop-interval 60") {
+		t.Errorf("args missing --auto-stop-interval: %s", args)
+	}
+	if !strings.Contains(args, "--auto-archive-interval 1440") {
+		t.Errorf("args missing --auto-archive-interval: %s", args)
+	}
+	if !strings.Contains(args, "--auto-delete-interval 10080") {
+		t.Errorf("args missing --auto-delete-interval: %s", args)
+	}
+}
+
+func TestCreateWithZeroIntervalsOmitsFlags(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{exitCode: 0},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	err := c.Create(context.Background(), "ws", "url", "main", CreateOptions{
+		AutoStopInterval: 0,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	args := strings.Join(mock.calls[0].Args, " ")
+	if strings.Contains(args, "--auto-stop-interval") {
+		t.Errorf("zero interval should not emit flag: %s", args)
+	}
+	if strings.Contains(args, "--auto-archive-interval") {
+		t.Errorf("zero interval should not emit flag: %s", args)
+	}
+	if strings.Contains(args, "--auto-delete-interval") {
+		t.Errorf("zero interval should not emit flag: %s", args)
+	}
+}
+
 func TestCreateWithLabels(t *testing.T) {
 	mock := &mockRunner{
 		defaultResponse: mockResponse{exitCode: 0},

@@ -670,6 +670,21 @@ type RemoteBackend struct {
 	// If false, workspaces are stopped but preserved for faster re-spawn.
 	AutoDelete bool `json:"auto_delete,omitempty"`
 
+	// AutoStopInterval is the idle time in minutes before Daytona automatically
+	// stops the workspace. Passed as --auto-stop-interval to daytona create.
+	// Zero means use Daytona's default.
+	AutoStopInterval int `json:"auto_stop_interval,omitempty"`
+
+	// AutoArchiveInterval is the time in minutes after stop before Daytona
+	// automatically archives the workspace. Passed as --auto-archive-interval
+	// to daytona create. Zero means use Daytona's default.
+	AutoArchiveInterval int `json:"auto_archive_interval,omitempty"`
+
+	// AutoDeleteInterval is the time in minutes after archive before Daytona
+	// automatically deletes the workspace. Passed as --auto-delete-interval
+	// to daytona create. Zero means use Daytona's default.
+	AutoDeleteInterval int `json:"auto_delete_interval,omitempty"`
+
 	// ProxyAddr overrides the default proxy address for remote polecats.
 	ProxyAddr string `json:"proxy_addr,omitempty"`
 
