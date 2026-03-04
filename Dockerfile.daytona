@@ -74,7 +74,9 @@ RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
         | tar -C /usr/local -xz
 
 ENV GOROOT=/usr/local/go
-ENV PATH="/usr/local/go/bin:$PATH"
+
+# Set up PATH (accessible to all users)
+ENV PATH="/usr/local/bin:/usr/local/go/bin:$PATH"
 
 # ── claude-code (AI agent) ───────────────────────────────────────────────────
 # Pin to a specific version for reproducible builds, e.g. @1.2.3.

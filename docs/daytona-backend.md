@@ -41,7 +41,7 @@ Run `gt doctor` to verify all prerequisites including the Daytona CLI version
    {
      "remote_backend": {
        "provider": "daytona",
-       "image": "ghcr.io/your-org/polecat-image:v1",
+       "image": "docker.io/your-org/polecat-image:v1",
        "auto_stop": true,
        "auto_delete": false,
        "proxy_addr": "172.17.0.1:9876",
@@ -69,7 +69,7 @@ spawn as Daytona workspaces instead of local worktrees.
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `provider` | string | **yes** | — | Must be `"daytona"`. Only supported provider. |
-| `image` | string | no | Daytona default | Container image for workspaces. Mutually exclusive with `snapshot`. latest tag not allowed. First sling will create a snapshot and update the config. |
+| `image` | string | no | Daytona default | Container image for workspaces. Mutually exclusive with `snapshot`. latest tag not allowed. First sling will create a snapshot and update the config. ghcr is not supported on Daytona. |
 | `dockerfile` | string | no | — | Path to Dockerfile for sandbox snapshot (passed as `--dockerfile`). Replaces the deprecated `--devcontainer-path`. |
 | `snapshot` | string | no | — | Pre-built snapshot ID for warm-start creation (passed as `--snapshot`). Mutually exclusive with `image`. |
 | `target` | string | no | — | Target region for workspace placement (passed as `--target`). E.g. `"us"`, `"eu"`. |
