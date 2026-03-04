@@ -8,6 +8,22 @@ import (
 	"time"
 )
 
+// ExecOptions configures command execution behavior.
+// A nil *ExecOptions is valid and uses default behavior (no extra env, inherit cwd, no timeout).
+type ExecOptions struct {
+	// Env specifies additional environment variables for the command.
+	// These are appended to the current process environment.
+	Env map[string]string
+
+	// Cwd sets the working directory for the command.
+	// If empty, the command inherits the current working directory.
+	Cwd string
+
+	// Timeout sets a maximum duration for the command.
+	// Zero means no timeout.
+	Timeout time.Duration
+}
+
 // Connection abstracts file operations, command execution, and tmux management
 // for both local and remote (SSH) execution contexts.
 type Connection interface {
@@ -48,13 +64,8 @@ type Connection interface {
 	// Command execution
 
 	// Exec runs a command and returns its combined output.
-	Exec(cmd string, args ...string) ([]byte, error)
-
-	// ExecDir runs a command in the specified directory.
-	ExecDir(dir, cmd string, args ...string) ([]byte, error)
-
-	// ExecEnv runs a command with additional environment variables.
-	ExecEnv(env map[string]string, cmd string, args ...string) ([]byte, error)
+	// Pass nil for opts to use default behavior.
+	Exec(cmd string, args []string, opts *ExecOptions) ([]byte, error)
 
 	// Tmux operations
 

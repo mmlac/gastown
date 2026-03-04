@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"context"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -134,23 +135,26 @@ func (c *LocalConnection) Exists(path string) (bool, error) {
 }
 
 // Exec runs a command and returns its combined output.
-func (c *LocalConnection) Exec(cmd string, args ...string) ([]byte, error) {
-	return exec.Command(cmd, args...).CombinedOutput()
-}
-
-// ExecDir runs a command in the specified directory.
-func (c *LocalConnection) ExecDir(dir, cmd string, args ...string) ([]byte, error) {
-	command := exec.Command(cmd, args...)
-	command.Dir = dir
-	return command.CombinedOutput()
-}
-
-// ExecEnv runs a command with additional environment variables.
-func (c *LocalConnection) ExecEnv(env map[string]string, cmd string, args ...string) ([]byte, error) {
-	command := exec.Command(cmd, args...)
-	command.Env = os.Environ()
-	for k, v := range env {
-		command.Env = append(command.Env, k+"="+v)
+// Pass nil for opts to use default behavior.
+func (c *LocalConnection) Exec(cmd string, args []string, opts *ExecOptions) ([]byte, error) {
+	var command *exec.Cmd
+	if opts != nil && opts.Timeout > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
+		defer cancel()
+		command = exec.CommandContext(ctx, cmd, args...)
+	} else {
+		command = exec.Command(cmd, args...)
+	}
+	if opts != nil {
+		if opts.Cwd != "" {
+			command.Dir = opts.Cwd
+		}
+		if len(opts.Env) > 0 {
+			command.Env = os.Environ()
+			for k, v := range opts.Env {
+				command.Env = append(command.Env, k+"="+v)
+			}
+		}
 	}
 	return command.CombinedOutput()
 }
