@@ -164,14 +164,14 @@ func (c *Client) ParseWorkspaceName(name string) (rig, polecat string, ok bool) 
 	return rest[:idx], rest[idx+2:], true
 }
 
-// Create provisions a new daytona workspace from a repo/branch.
-// Passes --yes to suppress interactive confirmation prompts.
+// Create provisions a new daytona sandbox.
+// In v0.149+ the CLI no longer accepts a positional repo URL, --branch, --yes,
+// or --image. Sandboxes are created from snapshots or Dockerfiles, with repo
+// content injected via environment variables or post-create exec.
 func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts CreateOptions) error {
-	args := []string{"create", repoURL, "--name", name, "--branch", branch, "--yes"}
+	args := []string{"create", "--name", name}
 	if opts.Snapshot != "" {
 		args = append(args, "--snapshot", opts.Snapshot)
-	} else if opts.Image != "" {
-		args = append(args, "--image", opts.Image)
 	}
 	if opts.Dockerfile != "" {
 		args = append(args, "--dockerfile", opts.Dockerfile)
@@ -195,13 +195,23 @@ func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts 
 		args = append(args, "--disk", fmt.Sprintf("%d", opts.Disk))
 	}
 	if opts.AutoStopInterval > 0 {
-		args = append(args, "--auto-stop-interval", fmt.Sprintf("%d", opts.AutoStopInterval))
+		args = append(args, "--auto-stop", fmt.Sprintf("%d", opts.AutoStopInterval))
 	}
 	if opts.AutoArchiveInterval > 0 {
-		args = append(args, "--auto-archive-interval", fmt.Sprintf("%d", opts.AutoArchiveInterval))
+		args = append(args, "--auto-archive", fmt.Sprintf("%d", opts.AutoArchiveInterval))
 	}
 	if opts.AutoDeleteInterval > 0 {
-		args = append(args, "--auto-delete-interval", fmt.Sprintf("%d", opts.AutoDeleteInterval))
+		args = append(args, "--auto-delete", fmt.Sprintf("%d", opts.AutoDeleteInterval))
+	}
+	// Inject repo URL and branch as env vars for post-create clone
+	if repoURL != "" {
+		if opts.Env == nil {
+			opts.Env = make(map[string]string)
+		}
+		opts.Env["GT_REPO_URL"] = repoURL
+		if branch != "" {
+			opts.Env["GT_REPO_BRANCH"] = branch
+		}
 	}
 	for k, v := range opts.Env {
 		args = append(args, "--env", k+"="+v)
@@ -227,11 +237,10 @@ func (c *Client) Create(ctx context.Context, name, repoURL, branch string, opts 
 	return nil
 }
 
-// Start ensures a workspace is running.
-// Passes --yes to suppress interactive confirmation prompts.
+// Start ensures a sandbox is running.
 func (c *Client) Start(ctx context.Context, name string) error {
 	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
-		return c.runner.Run(ctx, "daytona", "start", name, "--yes")
+		return c.runner.Run(ctx, "daytona", "start", name)
 	})
 	if err != nil {
 		return fmt.Errorf("daytona start: %w", err)
@@ -242,11 +251,10 @@ func (c *Client) Start(ctx context.Context, name string) error {
 	return nil
 }
 
-// Stop pauses a workspace (preserves state for re-start).
-// Passes --yes to suppress interactive confirmation prompts.
+// Stop pauses a sandbox (preserves state for re-start).
 func (c *Client) Stop(ctx context.Context, name string) error {
 	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
-		return c.runner.Run(ctx, "daytona", "stop", name, "--yes")
+		return c.runner.Run(ctx, "daytona", "stop", name)
 	})
 	if err != nil {
 		return fmt.Errorf("daytona stop: %w", err)
@@ -257,12 +265,11 @@ func (c *Client) Stop(ctx context.Context, name string) error {
 	return nil
 }
 
-// Archive moves a stopped workspace's filesystem to object storage at reduced cost.
-// The workspace must be stopped first; archiving a running workspace is an error.
-// Passes --yes to suppress interactive confirmation prompts.
+// Archive moves a stopped sandbox's filesystem to object storage at reduced cost.
+// The sandbox must be stopped first; archiving a running sandbox is an error.
 func (c *Client) Archive(ctx context.Context, name string) error {
 	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
-		return c.runner.Run(ctx, "daytona", "archive", name, "--yes")
+		return c.runner.Run(ctx, "daytona", "archive", name)
 	})
 	if err != nil {
 		return fmt.Errorf("daytona archive: %w", err)
@@ -273,11 +280,10 @@ func (c *Client) Archive(ctx context.Context, name string) error {
 	return nil
 }
 
-// Delete permanently removes a workspace.
-// Passes --yes to suppress interactive confirmation prompts.
+// Delete permanently removes a sandbox.
 func (c *Client) Delete(ctx context.Context, name string) error {
 	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
-		return c.runner.Run(ctx, "daytona", "delete", name, "--yes")
+		return c.runner.Run(ctx, "daytona", "delete", name)
 	})
 	if err != nil {
 		return fmt.Errorf("daytona delete: %w", err)
@@ -386,7 +392,7 @@ func (c *Client) ListOwned(ctx context.Context) ([]Workspace, error) {
 		pageStr := fmt.Sprintf("%d", page)
 		limitStr := fmt.Sprintf("%d", pageSize)
 		stdout, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
-			return c.runner.Run(ctx, "daytona", "list", "-o", "json", "--page", pageStr, "--limit", limitStr)
+			return c.runner.Run(ctx, "daytona", "list", "-f", "json", "-p", pageStr, "-l", limitStr)
 		})
 		if err != nil {
 			return nil, fmt.Errorf("daytona list (page %d): %w", page, err)

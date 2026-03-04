@@ -109,9 +109,10 @@ const (
 	// Overridable via RemoteBackend.ProxyAddr in rig settings.
 	DefaultProxyAddr = "localhost:8443"
 
-	// DefaultRemoteCertDir is the directory inside daytona workspaces where
+	// DefaultRemoteCertDir is the directory inside daytona sandboxes where
 	// mTLS certificates are injected for proxy authentication.
-	DefaultRemoteCertDir = "/run/gt-proxy"
+	// Uses $HOME/.gt-proxy to avoid permission issues in non-root sandboxes.
+	DefaultRemoteCertDir = "/home/daytona/.gt-proxy"
 
 	// DefaultCertTTL is the default time-to-live for mTLS certificates
 	// issued to remote polecats.

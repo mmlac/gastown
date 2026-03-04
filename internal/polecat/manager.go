@@ -920,13 +920,17 @@ func (m *Manager) injectCertsIntoWorkspace(ctx context.Context, wsName string, c
 }
 
 // runDaytonaPostCreate runs gt prime inside the daytona workspace to set up role
-// context. This is fatal — without prime the polecat has no role context and cannot
-// operate.
+// context. If gt is not installed in the sandbox (exit 127), this is logged as
+// a warning but not fatal — session startup hooks will handle priming.
 func (m *Manager) runDaytonaPostCreate(ctx context.Context, wsName, name string) error {
 	_, stderr, code, err := m.daytonaClient.Exec(ctx, wsName, map[string]string{
 		"GT_RIG":     m.rig.Name,
 		"GT_POLECAT": name,
 	}, "gt", "prime", "--write-prime-md")
+	if code == 127 {
+		// gt not found in sandbox — not fatal, session startup will handle it
+		return nil
+	}
 	if err != nil || code != 0 {
 		return fmt.Errorf("post-create gt prime failed (exit=%d): %v %s", code, err, stderr)
 	}
@@ -1071,13 +1075,11 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 	ctx, cancel := context.WithTimeout(context.Background(), constants.DaytonaCreateTimeout)
 	defer cancel()
 
-	// Mount a shared cert volume so certs persist across workspace restarts.
-	// The volume is named per-installation: gt-certs-<installPrefix>.
-	certVolume := m.daytonaClient.CertVolumeName()
-	certMount := certVolume + ":" + constants.DefaultRemoteCertDir
+	// NOTE: Cert volumes are not mounted at create time — Daytona v0.149+
+	// has a server-side issue with volume mounts during create. Certs are
+	// injected post-create via exec (injectCertsIntoWorkspace).
 
 	createOpts := daytona.CreateOptions{
-		Image:            rb.Image,
 		Dockerfile:       rb.Dockerfile,
 		Snapshot:         rb.Snapshot,
 		Target:           rb.Target,
@@ -1086,7 +1088,6 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 			"gt-install-id": m.daytonaClient.InstallPrefix(),
 			"gt-rig":        m.rig.Name,
 		},
-		Volumes:             []string{certMount},
 		Class:               rb.Class,
 		CPU:                 rb.CPU,
 		Memory:              rb.Memory,

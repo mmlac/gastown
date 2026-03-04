@@ -327,12 +327,15 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 	}
 
 	// Verify worktree was actually created (fixes #1070)
-	// The identity bead may exist but worktree creation can fail silently
-	if err := verifyWorktreeExists(polecatObj.ClonePath); err != nil {
-		// Clean up the partial state before returning error
-		_ = polecatMgr.Remove(polecatName, true) // force=true to clean up partial state
-		return nil, fmt.Errorf("worktree verification failed for %s: %w\nHint: try 'gt polecat nuke %s/%s --force' to clean up",
-			polecatName, err, rigName, polecatName)
+	// The identity bead may exist but worktree creation can fail silently.
+	// Skip for daytona polecats — their worktree is remote, not local.
+	if polecatObj.DaytonaWorkspaceName == "" {
+		if err := verifyWorktreeExists(polecatObj.ClonePath); err != nil {
+			// Clean up the partial state before returning error
+			_ = polecatMgr.Remove(polecatName, true) // force=true to clean up partial state
+			return nil, fmt.Errorf("worktree verification failed for %s: %w\nHint: try 'gt polecat nuke %s/%s --force' to clean up",
+				polecatName, err, rigName, polecatName)
+		}
 	}
 
 	// Get session manager for session name (session start is deferred)
@@ -565,11 +568,12 @@ func runDaytonaPreflightChecks(townRoot string, settings *config.RigSettings) er
 		return err
 	}
 
-	// 4. Verify daytona is authenticated (has an active profile)
+	// 4. Verify daytona is authenticated
 	// An unauthenticated CLI passes all other checks but causes confusing errors
-	// later during workspace creation.
-	profileCmd := exec.Command("daytona", "profile", "current")
-	if output, err := profileCmd.CombinedOutput(); err != nil {
+	// later during sandbox creation. Use "daytona list" as a lightweight auth check
+	// (v0.149+ removed the "profile" subcommand).
+	listCmd := exec.Command("daytona", "list")
+	if output, err := listCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("daytona CLI is not authenticated: %s\n"+
 			"Run 'daytona login' to authenticate", strings.TrimSpace(string(output)))
 	}
