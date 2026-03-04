@@ -201,7 +201,7 @@ func (c *Client) Exec(ctx context.Context, name string, env map[string]string, c
 	return stdout, stderr, exitCode, nil
 }
 
-// daytonaListEntry matches the JSON output of `daytona list -o json`.
+// daytonaListEntry matches the JSON output of `daytona list -f json`.
 type daytonaListEntry struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
@@ -211,7 +211,7 @@ type daytonaListEntry struct {
 // ListOwned returns all workspaces belonging to this installation (filtered by installPrefix).
 func (c *Client) ListOwned(ctx context.Context) ([]Workspace, error) {
 	stdout, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
-		return c.runner.Run(ctx, "daytona", "list", "-o", "json")
+		return c.runner.Run(ctx, "daytona", "list", "-f", "json")
 	})
 	if err != nil {
 		return nil, fmt.Errorf("daytona list: %w", err)
