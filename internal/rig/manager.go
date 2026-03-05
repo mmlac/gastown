@@ -1627,26 +1627,36 @@ See docs/deacon-plugins.md for full documentation.
 		return fmt.Errorf("creating rig plugins directory: %w", err)
 	}
 
-	// Add Gas Town directories to rig .gitignore so they don't pollute the project repo.
+	// Add Gas Town directories and config files to rig .gitignore so they
+	// don't pollute the project repo. The rig container is not a git repo
+	// itself, but this is a defensive measure against accidental git init
+	// or future architecture changes.
+	//
+	// NOTE: No **/* wildcards — all GT runtime files live inside these
+	// directories. Broad patterns like **/*.lock would catch project files
+	// (yarn.lock, Cargo.lock, flake.lock, etc).
 	gitignorePath := filepath.Join(rigPath, ".gitignore")
 	gitignoreEntries := []string{
+		// Existing patterns
 		"plugins/",
 		".repo.git/",
 		".land-worktree/",
-		"config.json",
+		// GT infrastructure directories
+		".beads/",
+		".claude/",
+		".archive/",
+		".runtime/",
 		"crew/",
+		"daemon/",
 		"mayor/",
 		"polecats/",
 		"refinery/",
-		"witness/",
 		"settings/",
-		".runtime/",
-		"**/state.json",
-		"**/*.lock",
-		"**/*.flock",
-		"**/locks/",
-		"**/audit.log",
-		"**/.gt-types-configured",
+		"witness/",
+		// GT configuration files
+		"config.json",
+		"state.json",
+		"AGENTS.md",
 	}
 	for _, entry := range gitignoreEntries {
 		if err := m.ensureGitignoreEntry(gitignorePath, entry); err != nil {
