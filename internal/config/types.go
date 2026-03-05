@@ -723,6 +723,18 @@ type RemoteBackend struct {
 	// NetworkAllowList is a comma-separated list of CIDRs to allow when
 	// NetworkBlockAll is true. Passed as --network-allow-list to daytona create.
 	NetworkAllowList string `json:"network_allow_list,omitempty"`
+
+	// SandboxedNetwork enables network isolation for sandboxes. When true,
+	// --network-block-all is passed to daytona create, and only the proxy IP
+	// (derived from ProxyAddr) plus any AllowedIPs are allowed through via
+	// --network-allow-list. Use this for Daytona tiers that support network
+	// policy (Tier 3+).
+	SandboxedNetwork bool `json:"sandboxed_network,omitempty"`
+
+	// AllowedIPs is a list of IPs or CIDRs that sandboxes should be able to
+	// reach. These are appended to the --network-allow-list alongside the
+	// auto-derived proxy IP. Only takes effect when SandboxedNetwork is true.
+	AllowedIPs []string `json:"allowed_ips,omitempty"`
 }
 
 // Validate checks that RemoteBackend has a supported provider.

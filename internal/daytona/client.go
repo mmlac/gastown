@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 )
 
 // CommandRunner abstracts command execution for testing.
@@ -296,60 +297,186 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 
 // snapshotEntry matches the JSON output of `daytona snapshot list -f json`.
 type snapshotEntry struct {
-	Name      string `json:"name"`
-	State     string `json:"state"`
-	ImageName string `json:"imageName"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	State       string  `json:"state"`
+	ImageName   string  `json:"imageName"`
+	ErrorReason *string `json:"errorReason"`
 }
 
-// SnapshotExists checks whether a snapshot with the given name exists.
-func (c *Client) SnapshotExists(ctx context.Context, name string) (bool, error) {
+// isHealthy returns true if the snapshot is in a usable, active state.
+// Snapshots in transitional states ("removing", "creating") or error states
+// are not considered healthy.
+func (e *snapshotEntry) isHealthy() bool {
+	return e.State == "active" && (e.ErrorReason == nil || *e.ErrorReason == "")
+}
+
+// findSnapshot returns the snapshot entry with the given name, or nil if not found.
+func (c *Client) findSnapshot(ctx context.Context, name string) (*snapshotEntry, error) {
 	stdout, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
 		return c.runner.Run(ctx, "daytona", "snapshot", "list", "-f", "json")
 	})
 	if err != nil {
-		return false, fmt.Errorf("daytona snapshot list: %w", err)
+		return nil, fmt.Errorf("daytona snapshot list: %w", err)
 	}
 	if exitCode != 0 {
-		return false, fmt.Errorf("daytona snapshot list failed (exit %d): %s", exitCode, firstLine(stderr))
+		return nil, fmt.Errorf("daytona snapshot list failed (exit %d): %s", exitCode, firstLine(stderr))
 	}
 
 	var entries []snapshotEntry
 	if strings.TrimSpace(stdout) == "" {
-		return false, nil
+		return nil, nil
 	}
 	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
-		return false, fmt.Errorf("daytona snapshot list: parse JSON: %w", err)
+		return nil, fmt.Errorf("daytona snapshot list: parse JSON: %w", err)
 	}
 	for _, e := range entries {
 		if e.Name == name {
-			return true, nil
+			return &e, nil
 		}
 	}
-	return false, nil
+	return nil, nil
 }
 
-// EnsureSnapshot checks if a snapshot exists for the given name. If not, creates
-// one from the provided Docker image via `daytona snapshot create <name> --image <image>`.
-// Returns the snapshot name to use for sandbox creation.
-func (c *Client) EnsureSnapshot(ctx context.Context, snapshotName, image string) error {
-	exists, err := c.SnapshotExists(ctx, snapshotName)
+// SnapshotExists checks whether a snapshot with the given name exists.
+func (c *Client) SnapshotExists(ctx context.Context, name string) (bool, error) {
+	entry, err := c.findSnapshot(ctx, name)
 	if err != nil {
-		return fmt.Errorf("checking snapshot: %w", err)
+		return false, err
 	}
-	if exists {
-		return nil
+	return entry != nil, nil
+}
+
+// deleteSnapshot removes a snapshot by its ID. Returns nil if the snapshot
+// is already gone (not found).
+func (c *Client) deleteSnapshot(ctx context.Context, id string) error {
+	_, stderr, exitCode, err := c.runWithRetry(ctx, false, func() (string, string, int, error) {
+		return c.runner.Run(ctx, "daytona", "snapshot", "delete", id)
+	})
+	if err != nil {
+		return fmt.Errorf("daytona snapshot delete: %w", err)
+	}
+	if exitCode != 0 {
+		if strings.Contains(strings.ToLower(stderr), "not found") {
+			return nil // already deleted
+		}
+		return fmt.Errorf("daytona snapshot delete failed (exit %d): %s", exitCode, firstLine(stderr))
+	}
+	return nil
+}
+
+// EnsureSnapshot ensures a healthy (active) snapshot exists for the given name.
+//
+// The lifecycle is:
+//  1. If a snapshot exists and is active → reuse it.
+//  2. If it exists but is errored → delete it, then create a new one.
+//  3. If it is in a transitional state (pulling, creating, removing) → poll
+//     until it settles, then re-evaluate.
+//  4. If no snapshot exists → fire `daytona snapshot create` and poll until
+//     the snapshot reaches "active" or "error".
+//
+// The create command may return before the snapshot is ready (async pull), so
+// we always poll after creation rather than trusting the exit code alone.
+func (c *Client) EnsureSnapshot(ctx context.Context, snapshotName, image string) error {
+	const (
+		pollInterval  = 5 * time.Second
+		maxPollTime   = 10 * time.Minute
+		maxCleanups   = 2
+	)
+
+	cleanups := 0
+	for deadline := time.Now().Add(maxPollTime); ; {
+		entry, err := c.findSnapshot(ctx, snapshotName)
+		if err != nil {
+			return fmt.Errorf("checking snapshot: %w", err)
+		}
+
+		if entry == nil {
+			// No snapshot — create it.
+			break
+		}
+
+		if entry.isHealthy() {
+			return nil
+		}
+
+		if entry.State == "error" || (entry.ErrorReason != nil && *entry.ErrorReason != "") {
+			cleanups++
+			if cleanups > maxCleanups {
+				reason := ""
+				if entry.ErrorReason != nil {
+					reason = *entry.ErrorReason
+				}
+				return fmt.Errorf("snapshot %q keeps erroring (last: %s)", snapshotName, reason)
+			}
+			if err := c.deleteSnapshot(ctx, entry.ID); err != nil {
+				return fmt.Errorf("deleting errored snapshot %q: %w", snapshotName, err)
+			}
+			// Loop back to wait for deletion to take effect.
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(pollInterval):
+			}
+			continue
+		}
+
+		// Transitional state (pulling, creating, removing, etc.) — wait.
+		if time.Now().After(deadline) {
+			return fmt.Errorf("snapshot %q stuck in state %q (waited %v)", snapshotName, entry.State, maxPollTime)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pollInterval):
+		}
+		continue
 	}
 
-	_, stderr, exitCode, err := c.runWithRetry(ctx, true, func() (string, string, int, error) {
-		return c.runner.Run(ctx, "daytona", "snapshot", "create", snapshotName, "--image", image)
-	})
+	// Fire the create. This may return immediately (async) or block until done.
+	// Either way, we poll afterwards to confirm the snapshot reached "active".
+	_, stderr, exitCode, err := c.runner.Run(ctx, "daytona", "snapshot", "create", snapshotName, "--image", image)
 	if err != nil {
 		return fmt.Errorf("daytona snapshot create: %w", err)
 	}
 	if exitCode != 0 {
-		return fmt.Errorf("daytona snapshot create failed (exit %d): %s", exitCode, firstLine(stderr))
+		stderrLower := strings.ToLower(stderr)
+		// "already exists" means a concurrent create or a zombie record. Re-enter
+		// the poll loop — findSnapshot will pick it up and handle its state.
+		if !strings.Contains(stderrLower, "already exists") {
+			return fmt.Errorf("daytona snapshot create failed (exit %d): %s", exitCode, firstLine(stderr))
+		}
 	}
-	return nil
+
+	// Poll until the snapshot is active or errors out.
+	for deadline := time.Now().Add(maxPollTime); ; {
+		entry, err := c.findSnapshot(ctx, snapshotName)
+		if err != nil {
+			return fmt.Errorf("polling snapshot after create: %w", err)
+		}
+		if entry == nil {
+			return fmt.Errorf("snapshot %q disappeared after creation", snapshotName)
+		}
+		if entry.isHealthy() {
+			return nil
+		}
+		if entry.State == "error" || (entry.ErrorReason != nil && *entry.ErrorReason != "") {
+			reason := ""
+			if entry.ErrorReason != nil {
+				reason = *entry.ErrorReason
+			}
+			return fmt.Errorf("snapshot %q failed after creation: %s", snapshotName, reason)
+		}
+		// Still pulling/creating — keep waiting.
+		if time.Now().After(deadline) {
+			return fmt.Errorf("snapshot %q stuck in state %q after creation (waited %v)", snapshotName, entry.State, maxPollTime)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pollInterval):
+		}
+	}
 }
 
 // Info returns detailed workspace information from `daytona info -f json <name>`.

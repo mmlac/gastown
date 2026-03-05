@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -924,15 +925,25 @@ func (m *Manager) injectCertsIntoWorkspace(ctx context.Context, wsName string, c
 // /usr/local/bin/gt and /usr/local/bin/bd so that gt prime is forwarded through
 // the proxy. If gt is not found (exit 127), the sandbox image is broken.
 func (m *Manager) runDaytonaPostCreate(ctx context.Context, wsName, name string) error {
-	_, stderr, code, err := m.daytonaClient.Exec(ctx, wsName, map[string]string{
-		"GT_RIG":     m.rig.Name,
-		"GT_POLECAT": name,
+	proxyAddr := constants.DefaultProxyAddr
+	if m.rigSettings != nil && m.rigSettings.RemoteBackend != nil && m.rigSettings.RemoteBackend.ProxyAddr != "" {
+		proxyAddr = m.rigSettings.RemoteBackend.ProxyAddr
+	}
+	certDir := constants.DefaultRemoteCertDir
+
+	stdout, stderr, code, err := m.daytonaClient.Exec(ctx, wsName, map[string]string{
+		"GT_RIG":        m.rig.Name,
+		"GT_POLECAT":    name,
+		"GT_PROXY_URL":  "https://" + proxyAddr,
+		"GT_PROXY_CERT": certDir + "/client.crt",
+		"GT_PROXY_KEY":  certDir + "/client.key",
+		"GT_PROXY_CA":   certDir + "/ca.crt",
 	}, "gt", "prime", "--write-prime-md")
 	if code == 127 {
 		return fmt.Errorf("gt not found in sandbox (exit 127): sandbox image is missing gt-proxy-client symlinks")
 	}
 	if err != nil || code != 0 {
-		return fmt.Errorf("post-create gt prime failed (exit=%d): %v %s", code, err, stderr)
+		return fmt.Errorf("post-create gt prime failed (exit=%d): %v stdout=%s stderr=%s", code, err, stdout, stderr)
 	}
 	return nil
 }
@@ -1079,9 +1090,20 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 	// has a server-side issue with volume mounts during create. Certs are
 	// injected post-create via exec (injectCertsIntoWorkspace).
 
-	// If image is configured but snapshot is not, register the image as a
-	// Daytona snapshot and persist the snapshot name back to the rig config
-	// so subsequent creates skip this step.
+	// Ensure a healthy snapshot exists. If the snapshot name is cached in rig
+	// settings, validate it still exists and is active. If it's missing or
+	// errored, clear the cache and re-derive from the image.
+	if rb.Snapshot != "" {
+		exists, err := m.daytonaClient.SnapshotExists(ctx, rb.Snapshot)
+		if err != nil {
+			style.PrintWarning("could not verify cached snapshot %q: %v", rb.Snapshot, err)
+		}
+		if !exists {
+			style.PrintWarning("cached snapshot %q no longer exists, re-creating from image", rb.Snapshot)
+			rb.Snapshot = ""
+			m.rigSettings.RemoteBackend.Snapshot = ""
+		}
+	}
 	if rb.Image != "" && rb.Snapshot == "" {
 		snapshotName := imageToSnapshotName(rb.Image)
 		if err := m.daytonaClient.EnsureSnapshot(ctx, snapshotName, rb.Image); err != nil {
@@ -1094,6 +1116,36 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 		if err := config.SaveRigSettings(settingsPath, m.rigSettings); err != nil {
 			style.PrintWarning("could not persist snapshot name to rig settings: %v", err)
 		}
+	}
+
+	// Build network policy. When SandboxedNetwork is enabled, block all
+	// outbound traffic except for the proxy IP and any explicitly allowed IPs.
+	// The proxy IP is auto-derived from ProxyAddr so it doesn't need to be
+	// listed in AllowedIPs.
+	networkBlockAll := rb.NetworkBlockAll || rb.SandboxedNetwork
+	networkAllowList := rb.NetworkAllowList
+	if rb.SandboxedNetwork {
+		var cidrs []string
+		// Auto-add the proxy IP.
+		if proxyHost, _, err := net.SplitHostPort(proxyAddr); err == nil && proxyHost != "" {
+			cidrs = append(cidrs, proxyHost+"/32")
+		}
+		// Add user-configured allowed IPs.
+		for _, ip := range rb.AllowedIPs {
+			ip = strings.TrimSpace(ip)
+			if ip != "" {
+				// Ensure CIDR notation — add /32 if not present.
+				if !strings.Contains(ip, "/") {
+					ip = ip + "/32"
+				}
+				cidrs = append(cidrs, ip)
+			}
+		}
+		// Merge with any existing NetworkAllowList.
+		if networkAllowList != "" {
+			cidrs = append(cidrs, networkAllowList)
+		}
+		networkAllowList = strings.Join(cidrs, ",")
 	}
 
 	createOpts := daytona.CreateOptions{
@@ -1110,8 +1162,8 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 		CPU:                 rb.CPU,
 		Memory:              rb.Memory,
 		Disk:                rb.Disk,
-		NetworkBlockAll:     rb.NetworkBlockAll,
-		NetworkAllowList:    rb.NetworkAllowList,
+		NetworkBlockAll:     networkBlockAll,
+		NetworkAllowList:    networkAllowList,
 		AutoStopInterval:    rb.AutoStopInterval,
 		AutoArchiveInterval: rb.AutoArchiveInterval,
 		AutoDeleteInterval:  rb.AutoDeleteInterval,
@@ -1174,7 +1226,10 @@ func (m *Manager) writeFileInWorkspace(ctx context.Context, wsName, path, cwd st
 	// Pass encoded data and path as positional args ($1, $2) to avoid shell injection.
 	encoded := base64Encode(data)
 	opts := daytona.ExecOptions{Cwd: cwd}
-	_, stderr, code, err := m.daytonaClient.ExecWithOptions(ctx, wsName, opts, "sh", "-c", `echo "$1" | base64 -d > "$2"`, "_", encoded, path)
+	// NOTE: Daytona's toolbox API splits command arguments on spaces, breaking
+	// sh -c scripts that contain spaces. Use tabs as word separators instead —
+	// the shell treats tabs as whitespace but Daytona does not split on them.
+	_, stderr, code, err := m.daytonaClient.ExecWithOptions(ctx, wsName, opts, "sh", "-c", "echo\t\"$1\"\t|\tbase64\t-d\t>\t\"$2\"", "_", encoded, path)
 	if err != nil {
 		return fmt.Errorf("exec failed: %w", err)
 	}

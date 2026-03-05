@@ -84,6 +84,8 @@ spawn as Daytona workspaces instead of local worktrees.
 | `auto_delete_interval` | int | no | — | Minutes after archive before auto-delete (passed as `--auto-delete-interval`). |
 | `network_block_all` | bool | no | `false` | Block all outbound network access (passed as `--network-block-all`). |
 | `network_allow_list` | string | no | — | Comma-separated CIDRs to allow when `network_block_all` is true (passed as `--network-allow-list`). |
+| `sandboxed_network` | bool | no | `false` | Enable network isolation. Implies `network_block_all` and auto-adds `proxy_addr` and `allowed_ips` to the allow list. |
+| `allowed_ips` | []string | no | `[]` | IPs or CIDRs that sandboxes may reach. Only used when `sandboxed_network` is true. Bare IPs get `/32` appended automatically. |
 | `proxy_addr` | string | no | `localhost:8443` | Host:port of the mTLS proxy server (as reachable from containers). |
 | `proxy_admin_addr` | string | no | `127.0.0.1:9877` | Host:port of the proxy admin API (localhost only, no TLS). |
 | `env` | object | no | `{}` | Extra environment variables injected into every container for this rig. |
@@ -120,6 +122,8 @@ Uses Daytona defaults for everything. Proxy must be reachable at `localhost:8443
     "auto_delete_interval": 10080,
     "network_block_all": false,
     "network_allow_list": "10.0.0.0/8,192.168.0.0/16",
+    "sandboxed_network": false,
+    "allowed_ips": [],
     "proxy_addr": "172.17.0.1:9876",
     "proxy_admin_addr": "127.0.0.1:9877",
     "env": {
@@ -147,6 +151,27 @@ Uses Daytona defaults for everything. Proxy must be reachable at `localhost:8443
 
 Snapshot-based creation skips image pull, cutting cold-start from minutes to
 seconds. The `snapshot` field is mutually exclusive with `image`.
+
+### Snapshot Lifecycle
+
+When `image` is configured, the first sling creates a Daytona snapshot from the
+image and caches the snapshot name in `settings/config.json`. Subsequent slings
+reuse the cached snapshot for faster creation.
+
+`EnsureSnapshot` handles the full async lifecycle:
+
+- **Active snapshot** — reused immediately.
+- **Transitional states** (pulling, creating) — polled every 5 seconds until
+  active, with a 10-minute timeout.
+- **Errored snapshot** — automatically deleted and re-created (up to 2 retries).
+- **Cached but missing** — if the cached snapshot name in `settings/config.json`
+  no longer exists in Daytona (e.g., deleted externally), it is cleared and
+  re-created from the image.
+
+> **Note:** `daytona snapshot create` returns immediately while the image pull
+> runs asynchronously. Large images (multi-GB) can take several minutes to pull.
+> The polling loop waits for the snapshot to reach `active` state before
+> proceeding.
 
 ### Per-Rig Granularity
 
@@ -204,6 +229,7 @@ When `gt sling <bead> <rig>` runs with a Daytona-configured rig:
    | `auto_delete_interval` | `--auto-delete-interval <value>` |
    | `network_block_all` | `--network-block-all` |
    | `network_allow_list` | `--network-allow-list <value>` |
+   | `sandboxed_network` | `--network-block-all` + computed `--network-allow-list` |
    | volumes | `--volume <name:/path>` (repeated) |
    | labels | `--label <key=value>` (repeated) |
 
@@ -295,6 +321,12 @@ func (c *Client) ExecWithOptions(ctx context.Context, name string, opts ExecOpti
 
 The original `Exec()` method remains for backward compatibility and delegates
 to `ExecWithOptions`.
+
+> **Known issue:** `daytona exec` splits all command arguments on whitespace
+> (spaces), which breaks `sh -c` scripts that contain spaces. As a workaround,
+> Gas Town uses tab characters (`\t`) instead of spaces in shell scripts passed
+> to `daytona exec`. This only affects internal cert injection; operators do not
+> need to account for this.
 
 ### Command Proxy
 
@@ -466,7 +498,11 @@ Available targets depend on your Daytona provider. Common values: `"us"`, `"eu"`
 
 ## Network Isolation
 
-Restrict outbound network access from polecat containers:
+Restrict outbound network access from polecat containers.
+
+### Manual Mode
+
+Use `network_block_all` and `network_allow_list` for direct control:
 
 ```json
 {
@@ -482,6 +518,38 @@ When `network_block_all` is `true`, the container can only reach CIDRs listed
 in `network_allow_list` (comma-separated). The proxy address should be included
 in the allow list so containers can reach the mTLS proxy for git and
 control-plane operations.
+
+### Sandboxed Mode (Recommended)
+
+Use `sandboxed_network` for automatic network isolation:
+
+```json
+{
+  "remote_backend": {
+    "provider": "daytona",
+    "proxy_addr": "172.91.106.250:9876",
+    "sandboxed_network": true,
+    "allowed_ips": ["203.0.113.10"]
+  }
+}
+```
+
+When `sandboxed_network` is `true`:
+
+1. `network_block_all` is implied (set automatically).
+2. The host from `proxy_addr` is auto-added to the allow list as a `/32` CIDR
+   so containers can always reach the mTLS proxy.
+3. Each entry in `allowed_ips` is added to the allow list. Bare IPs (without a
+   CIDR suffix) get `/32` appended automatically.
+4. Any existing `network_allow_list` value is preserved and merged.
+
+This is the recommended approach because it derives the proxy allow-rule from
+the existing `proxy_addr` config, reducing duplication and misconfiguration risk.
+
+> **Note:** Daytona enforces platform-level network restrictions by subscription
+> tier. Tier 1 and Tier 2 sandboxes have restricted outbound internet regardless
+> of `--network-allow-list`. Tier 3+ is required for unrestricted (or
+> selectively restricted) networking.
 
 ## Health Checks
 
@@ -639,6 +707,8 @@ needs admin access.
 - For Docker-based Daytona, use the Docker bridge IP (usually `172.17.0.1`)
 - Verify firewall rules allow the proxy port
 - If using `network_block_all`, ensure the proxy address is in `network_allow_list`
+- If using `sandboxed_network`, the proxy address is added automatically — check `allowed_ips` for any other required destinations
+- Daytona Tier 1/2 sandboxes restrict outbound internet at the platform level; `--network-allow-list` does not override this. Upgrade to Tier 3+ for configurable network policies
 
 ### Workspace Stuck or Orphaned
 
