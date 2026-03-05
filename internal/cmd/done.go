@@ -805,7 +805,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 
 			mrIssue, err := bd.Create(beads.CreateOptions{
 				Title:       title,
-				Type:        "merge-request",
+				Labels:      []string{"gt:merge-request"},
 				Priority:    priority,
 				Description: description,
 				Ephemeral:   true,

@@ -159,8 +159,9 @@ type ListOptions struct {
 // CreateOptions specifies options for creating an issue.
 type CreateOptions struct {
 	Title       string
-	Type        string // "task", "bug", "feature", "epic"
-	Priority    int    // 0-4
+	Type        string   // Deprecated: use Labels instead. Was "task", "bug", "feature", "epic".
+	Labels      []string // Labels to set (e.g., "gt:task", "gt:merge-request")
+	Priority    int      // 0-4
 	Description string
 	Parent      string
 	Actor       string // Who is creating this issue (populates created_by)
@@ -717,8 +718,10 @@ func (b *Beads) Create(opts CreateOptions) (*Issue, error) {
 	if opts.Title != "" {
 		args = append(args, "--title="+opts.Title)
 	}
-	// Type is deprecated: convert to gt:<type> label
-	if opts.Type != "" {
+	// Labels takes precedence; fall back to deprecated Type conversion
+	if len(opts.Labels) > 0 {
+		args = append(args, "--labels="+strings.Join(opts.Labels, ","))
+	} else if opts.Type != "" {
 		args = append(args, "--labels=gt:"+opts.Type)
 	}
 	if opts.Priority >= 0 {
@@ -773,8 +776,10 @@ func (b *Beads) CreateWithID(id string, opts CreateOptions) (*Issue, error) {
 	if opts.Title != "" {
 		args = append(args, "--title="+opts.Title)
 	}
-	// Type is deprecated: convert to gt:<type> label
-	if opts.Type != "" {
+	// Labels takes precedence; fall back to deprecated Type conversion
+	if len(opts.Labels) > 0 {
+		args = append(args, "--labels="+strings.Join(opts.Labels, ","))
+	} else if opts.Type != "" {
 		args = append(args, "--labels=gt:"+opts.Type)
 	}
 	if opts.Priority >= 0 {

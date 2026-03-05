@@ -1146,7 +1146,7 @@ The Refinery will automatically retry the merge after you force-push.`,
 	taskTitle := fmt.Sprintf("Resolve merge conflicts: %s", originalTitle)
 	task, err := e.beads.Create(beads.CreateOptions{
 		Title:       taskTitle,
-		Type:        "task",
+		Labels:      []string{"gt:task"},
 		Priority:    mr.Priority,
 		Description: description,
 		Actor:       e.rig.Name + "/refinery",
