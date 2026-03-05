@@ -68,8 +68,9 @@ func runClose(cmd *cobra.Command, args []string) error {
 	// If cascade, close children first (depth-first)
 	if cascade {
 		beadIDs := extractBeadIDs(filteredArgs)
+		visited := make(map[string]bool)
 		for _, id := range beadIDs {
-			if err := closeChildren(id, convertedArgs); err != nil {
+			if err := closeChildren(id, visited, 0); err != nil {
 				return fmt.Errorf("cascade close failed for children of %s: %w", id, err)
 			}
 		}
@@ -116,17 +117,35 @@ type childBead struct {
 	Status string `json:"status"`
 }
 
-// closeChildren recursively closes all open children of a bead.
-func closeChildren(parentID string, _ []string) error {
-	// Query children via bd children --json
+// maxCascadeDepth is the maximum recursion depth for cascade close.
+// Prevents runaway recursion from dependency cycles or deeply nested hierarchies.
+const maxCascadeDepth = 50
+
+// closeChildren recursively closes all open children of a bead (depth-first).
+// visited tracks already-processed IDs to prevent cycles. depth guards against
+// excessively nested hierarchies.
+func closeChildren(parentID string, visited map[string]bool, depth int) error {
+	if depth > maxCascadeDepth {
+		return fmt.Errorf("cascade depth limit (%d) exceeded at %s — possible cycle", maxCascadeDepth, parentID)
+	}
+	if visited[parentID] {
+		return nil // already processed — cycle detected, skip silently
+	}
+	visited[parentID] = true
+
+	// Query children via bd children --json.
+	// Output is a JSON array of issue objects; childBead extracts only id+status.
 	out, err := exec.Command("bd", "children", parentID, "--json").Output()
 	if err != nil {
-		// No children or command failed — not an error for cascade
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() != 0 {
+			fmt.Fprintf(os.Stderr, "Warning: bd children %s failed: %v\n", parentID, err)
+		}
 		return nil
 	}
 
 	var children []childBead
 	if err := json.Unmarshal(out, &children); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to parse children of %s: %v\n", parentID, err)
 		return nil
 	}
 
@@ -140,7 +159,7 @@ func closeChildren(parentID string, _ []string) error {
 		if child.Status == "closed" {
 			continue
 		}
-		if err := closeChildren(child.ID, nil); err != nil {
+		if err := closeChildren(child.ID, visited, depth+1); err != nil {
 			return err
 		}
 		childIDs = append(childIDs, child.ID)
