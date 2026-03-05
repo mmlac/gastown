@@ -340,11 +340,11 @@ Never use raw `tmux send-keys`.
 
 | Mode | Flag | Behavior |
 |------|------|----------|
-| Immediate | `--mode=immediate` (default) | Direct send-keys. Interrupts current work. |
+| Wait-idle | `--mode=wait-idle` (default) | Waits for idle prompt, then delivers. Falls back to queue. |
 | Queue | `--mode=queue` | Writes to file queue. Agent picks up at next turn boundary. |
-| Wait-idle | `--mode=wait-idle` | Waits for idle prompt, then delivers. Falls back to queue. |
+| Immediate | `--mode=immediate` | Direct send-keys. Interrupts current work. Use only for emergencies. |
 
-For non-urgent coordination, prefer `--mode=queue`.
+Default is wait-idle to avoid interrupting active tool calls.
 
 ### Nudge Resilience (for your own work)
 
