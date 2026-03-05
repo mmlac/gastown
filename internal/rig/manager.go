@@ -13,7 +13,7 @@ import (
 	"unicode"
 
 	"github.com/steveyegge/gastown/internal/beads"
-	"github.com/steveyegge/gastown/internal/claude"
+	"github.com/steveyegge/gastown/internal/hooks"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/doltserver"
@@ -698,17 +698,22 @@ Use crew for your own workspace. Polecats are for batch work dispatch.
 	// NOTE: Witness hooks are installed by witness/manager.go:Start() via EnsureSettingsForRole.
 	// No need to create patrol hooks here — agents self-install at startup.
 
-	// Create polecats directory with .claude/ settings scaffold.
-	// Settings are passed to Claude Code via --settings flag at session start.
-	// Scaffolding them here ensures the settings file exists before the first
-	// polecat session starts, preventing startup failures from missing hooks.
+	// Create polecats directory with agent settings scaffold.
+	// Settings are passed to the agent via --settings flag (Claude) or installed
+	// in workDir (other agents). Scaffolding here ensures the settings file exists
+	// before the first polecat session starts, preventing startup failures.
 	polecatsPath := filepath.Join(rigPath, "polecats")
 	if err := os.MkdirAll(polecatsPath, 0755); err != nil {
 		return nil, fmt.Errorf("creating polecats dir: %w", err)
 	}
-	if err := claude.EnsureSettingsForRole(polecatsPath, "polecat"); err != nil {
-		// Non-fatal: session startup will retry via EnsureSettingsForRole
-		fmt.Printf("  %s Could not scaffold polecat settings: %v\n", "!", err)
+	// Use the default agent preset for scaffolding
+	defaultPreset := config.GetAgentPreset(config.DefaultAgentPreset())
+	if defaultPreset != nil && defaultPreset.HooksProvider != "" {
+		if err := hooks.InstallForRole(defaultPreset.HooksProvider, polecatsPath, polecatsPath, "polecat",
+			defaultPreset.HooksDir, defaultPreset.HooksSettingsFile, defaultPreset.HooksUseSettingsDir); err != nil {
+			// Non-fatal: session startup will retry via EnsureSettingsForRole
+			fmt.Printf("  %s Could not scaffold polecat settings: %v\n", "!", err)
+		}
 	}
 	if err := commands.ProvisionFor(polecatsPath, "claude"); err != nil {
 		// Non-fatal: commands are convenience, not critical

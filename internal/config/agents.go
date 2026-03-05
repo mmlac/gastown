@@ -118,6 +118,11 @@ type AgentPresetInfo struct {
 	// For these providers, Gas Town sends startup fallback commands via nudge.
 	HooksInformational bool `json:"hooks_informational,omitempty"`
 
+	// HooksUseSettingsDir indicates the agent supports a separate settings directory
+	// (e.g., Claude's --settings flag). When true, hook templates are installed in
+	// settingsDir; when false, they're installed in workDir.
+	HooksUseSettingsDir bool `json:"hooks_use_settings_dir,omitempty"`
+
 	// ReadyPromptPrefix is the prompt prefix for tmux readiness detection (e.g., "❯ ").
 	// Empty means delay-based detection only.
 	ReadyPromptPrefix string `json:"ready_prompt_prefix,omitempty"`
@@ -181,6 +186,7 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		HooksProvider:          "claude",
 		HooksDir:               ".claude",
 		HooksSettingsFile:      "settings.json",
+		HooksUseSettingsDir:    true,
 		ReadyPromptPrefix:      "❯ ",
 		ReadyDelayMs:           10000,
 		InstructionsFile:       "CLAUDE.md",
