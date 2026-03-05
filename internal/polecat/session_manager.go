@@ -975,8 +975,24 @@ func (m *SessionManager) buildDaytonaCommand(polecat, wsName, beacon string, rc 
 	}
 
 	// Build the inner agent command using RuntimeConfig.
-	// This produces something like: claude --dangerously-skip-permissions "beacon"
-	agentCmd := rc.BuildCommandWithPrompt(beacon)
+	// Override the command to a bare name for remote mode — the host resolves
+	// absolute paths (e.g., /home/agent/.local/bin/claude) that don't exist
+	// inside the container. The container's PATH has the agent binary.
+	remoteRC := *rc
+	if base := filepath.Base(remoteRC.Command); base == "claude" {
+		remoteRC.Command = "claude"
+	}
+	// Filter out --settings flag — the host-side settings path doesn't exist in the container.
+	filteredArgs := make([]string, 0, len(remoteRC.Args))
+	for i := 0; i < len(remoteRC.Args); i++ {
+		if remoteRC.Args[i] == "--settings" && i+1 < len(remoteRC.Args) {
+			i++ // skip the value too
+			continue
+		}
+		filteredArgs = append(filteredArgs, remoteRC.Args[i])
+	}
+	remoteRC.Args = filteredArgs
+	agentCmd := remoteRC.BuildCommandWithPrompt(beacon)
 
 	// Wrap in sh -c with proper shell quoting to preserve the beacon's special
 	// characters (newlines, quotes) through the double-shell interpretation

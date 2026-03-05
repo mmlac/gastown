@@ -920,6 +920,29 @@ func (m *Manager) injectCertsIntoWorkspace(ctx context.Context, wsName string, c
 	return nil
 }
 
+// injectClaudeCredentials copies the local Claude credentials file into the
+// workspace so the agent can authenticate with Claude Max. Best-effort.
+func (m *Manager) injectClaudeCredentials(ctx context.Context, wsName string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("getting home dir: %w", err)
+	}
+	credPath := filepath.Join(home, ".claude", ".credentials.json")
+	credData, err := os.ReadFile(credPath) //nolint:gosec // G304: path is constructed from home dir
+	if err != nil {
+		return fmt.Errorf("reading credentials: %w", err)
+	}
+	// Create .claude dir in workspace
+	if _, _, code, err := m.daytonaClient.Exec(ctx, wsName, nil, "mkdir", "-p", "/home/daytona/.claude"); err != nil || code != 0 {
+		return fmt.Errorf("creating .claude dir: exit=%d err=%v", code, err)
+	}
+	// Write credentials file
+	if err := m.writeFileInWorkspace(ctx, wsName, "/home/daytona/.claude/.credentials.json", "/home/daytona/.claude", credData); err != nil {
+		return fmt.Errorf("writing credentials: %w", err)
+	}
+	return nil
+}
+
 // runDaytonaPostCreate runs gt prime inside the daytona workspace to set up role
 // context. The sandbox image must have gt-proxy-client symlinked as
 // /usr/local/bin/gt and /usr/local/bin/bd so that gt prime is forwarded through
@@ -938,7 +961,7 @@ func (m *Manager) runDaytonaPostCreate(ctx context.Context, wsName, name string)
 		"GT_PROXY_CERT": certDir + "/client.crt",
 		"GT_PROXY_KEY":  certDir + "/client.key",
 		"GT_PROXY_CA":   certDir + "/ca.crt",
-	}, "gt", "prime", "--write-prime-md")
+	}, "gt", "prime")
 	if code == 127 {
 		return fmt.Errorf("gt not found in sandbox (exit 127): sandbox image is missing gt-proxy-client symlinks")
 	}
@@ -1190,6 +1213,12 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 		telemetry.RecordPolecatCreateDuration(ctx, name, startType, time.Since(createStart).Seconds(), err)
 		cleanupOnError()
 		return nil, err
+	}
+
+	// Inject Claude credentials if available (for Claude Max auth).
+	if err := m.injectClaudeCredentials(ctx, wsName); err != nil {
+		// Non-fatal: agent may use API key via env instead.
+		fmt.Fprintf(os.Stderr, "Warning: could not inject Claude credentials: %v\n", err)
 	}
 
 	// Post-create setup: run gt prime inside the workspace.

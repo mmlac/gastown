@@ -405,6 +405,21 @@ func (s *SpawnedPolecatInfo) StartSession() (string, error) {
 	t := tmux.NewTmux()
 	polecatSessMgr := polecat.NewSessionManager(t, r)
 
+	// Configure Daytona remote mode if rig has RemoteBackend configured.
+	rigSettings, _ := config.LoadRigSettings(config.RigSettingsPath(r.Path))
+	if rigSettings != nil && rigSettings.RemoteBackend != nil {
+		townConfigPath := filepath.Join(townRoot, "mayor", "town.json")
+		townConfig, err := config.LoadTownConfig(townConfigPath)
+		if err == nil {
+			shortID := townConfig.ShortInstallationID()
+			if shortID != "" {
+				installPrefix := constants.InstallPrefix(shortID)
+				daytonaClient := daytona.NewClient(installPrefix)
+				polecatSessMgr.SetDaytona(daytonaClient, rigSettings)
+			}
+		}
+	}
+
 	fmt.Printf("Starting session for %s/%s...\n", s.RigName, s.PolecatName)
 	startOpts := polecat.SessionStartOptions{
 		RuntimeConfigDir: claudeConfigDir,
