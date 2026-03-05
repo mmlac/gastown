@@ -256,12 +256,16 @@ gh pr create --repo $(git remote get-url origin | sed 's/.*github.com[:/]\(.*\)\
 
 | Want to... | Correct command | Common mistake |
 |------------|----------------|----------------|
+| Close/complete a bead | `bd close <id>` | ~~bd complete~~ (not a command), ~~bd update --status done~~ (invalid status) |
 | Dispatch work to polecat | `{{ cmd }} sling <bead> <rig>` | ~~gt polecat spawn~~ (not a command) |
 | Message another agent | `{{ cmd }} nudge <target> "msg"` | ~~tmux send-keys~~ (unreliable) |
 | Kill stuck polecat | `{{ cmd }} polecat nuke <rig>/<name> --force` | ~~gt polecat kill~~ (not a command) |
 | Pause rig (daemon won't restart) | `{{ cmd }} rig park <rig>` | ~~gt rig stop~~ (daemon will restart it) |
 | Permanently disable rig | `{{ cmd }} rig dock <rig>` | ~~gt rig park~~ (temporary only) |
 | Create issues | `bd create "title"` | ~~gt issue create~~ (not a command) |
+
+**Beads valid statuses:** `open`, `in_progress`, `blocked`, `deferred`, `closed`, `pinned`, `hooked`
+(there is NO `done` or `complete` status)
 
 **Rig lifecycle commands (park vs dock vs stop):**
 - `park/unpark` — Temporary pause. Daemon skips parked rigs.
