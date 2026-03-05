@@ -7,6 +7,8 @@ mTLS proxy — containers never contact GitHub directly.
 
 This guide covers setup, configuration, and operations.
 
+**This requires a Tier 3+ Daytona account for egress to be available**
+
 ## Prerequisites
 
 | Requirement | Notes |
