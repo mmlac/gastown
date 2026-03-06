@@ -218,7 +218,8 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		if branch == "" {
 			if polecatName := os.Getenv("GT_POLECAT"); polecatName != "" {
 				// Search .repo.git for a matching polecat branch.
-				branches, _ := g.ListBranches("polecat/" + polecatName)
+				// Use wildcard — branch format is polecat/<name>/<issue>@<timestamp>
+				branches, _ := g.ListBranches("polecat/" + polecatName + "/*")
 				if len(branches) > 0 {
 					branch = branches[0]
 				} else {
@@ -994,7 +995,7 @@ notifyWitness:
 		// Phase 3 of persistent-polecat-pool: DONE→IDLE syncs to main and deletes old branch.
 		// Non-fatal: if sync fails, the polecat is still IDLE and the Witness
 		// or next gt sling can handle the branch state.
-		if cwdAvailable && !pushFailed {
+		if cwdAvailable && !pushFailed && !isDaytonaProxy {
 			// Remember the old branch so we can delete it after switching
 			oldBranch := branch
 
