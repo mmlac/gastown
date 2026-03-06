@@ -64,17 +64,14 @@ Gastown is in **homebrew-core** (not a custom tap). The formula lives at:
 ### How it updates
 
 Homebrew's `BrewTestBot` automatically detects new GitHub releases and opens
-a PR to homebrew-core. This typically happens within 24-48 hours.
+a PR to homebrew-core. Gastown is on the autobump list — the bot checks
+**every ~3 hours**.
 
 ### If the bot doesn't pick it up
 
-Submit a PR manually:
-
-```bash
-brew bump-formula-pr gastown --version=X.Y.Z
-```
-
-This requires the `gh` CLI to be authenticated and homebrew developer tools.
+Gastown is on the autobump list, so `brew bump-formula-pr` will refuse to
+submit a manual PR. If the bot hasn't updated after 6+ hours, check
+https://github.com/Homebrew/homebrew-core/pulls?q=gastown for stuck PRs.
 
 ### Verifying
 
@@ -138,9 +135,11 @@ The workflow rejects `go.mod` files with `replace` directives (they break
 The `@gastown` npm org doesn't exist or you don't have publish access.
 See the npm section above. The release still succeeds — npm is best-effort.
 
-### Homebrew shows old version after 48 hours
+### Homebrew shows old version after 6+ hours
 
-Run `brew bump-formula-pr gastown --version=X.Y.Z` to submit the PR manually.
+Gastown is on BrewTestBot's autobump list (checked every ~3h). Check
+https://github.com/Homebrew/homebrew-core/pulls?q=gastown for stuck PRs.
+Manual `brew bump-formula-pr` is blocked for autobump formulae.
 
 ### `make install` shows `-dirty` suffix
 
