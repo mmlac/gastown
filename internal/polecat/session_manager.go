@@ -946,13 +946,28 @@ func (m *SessionManager) verifyStartupNudgeDelivery(sessionID string, rc *config
 // (tmux's bash) parses it, launching `daytona exec` which tunnels stdin/stdout
 // to the container process.
 func (m *SessionManager) buildDaytonaCommand(polecat, wsName, beacon string, rc *config.RuntimeConfig, runID string) string {
-	// Per-session env vars that change on each spawn/restart.
-	// Static vars (GT_RIG, GT_POLECAT, GT_ROLE, BD_DOLT_AUTO_COMMIT, proxy/cert
-	// vars, and rb.Env) are set at workspace creation time via daytona create
-	// --env and persist across exec calls.
-	env := map[string]string{
-		"GT_RUN": runID,
+	// Build environment variables for the agent session.
+	// Identity and proxy vars must be passed inline because daytona exec does
+	// not inherit workspace-level env vars.
+	proxyAddr := constants.DefaultProxyAddr
+	if m.rigSettings != nil && m.rigSettings.RemoteBackend != nil && m.rigSettings.RemoteBackend.ProxyAddr != "" {
+		proxyAddr = m.rigSettings.RemoteBackend.ProxyAddr
 	}
+	certDir := constants.DefaultRemoteCertDir
+
+	env := config.AgentEnv(config.AgentEnvConfig{
+		Role:      "polecat",
+		Rig:       m.rig.Name,
+		AgentName: polecat,
+	})
+	env["GT_RUN"] = runID
+	env["GT_PROXY_URL"] = "https://" + proxyAddr
+	env["GT_PROXY_CERT"] = certDir + "/client.crt"
+	env["GT_PROXY_KEY"] = certDir + "/client.key"
+	env["GT_PROXY_CA"] = certDir + "/ca.crt"
+	env["GIT_SSL_CERT"] = certDir + "/client.crt"
+	env["GIT_SSL_KEY"] = certDir + "/client.key"
+	env["GIT_SSL_CAINFO"] = certDir + "/ca.crt"
 
 	// Build: daytona exec <ws> --tty -- env K=V ... sh -c '<agent-command>'
 	// We use --tty for proper argument parsing and interactive agent sessions.

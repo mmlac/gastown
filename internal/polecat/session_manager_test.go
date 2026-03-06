@@ -582,17 +582,20 @@ func TestBuildDaytonaCommand(t *testing.T) {
 		t.Errorf("command missing --tty flag\ncmd: %s", cmd)
 	}
 
-	// Per-session env vars are passed via inline env prefix (not --env).
-	// Only GT_RUN should be in the exec command; static vars (GT_RIG, GT_POLECAT,
-	// etc.) are set at workspace creation time via daytona create --env.
-	if !strings.Contains(cmd, "GT_RUN=test-run-id-123") {
-		t.Errorf("command missing GT_RUN env var\ncmd: %s", cmd)
-	}
-
-	// Static vars should NOT be in the exec command.
-	for _, staticVar := range []string{"GT_RIG=", "GT_POLECAT=", "GT_ROLE=", "GT_PROXY_URL=", "BD_DOLT_AUTO_COMMIT="} {
-		if strings.Contains(cmd, staticVar) {
-			t.Errorf("command should not contain static var %s (set at create time)\ncmd: %s", staticVar, cmd)
+	// All env vars (identity, proxy, per-session) are passed inline because
+	// daytona exec does not inherit workspace-level env vars.
+	for _, required := range []string{
+		"GT_RUN=test-run-id-123",
+		"GT_RIG=testrig",
+		"GT_POLECAT=onyx",
+		"GT_ROLE=testrig/polecats/onyx",
+		"GT_PROXY_URL=https://proxy.example.com:8443",
+		"GT_PROXY_CERT=/home/daytona/.gt-proxy/client.crt",
+		"GT_PROXY_CA=/home/daytona/.gt-proxy/ca.crt",
+		"GIT_SSL_CAINFO=/home/daytona/.gt-proxy/ca.crt",
+	} {
+		if !strings.Contains(cmd, required) {
+			t.Errorf("command missing %s\ncmd: %s", required, cmd)
 		}
 	}
 
@@ -613,10 +616,10 @@ func TestBuildDaytonaCommand(t *testing.T) {
 	}
 }
 
-// TestBuildDaytonaCommand_OnlyPerSessionEnv verifies that the exec command
-// only contains per-session env vars (GT_RUN), not static vars like proxy URLs.
-// Static vars are set at workspace creation time via daytona create --env.
-func TestBuildDaytonaCommand_OnlyPerSessionEnv(t *testing.T) {
+// TestBuildDaytonaCommand_IncludesAllEnvVars verifies that the exec command
+// includes all required env vars (identity, proxy, per-session) inline,
+// since daytona exec does not inherit workspace-level env vars.
+func TestBuildDaytonaCommand_IncludesAllEnvVars(t *testing.T) {
 	t.Parallel()
 
 	rigPath := filepath.Join(t.TempDir(), "testrig")
@@ -640,13 +643,11 @@ func TestBuildDaytonaCommand_OnlyPerSessionEnv(t *testing.T) {
 
 	cmd := m.buildDaytonaCommand("onyx", "ws-name", "beacon", rc, "run-id")
 
-	// GT_RUN should be present (per-session var).
-	if !strings.Contains(cmd, "GT_RUN=run-id") {
-		t.Errorf("command missing GT_RUN\ncmd: %s", cmd)
-	}
-	// Proxy URL should NOT be present (static var set at create time).
-	if strings.Contains(cmd, "GT_PROXY_URL") {
-		t.Errorf("command should not contain GT_PROXY_URL (set at create time)\ncmd: %s", cmd)
+	// All env vars must be present inline for the agent to function.
+	for _, required := range []string{"GT_RUN=run-id", "GT_PROXY_URL=", "GT_RIG=testrig", "GT_POLECAT=onyx", "GIT_SSL_CAINFO="} {
+		if !strings.Contains(cmd, required) {
+			t.Errorf("command missing %s\ncmd: %s", required, cmd)
+		}
 	}
 }
 
@@ -707,7 +708,7 @@ func TestBuildDaytonaCommand_EnvValueShellQuoting(t *testing.T) {
 		Args:     []string{"--dangerously-skip-permissions"},
 	}
 
-	// GT_RUN is the per-session var; verify it's quoted via env prefix, not --env.
+	// All env vars are passed via inline env prefix, not --env flags.
 	cmd := m.buildDaytonaCommand("onyx", "ws-name", "beacon", rc, "run-id")
 
 	// Should use inline env prefix, not --env flags.
@@ -715,8 +716,8 @@ func TestBuildDaytonaCommand_EnvValueShellQuoting(t *testing.T) {
 		t.Errorf("command should not use --env flags\ncmd: %s", cmd)
 	}
 	// GT_RUN should be present via env prefix.
-	if !strings.Contains(cmd, "env GT_RUN=run-id") {
-		t.Errorf("command missing 'env GT_RUN=run-id'\ncmd: %s", cmd)
+	if !strings.Contains(cmd, "GT_RUN=run-id") {
+		t.Errorf("command missing GT_RUN=run-id\ncmd: %s", cmd)
 	}
 }
 

@@ -983,6 +983,9 @@ func (m *Manager) runDaytonaPostCreate(ctx context.Context, wsName, name string)
 		"GT_PROXY_CERT": certDir + "/client.crt",
 		"GT_PROXY_KEY":  certDir + "/client.key",
 		"GT_PROXY_CA":   certDir + "/ca.crt",
+		"GIT_SSL_CERT":  certDir + "/client.crt",
+		"GIT_SSL_KEY":   certDir + "/client.key",
+		"GIT_SSL_CAINFO": certDir + "/ca.crt",
 	}, "gt", "prime")
 	if code == 127 {
 		return fmt.Errorf("gt not found in sandbox (exit 127): sandbox image is missing gt-proxy-client symlinks")
