@@ -572,7 +572,7 @@ func TestBuildDaytonaCommand(t *testing.T) {
 	wsName := "gt-abc12345-testrig--onyx"
 	runID := "test-run-id-123"
 
-	cmd := m.buildDaytonaCommand("onyx", wsName, beacon, rc, runID)
+	cmd := m.buildDaytonaCommand("onyx", wsName, beacon, "", rc, runID)
 
 	// Verify the command starts with daytona exec and includes --tty
 	if !strings.HasPrefix(cmd, "daytona exec "+wsName) {
@@ -641,7 +641,7 @@ func TestBuildDaytonaCommand_IncludesAllEnvVars(t *testing.T) {
 		Args:     []string{"--dangerously-skip-permissions"},
 	}
 
-	cmd := m.buildDaytonaCommand("onyx", "ws-name", "beacon", rc, "run-id")
+	cmd := m.buildDaytonaCommand("onyx", "ws-name", "beacon", "", rc, "run-id")
 
 	// All env vars must be present inline for the agent to function.
 	for _, required := range []string{"GT_RUN=run-id", "GT_PROXY_URL=", "GT_RIG=testrig", "GT_POLECAT=onyx", "GIT_SSL_CAINFO="} {
@@ -676,7 +676,7 @@ func TestBuildDaytonaCommand_ExtraEnvNotInExec(t *testing.T) {
 		Args:     []string{"--dangerously-skip-permissions"},
 	}
 
-	cmd := m.buildDaytonaCommand("onyx", "ws-name", "beacon", rc, "run-id")
+	cmd := m.buildDaytonaCommand("onyx", "ws-name", "beacon", "", rc, "run-id")
 
 	// CUSTOM_VAR should NOT be in exec command (set at create time via daytona create --env).
 	if strings.Contains(cmd, "CUSTOM_VAR") {
@@ -709,7 +709,7 @@ func TestBuildDaytonaCommand_EnvValueShellQuoting(t *testing.T) {
 	}
 
 	// All env vars are passed via inline env prefix, not --env flags.
-	cmd := m.buildDaytonaCommand("onyx", "ws-name", "beacon", rc, "run-id")
+	cmd := m.buildDaytonaCommand("onyx", "ws-name", "beacon", "", rc, "run-id")
 
 	// Should use inline env prefix, not --env flags.
 	if strings.Contains(cmd, "--env") {
@@ -746,7 +746,7 @@ func TestBuildDaytonaCommand_BeaconWithSpecialChars(t *testing.T) {
 	// Beacon with newlines, quotes, and dollar signs
 	beacon := "Line 1\nLine 2\n\"quoted\" and $var and 'single'"
 
-	cmd := m.buildDaytonaCommand("onyx", "ws-name", beacon, rc, "run-id")
+	cmd := m.buildDaytonaCommand("onyx", "ws-name", beacon, "", rc, "run-id")
 
 	// The command should be properly formed (not empty, has env prefix and sh -c)
 	if !strings.Contains(cmd, "-- env") {

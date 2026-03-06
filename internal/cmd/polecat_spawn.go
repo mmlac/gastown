@@ -247,8 +247,12 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 			if err != nil {
 				return nil, fmt.Errorf("getting idle polecat after reuse: %w", err)
 			}
-			if err := verifyWorktreeExists(polecatObj.ClonePath); err != nil {
-				return nil, fmt.Errorf("worktree verification failed for reused %s: %w", polecatName, err)
+			// Skip worktree verification for Daytona polecats — no local worktree.
+			// The workspace will be restarted (if stopped) by StartSession.
+			if !useDaytona {
+				if err := verifyWorktreeExists(polecatObj.ClonePath); err != nil {
+					return nil, fmt.Errorf("worktree verification failed for reused %s: %w", polecatName, err)
+				}
 			}
 
 			polecatSessMgr := polecat.NewSessionManager(t, r)
@@ -424,6 +428,7 @@ func (s *SpawnedPolecatInfo) StartSession() (string, error) {
 	startOpts := polecat.SessionStartOptions{
 		RuntimeConfigDir: claudeConfigDir,
 		Agent:            s.agent,
+		Branch:           s.Branch,
 	}
 	if s.agent != "" {
 		cmd, err := config.BuildPolecatStartupCommandWithAgentOverride(s.RigName, s.PolecatName, r.Path, "", s.agent)

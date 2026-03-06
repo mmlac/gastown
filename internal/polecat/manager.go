@@ -2160,6 +2160,11 @@ func (m *Manager) RepairWorktreeWithOptions(name string, force bool, opts AddOpt
 //  4. Reset agent bead and set hook_bead atomically
 //  5. Return polecat in working state
 func (m *Manager) ReuseIdlePolecat(name string, opts AddOptions) (*Polecat, error) {
+	// Daytona remote polecats have no local worktree — use bare repo operations.
+	if m.isRemoteMode() {
+		return m.reuseDaytonaIdlePolecat(name, opts)
+	}
+
 	// Acquire per-polecat file lock to prevent concurrent reuse/remove races
 	fl, err := m.lockPolecat(name)
 	if err != nil {
@@ -2239,6 +2244,85 @@ func (m *Manager) ReuseIdlePolecat(name string, opts AddOptions) (*Polecat, erro
 		Branch:    branchName,
 		CreatedAt: now,
 		UpdatedAt: now,
+	}, nil
+}
+
+// reuseDaytonaIdlePolecat reuses an idle Daytona polecat for new work.
+// Unlike the local path, there's no worktree — operations happen on the bare
+// .repo.git. The Daytona workspace will be restarted (if stopped) when
+// StartSession is called.
+func (m *Manager) reuseDaytonaIdlePolecat(name string, opts AddOptions) (*Polecat, error) {
+	fl, err := m.lockPolecat(name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = fl.Unlock() }()
+
+	if !m.exists(name) {
+		return nil, ErrPolecatNotFound
+	}
+
+	// Work with .repo.git (bare repo) — no local worktree for Daytona polecats
+	repoGit, err := m.repoBase()
+	if err != nil {
+		return nil, fmt.Errorf("finding repo base for Daytona reuse: %w", err)
+	}
+
+	// Fetch latest from origin
+	if fetchErr := repoGit.Fetch("origin"); fetchErr != nil {
+		style.PrintWarning("could not fetch origin: %v", fetchErr)
+	}
+
+	// Determine start point
+	startPoint := m.resolveStartPoint(opts)
+	if exists, err := repoGit.RefExists(startPoint); err != nil {
+		return nil, fmt.Errorf("checking ref %s: %w", startPoint, err)
+	} else if !exists {
+		return nil, fmt.Errorf("start point %s not found in bare repo", startPoint)
+	}
+
+	// Create fresh branch in .repo.git (same as addDaytona)
+	branchName := m.buildBranchName(name, opts.HookBead)
+	if err := repoGit.CreateBranchFrom(branchName, startPoint); err != nil {
+		return nil, fmt.Errorf("creating branch %s from %s: %w", branchName, startPoint, err)
+	}
+
+	// Reset agent bead for reuse
+	agentID := m.agentBeadID(name)
+	if err := m.beads.ResetAgentBeadForReuse(agentID, "daytona idle polecat reuse"); err != nil {
+		if !errors.Is(err, beads.ErrNotFound) {
+			style.PrintWarning("could not reset agent bead %s: %v", agentID, err)
+		}
+	}
+
+	// Determine workspace name for the agent bead
+	wsName := ""
+	if m.daytonaClient != nil {
+		wsName = m.daytonaClient.WorkspaceName(m.rig.Name, name)
+	}
+
+	// Create or reopen agent bead with hook_bead and workspace label
+	if err = m.createAgentBeadWithRetry(agentID, &beads.AgentFields{
+		RoleType:          "polecat",
+		Rig:               m.rig.Name,
+		AgentState:        "spawning",
+		HookBead:          opts.HookBead,
+		DaytonaWorkspace:  wsName,
+	}); err != nil {
+		return nil, fmt.Errorf("agent bead required for polecat tracking: %w", err)
+	}
+
+	now := time.Now()
+	polecatDir := m.polecatDir(name)
+	return &Polecat{
+		Name:                 name,
+		Rig:                  m.rig.Name,
+		State:                StateWorking,
+		ClonePath:            polecatDir, // no worktree, but keep dir reference
+		Branch:               branchName,
+		DaytonaWorkspaceName: wsName,
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}, nil
 }
 

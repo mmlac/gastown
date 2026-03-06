@@ -120,6 +120,12 @@ type SessionStartOptions struct {
 	// If set, GT_AGENT is written to the tmux session environment table so that
 	// IsAgentAlive and waitForPolecatReady read the correct process names.
 	Agent string
+
+	// Branch is the polecat's feature branch name (e.g., "polecat/opal/gtd-xyz@ts").
+	// For Daytona remote mode, this is passed as GT_REPO_BRANCH so the sandbox
+	// knows which branch to work on — especially important for reused workspaces
+	// where the creation-time GT_REPO_BRANCH is stale.
+	Branch string
 }
 
 // SessionInfo contains information about a running polecat session.
@@ -347,7 +353,8 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 		cancel()
 
 		// Build daytona exec command that runs the agent inside the container.
-		command = m.buildDaytonaCommand(polecat, wsName, beacon, runtimeConfig, runID)
+		// Pass the branch so GT_REPO_BRANCH is set per-session (handles reuse).
+		command = m.buildDaytonaCommand(polecat, wsName, beacon, opts.Branch, runtimeConfig, runID)
 	} else {
 		// --- Local mode ---
 		command = opts.Command
@@ -945,7 +952,7 @@ func (m *SessionManager) verifyStartupNudgeDelivery(sessionID string, rc *config
 // The resulting command string is used as the tmux pane command. The outer shell
 // (tmux's bash) parses it, launching `daytona exec` which tunnels stdin/stdout
 // to the container process.
-func (m *SessionManager) buildDaytonaCommand(polecat, wsName, beacon string, rc *config.RuntimeConfig, runID string) string {
+func (m *SessionManager) buildDaytonaCommand(polecat, wsName, beacon, branch string, rc *config.RuntimeConfig, runID string) string {
 	// Build environment variables for the agent session.
 	// Identity and proxy vars must be passed inline because daytona exec does
 	// not inherit workspace-level env vars.
@@ -972,6 +979,11 @@ func (m *SessionManager) buildDaytonaCommand(polecat, wsName, beacon string, rc 
 	env["GIT_AUTHOR_EMAIL"] = polecat + "@gastown.local"
 	env["GIT_COMMITTER_NAME"] = polecat
 	env["GIT_COMMITTER_EMAIL"] = polecat + "@gastown.local"
+	// Override GT_REPO_BRANCH per-session so reused workspaces get the new branch.
+	// The creation-time env var becomes stale after reuse.
+	if branch != "" {
+		env["GT_REPO_BRANCH"] = branch
+	}
 
 	// Build: daytona exec <ws> --tty -- env K=V ... sh -c '<agent-command>'
 	// We use --tty for proper argument parsing and interactive agent sessions.

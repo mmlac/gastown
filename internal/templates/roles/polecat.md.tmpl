@@ -62,8 +62,13 @@ with either a branch push via `{{ cmd }} done` OR an explicit `bd close` on the 
 
 **Setup your workspace:**
 ```bash
-git clone -b "$GT_REPO_BRANCH" "$GT_REPO_URL" ~/repo
-cd ~/repo
+if [ -d ~/repo ]; then
+  # Reused sandbox — fetch new branch and switch to it
+  cd ~/repo && git fetch origin && git checkout -B "$GT_REPO_BRANCH" "origin/$GT_REPO_BRANCH"
+else
+  # Fresh sandbox — clone and checkout branch
+  git clone -b "$GT_REPO_BRANCH" "$GT_REPO_URL" ~/repo && cd ~/repo
+fi
 ```
 
 - `$GT_REPO_URL` — proxy git URL for the rig's repo
