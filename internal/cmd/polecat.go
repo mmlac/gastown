@@ -1289,11 +1289,12 @@ func nukePolecatFull(polecatName, rigName string, mgr *polecat.Manager, r *rig.R
 	// proceed — --force already means "I accept data loss".
 	if branchToDelete != "" {
 		var pushGit *git.Git
-		// Try worktree first (may still exist), then bare repo fallback
-		if polecatInfo != nil {
-			wtPath := filepath.Join(r.Path, "polecats", polecatName)
-			if _, statErr := os.Stat(wtPath); statErr == nil {
-				pushGit = git.NewGit(wtPath)
+		// Try worktree first (may still exist), then bare repo fallback.
+		// Use ClonePath from the polecat record — the worktree lives at
+		// <rig>/polecats/<name>/<rigName>/, not <rig>/polecats/<name>/.
+		if polecatInfo != nil && polecatInfo.ClonePath != "" {
+			if _, statErr := os.Stat(polecatInfo.ClonePath); statErr == nil {
+				pushGit = git.NewGit(polecatInfo.ClonePath)
 			}
 		}
 		if pushGit == nil {
