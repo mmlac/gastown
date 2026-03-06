@@ -968,6 +968,10 @@ func (m *SessionManager) buildDaytonaCommand(polecat, wsName, beacon string, rc 
 	env["GIT_SSL_CERT"] = certDir + "/client.crt"
 	env["GIT_SSL_KEY"] = certDir + "/client.key"
 	env["GIT_SSL_CAINFO"] = certDir + "/ca.crt"
+	// Git identity for commits inside the sandbox (no global .gitconfig).
+	env["GIT_AUTHOR_EMAIL"] = polecat + "@gastown.local"
+	env["GIT_COMMITTER_NAME"] = polecat
+	env["GIT_COMMITTER_EMAIL"] = polecat + "@gastown.local"
 
 	// Build: daytona exec <ws> --tty -- env K=V ... sh -c '<agent-command>'
 	// We use --tty for proper argument parsing and interactive agent sessions.

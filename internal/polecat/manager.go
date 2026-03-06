@@ -977,15 +977,19 @@ func (m *Manager) runDaytonaPostCreate(ctx context.Context, wsName, name string)
 	certDir := constants.DefaultRemoteCertDir
 
 	stdout, stderr, code, err := m.daytonaClient.Exec(ctx, wsName, map[string]string{
-		"GT_RIG":        m.rig.Name,
-		"GT_POLECAT":    name,
-		"GT_PROXY_URL":  "https://" + proxyAddr,
-		"GT_PROXY_CERT": certDir + "/client.crt",
-		"GT_PROXY_KEY":  certDir + "/client.key",
-		"GT_PROXY_CA":   certDir + "/ca.crt",
-		"GIT_SSL_CERT":  certDir + "/client.crt",
-		"GIT_SSL_KEY":   certDir + "/client.key",
-		"GIT_SSL_CAINFO": certDir + "/ca.crt",
+		"GT_RIG":              m.rig.Name,
+		"GT_POLECAT":          name,
+		"GT_PROXY_URL":        "https://" + proxyAddr,
+		"GT_PROXY_CERT":       certDir + "/client.crt",
+		"GT_PROXY_KEY":        certDir + "/client.key",
+		"GT_PROXY_CA":         certDir + "/ca.crt",
+		"GIT_SSL_CERT":        certDir + "/client.crt",
+		"GIT_SSL_KEY":         certDir + "/client.key",
+		"GIT_SSL_CAINFO":      certDir + "/ca.crt",
+		"GIT_AUTHOR_NAME":     name,
+		"GIT_AUTHOR_EMAIL":    name + "@gastown.local",
+		"GIT_COMMITTER_NAME":  name,
+		"GIT_COMMITTER_EMAIL": name + "@gastown.local",
 	}, "gt", "prime")
 	if code == 127 {
 		return fmt.Errorf("gt not found in sandbox (exit 127): sandbox image is missing gt-proxy-client symlinks")
