@@ -1775,25 +1775,28 @@ func TestWriteFileInWorkspace_UsesDirectData(t *testing.T) {
 	}
 
 	call := runner.calls[0]
-	// Verify --tty is present
-	found := false
-	for _, a := range call.args {
-		if a == "--tty" {
-			found = true
+	// Data and path should be embedded in the sh -c script (shell-quoted),
+	// not base64-encoded. Verify the script contains the data directly.
+	args := call.args
+	script := ""
+	for i, a := range args {
+		if a == "--" && i+3 < len(args) && args[i+1] == "sh" && args[i+2] == "-c" {
+			script = args[i+3]
 			break
 		}
 	}
-	if !found {
-		t.Errorf("expected --tty flag in exec args: %v", call.args)
+	if script == "" {
+		t.Fatalf("could not find sh -c script in exec args: %v", args)
 	}
-
-	// Verify data is passed directly (no base64 encoding)
-	lastArgs := call.args[len(call.args)-2:]
-	if lastArgs[0] != string(data) {
-		t.Errorf("data not passed directly as positional arg: got %q", lastArgs[0])
+	// Script should contain the raw PEM data (shell-quoted), not base64
+	if !strings.Contains(script, "BEGIN CERTIFICATE") {
+		t.Errorf("script should contain raw PEM data, not base64: %s", script)
 	}
-	if lastArgs[1] != "/tmp/cert.pem" {
-		t.Errorf("path not passed as positional arg: got %q", lastArgs[1])
+	if !strings.Contains(script, "/tmp/cert.pem") {
+		t.Errorf("script should contain path: %s", script)
+	}
+	if strings.Contains(script, "$1") || strings.Contains(script, "$2") {
+		t.Errorf("script should not use positional args (daytona flattens args): %s", script)
 	}
 }
 
@@ -1958,8 +1961,7 @@ func TestRemoveDaytonaWorkspace_AutoDelete(t *testing.T) {
 }
 
 // TestWriteFileInWorkspace_NoShellInjection verifies that writeFileInWorkspace
-// passes the path as a positional argument rather than interpolating it into
-// the shell command string, preventing shell injection via crafted paths.
+// shell-quotes the path to prevent shell injection via crafted paths.
 func TestWriteFileInWorkspace_NoShellInjection(t *testing.T) {
 	t.Parallel()
 
@@ -1985,26 +1987,24 @@ func TestWriteFileInWorkspace_NoShellInjection(t *testing.T) {
 	}
 
 	call := runner.calls[0]
-	// Expected args: exec ws-test --tty -- sh -c 'printf ...' _ <data> <path>
-	// The path must appear as a separate argument, NOT inside the shell script string.
 	args := call.args
 	script := ""
 	for i, a := range args {
 		if a == "--" && i+3 < len(args) && args[i+1] == "sh" && args[i+2] == "-c" {
 			script = args[i+3]
-			// Verify the script does NOT contain the malicious path
-			if strings.Contains(script, maliciousPath) {
-				t.Errorf("shell script contains unescaped path (injection vulnerable): %s", script)
-			}
-			// Verify the path is passed as a separate positional arg
-			lastArg := args[len(args)-1]
-			if lastArg != maliciousPath {
-				t.Errorf("path not passed as positional arg: last arg = %q, want %q", lastArg, maliciousPath)
-			}
 			break
 		}
 	}
 	if script == "" {
 		t.Fatalf("could not find sh -c script in exec args: %v", args)
+	}
+	// The malicious path must NOT appear unquoted in the script.
+	// ShellQuote wraps it in single quotes: '/tmp/cert; rm -rf /'
+	if strings.Contains(script, maliciousPath) && !strings.Contains(script, "'"+maliciousPath+"'") {
+		t.Errorf("shell script contains unquoted malicious path (injection vulnerable): %s", script)
+	}
+	// The quoted version should be present.
+	if !strings.Contains(script, "'/tmp/cert; rm -rf /'") {
+		t.Errorf("script should contain shell-quoted path: %s", script)
 	}
 }

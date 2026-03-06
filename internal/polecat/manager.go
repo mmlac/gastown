@@ -1245,16 +1245,17 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 	return p, nil
 }
 
-// writeFileInWorkspace writes data to a file inside a daytona workspace using
-// daytona exec --tty for proper argument parsing. Data is passed as a positional
-// argument ($1) to avoid shell injection; the path is passed as $2.
-// When cwd is non-empty it is passed as --cwd to daytona exec so the command
-// runs in the specified working directory.
+// writeFileInWorkspace writes data to a file inside a daytona workspace.
+// Data and path are shell-escaped and embedded directly in the sh -c script
+// because Daytona exec flattens all args after -- into a single command
+// string (positional args to sh -c are not supported).
+// When cwd is non-empty it is passed as --cwd to daytona exec.
 func (m *Manager) writeFileInWorkspace(ctx context.Context, wsName, path, cwd string, data []byte) error {
-	opts := daytona.ExecOptions{Cwd: cwd, TTY: true}
-	// Pass data and path as positional args ($1, $2) to prevent shell injection.
+	opts := daytona.ExecOptions{Cwd: cwd}
+	// Shell-quote data and path to prevent injection, then embed in script.
 	// printf '%s' preserves the data verbatim (no trailing newline).
-	_, stderr, code, err := m.daytonaClient.ExecWithOptions(ctx, wsName, opts, "sh", "-c", "printf '%s' \"$1\" > \"$2\"", "_", string(data), path)
+	script := fmt.Sprintf("printf '%%s' %s > %s", config.ShellQuote(string(data)), config.ShellQuote(path))
+	_, stderr, code, err := m.daytonaClient.ExecWithOptions(ctx, wsName, opts, "sh", "-c", script)
 	if err != nil {
 		return fmt.Errorf("exec failed: %w", err)
 	}
