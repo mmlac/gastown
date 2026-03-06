@@ -413,7 +413,14 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// Check if branch has commits ahead of origin/default
 		// If not, work may have been pushed directly to main - that's fine, just skip MR
 		originDefault := "origin/" + defaultBranch
-		aheadCount, err := g.CommitsAhead(originDefault, "HEAD")
+		// In Daytona proxy mode, git is pointed at .repo.git (bare repo).
+		// HEAD in a bare repo points to the default branch, NOT the polecat's
+		// branch, so we must compare against the resolved branch name.
+		compareRef := "HEAD"
+		if isDaytonaProxy {
+			compareRef = branch
+		}
+		aheadCount, err := g.CommitsAhead(originDefault, compareRef)
 		if err != nil {
 			// Fallback to local branch comparison if origin not available
 			aheadCount, err = g.CommitsAhead(defaultBranch, branch)
