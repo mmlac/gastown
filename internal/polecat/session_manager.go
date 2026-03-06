@@ -954,11 +954,12 @@ func (m *SessionManager) buildDaytonaCommand(polecat, wsName, beacon string, rc 
 		"GT_RUN": runID,
 	}
 
-	// Build: daytona exec <ws> -- env K=V ... sh -c '<agent-command>'
-	// We use sh -c to handle the agent command with its prompt argument,
-	// which may contain shell special characters (newlines, quotes).
+	// Build: daytona exec <ws> --tty -- env K=V ... sh -c '<agent-command>'
+	// We use --tty for proper argument parsing and interactive agent sessions.
+	// sh -c handles the agent command with its prompt argument, which may
+	// contain shell special characters (newlines, quotes).
 	var parts []string
-	parts = append(parts, "daytona", "exec", wsName, "--")
+	parts = append(parts, "daytona", "exec", wsName, "--tty", "--")
 
 	// Set per-session env vars via inline env command since daytona exec
 	// does not support --env flags.

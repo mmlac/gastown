@@ -1754,14 +1754,46 @@ func TestIsRemoteMode(t *testing.T) {
 	}
 }
 
-func TestBase64Encode(t *testing.T) {
-	input := []byte("-----BEGIN CERTIFICATE-----\nMIIBtest\n-----END CERTIFICATE-----\n")
-	encoded := base64Encode(input)
-	if encoded == "" {
-		t.Error("base64Encode returned empty string")
+func TestWriteFileInWorkspace_UsesDirectData(t *testing.T) {
+	t.Parallel()
+	rigDir := t.TempDir()
+	r := &rig.Rig{Name: "testrig", Path: rigDir}
+	m := NewManager(r, git.NewGit(rigDir), nil)
+
+	runner := &mockRunner{}
+	client := daytona.NewClientWithRunner("gt-test1234", runner)
+	settings := &config.RigSettings{
+		RemoteBackend: &config.RemoteBackend{Provider: "daytona"},
 	}
-	if strings.Contains(encoded, "\n") {
-		t.Error("base64Encode should not contain newlines")
+	m.SetDaytona(client, nil, settings)
+
+	data := []byte("-----BEGIN CERTIFICATE-----\nMIIBtest\n-----END CERTIFICATE-----\n")
+	_ = m.writeFileInWorkspace(context.Background(), "ws-test", "/tmp/cert.pem", "", data)
+
+	if len(runner.calls) == 0 {
+		t.Fatal("expected daytona exec call")
+	}
+
+	call := runner.calls[0]
+	// Verify --tty is present
+	found := false
+	for _, a := range call.args {
+		if a == "--tty" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected --tty flag in exec args: %v", call.args)
+	}
+
+	// Verify data is passed directly (no base64 encoding)
+	lastArgs := call.args[len(call.args)-2:]
+	if lastArgs[0] != string(data) {
+		t.Errorf("data not passed directly as positional arg: got %q", lastArgs[0])
+	}
+	if lastArgs[1] != "/tmp/cert.pem" {
+		t.Errorf("path not passed as positional arg: got %q", lastArgs[1])
 	}
 }
 
@@ -1953,7 +1985,7 @@ func TestWriteFileInWorkspace_NoShellInjection(t *testing.T) {
 	}
 
 	call := runner.calls[0]
-	// Expected args: exec ws-test -- sh -c 'echo "$1" | base64 -d > "$2"' _ <base64> <path>
+	// Expected args: exec ws-test --tty -- sh -c 'printf ...' _ <data> <path>
 	// The path must appear as a separate argument, NOT inside the shell script string.
 	args := call.args
 	script := ""

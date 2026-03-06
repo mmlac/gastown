@@ -508,6 +508,10 @@ type ExecOptions struct {
 
 	// Cwd sets the working directory for the command via --cwd.
 	Cwd string
+
+	// TTY allocates a pseudo-terminal for the exec session via --tty.
+	// Use for interactive commands or when proper argument parsing is needed.
+	TTY bool
 }
 
 // Exec runs a command inside a workspace and returns stdout, stderr, and exit code.
@@ -524,6 +528,9 @@ func (c *Client) Exec(ctx context.Context, name string, env map[string]string, c
 // configuration such as --cwd.
 func (c *Client) ExecWithOptions(ctx context.Context, name string, opts ExecOptions, cmd ...string) (string, string, int, error) {
 	args := []string{"exec", name}
+	if opts.TTY {
+		args = append(args, "--tty")
+	}
 	if opts.Cwd != "" {
 		args = append(args, "--cwd", opts.Cwd)
 	}

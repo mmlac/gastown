@@ -574,9 +574,12 @@ func TestBuildDaytonaCommand(t *testing.T) {
 
 	cmd := m.buildDaytonaCommand("onyx", wsName, beacon, rc, runID)
 
-	// Verify the command starts with daytona exec
+	// Verify the command starts with daytona exec and includes --tty
 	if !strings.HasPrefix(cmd, "daytona exec "+wsName) {
 		t.Errorf("command should start with 'daytona exec %s', got: %s", wsName, cmd)
+	}
+	if !strings.Contains(cmd, "--tty") {
+		t.Errorf("command missing --tty flag\ncmd: %s", cmd)
 	}
 
 	// Per-session env vars are passed via inline env prefix (not --env).
@@ -593,7 +596,7 @@ func TestBuildDaytonaCommand(t *testing.T) {
 		}
 	}
 
-	// Verify the command contains -- env ... sh -c with the agent command
+	// Verify the command contains --tty -- env ... sh -c with the agent command
 	if !strings.Contains(cmd, "-- env") {
 		t.Errorf("command missing '-- env' prefix\ncmd: %s", cmd)
 	}

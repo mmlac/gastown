@@ -5,7 +5,6 @@ package polecat
 import (
 	"context"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -1247,18 +1246,15 @@ func (m *Manager) addDaytona(name string, opts AddOptions, polecatDir string, po
 }
 
 // writeFileInWorkspace writes data to a file inside a daytona workspace using
-// a base64-encoded shell command (since daytona exec doesn't support stdin piping).
+// daytona exec --tty for proper argument parsing. Data is passed as a positional
+// argument ($1) to avoid shell injection; the path is passed as $2.
 // When cwd is non-empty it is passed as --cwd to daytona exec so the command
 // runs in the specified working directory.
 func (m *Manager) writeFileInWorkspace(ctx context.Context, wsName, path, cwd string, data []byte) error {
-	// Base64 encode to avoid shell escaping issues with binary/PEM data.
-	// Pass encoded data and path as positional args ($1, $2) to avoid shell injection.
-	encoded := base64Encode(data)
-	opts := daytona.ExecOptions{Cwd: cwd}
-	// NOTE: Daytona's toolbox API splits command arguments on spaces, breaking
-	// sh -c scripts that contain spaces. Use tabs as word separators instead —
-	// the shell treats tabs as whitespace but Daytona does not split on them.
-	_, stderr, code, err := m.daytonaClient.ExecWithOptions(ctx, wsName, opts, "sh", "-c", "echo\t\"$1\"\t|\tbase64\t-d\t>\t\"$2\"", "_", encoded, path)
+	opts := daytona.ExecOptions{Cwd: cwd, TTY: true}
+	// Pass data and path as positional args ($1, $2) to prevent shell injection.
+	// printf '%s' preserves the data verbatim (no trailing newline).
+	_, stderr, code, err := m.daytonaClient.ExecWithOptions(ctx, wsName, opts, "sh", "-c", "printf '%s' \"$1\" > \"$2\"", "_", string(data), path)
 	if err != nil {
 		return fmt.Errorf("exec failed: %w", err)
 	}
@@ -1266,11 +1262,6 @@ func (m *Manager) writeFileInWorkspace(ctx context.Context, wsName, path, cwd st
 		return fmt.Errorf("exit %d: %s", code, strings.TrimSpace(stderr))
 	}
 	return nil
-}
-
-// base64Encode returns the standard base64 encoding of data (no newlines).
-func base64Encode(data []byte) string {
-	return base64.StdEncoding.EncodeToString(data)
 }
 
 // AddWithOptions creates a new polecat with the specified options.

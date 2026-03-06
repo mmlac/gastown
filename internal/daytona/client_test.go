@@ -564,6 +564,31 @@ func TestExecWithOptionsCwdAndEnv(t *testing.T) {
 	}
 }
 
+func TestExecWithOptionsTTY(t *testing.T) {
+	mock := &mockRunner{
+		defaultResponse: mockResponse{
+			stdout:   "ok\n",
+			exitCode: 0,
+		},
+	}
+	c := NewClientWithRunner("gt-abc12345", mock)
+
+	_, _, _, err := c.ExecWithOptions(context.Background(), "ws-name",
+		ExecOptions{TTY: true, Cwd: "/workdir"},
+		"sh", "-c", "echo test",
+	)
+	if err != nil {
+		t.Fatalf("ExecWithOptions() error = %v", err)
+	}
+
+	call := mock.calls[0]
+	args := strings.Join(call.Args, " ")
+	// --tty must come before --cwd and --
+	if !strings.Contains(args, "exec ws-name --tty --cwd /workdir --") {
+		t.Errorf("args missing '--tty' or wrong order: %s", args)
+	}
+}
+
 func TestExecNonZeroExit(t *testing.T) {
 	mock := &mockRunner{
 		defaultResponse: mockResponse{
