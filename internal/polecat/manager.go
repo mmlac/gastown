@@ -919,25 +919,48 @@ func (m *Manager) injectCertsIntoWorkspace(ctx context.Context, wsName string, c
 	return nil
 }
 
-// injectClaudeCredentials copies the local Claude credentials file into the
-// workspace so the agent can authenticate with Claude Max. Best-effort.
+// injectClaudeCredentials copies essential Claude Code files into the workspace:
+//   - ~/.claude/.credentials.json — OAuth tokens for authentication
+//   - ~/.claude/settings.json — skip dangerous-mode permission prompt
+//   - ~/.claude.json — onboarding state (hasCompletedOnboarding flag); without
+//     this file, Claude Code shows the interactive login screen even when
+//     credentials exist, blocking headless agent sessions.
 func (m *Manager) injectClaudeCredentials(ctx context.Context, wsName string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("getting home dir: %w", err)
 	}
-	credPath := filepath.Join(home, ".claude", ".credentials.json")
-	credData, err := os.ReadFile(credPath) //nolint:gosec // G304: path is constructed from home dir
-	if err != nil {
-		return fmt.Errorf("reading credentials: %w", err)
-	}
-	// Create .claude dir in workspace
+
+	// Create .claude dir in workspace.
 	if _, _, code, err := m.daytonaClient.Exec(ctx, wsName, nil, "mkdir", "-p", "/home/daytona/.claude"); err != nil || code != 0 {
 		return fmt.Errorf("creating .claude dir: exit=%d err=%v", code, err)
 	}
-	// Write credentials file
+
+	// Inject essential files. Credentials are required; others are best-effort.
+	credData, err := os.ReadFile(filepath.Join(home, ".claude", ".credentials.json")) //nolint:gosec // G304
+	if err != nil {
+		return fmt.Errorf("reading credentials: %w", err)
+	}
 	if err := m.writeFileInWorkspace(ctx, wsName, "/home/daytona/.claude/.credentials.json", "/home/daytona/.claude", credData); err != nil {
 		return fmt.Errorf("writing credentials: %w", err)
+	}
+
+	// Best-effort: settings.json, .claude.json (onboarding state).
+	for _, f := range []struct {
+		src string
+		dst string
+		cwd string
+	}{
+		{filepath.Join(home, ".claude", "settings.json"), "/home/daytona/.claude/settings.json", "/home/daytona/.claude"},
+		{filepath.Join(home, ".claude.json"), "/home/daytona/.claude.json", "/home/daytona"},
+	} {
+		data, readErr := os.ReadFile(f.src) //nolint:gosec // G304
+		if readErr != nil {
+			continue // File doesn't exist on host — skip.
+		}
+		if writeErr := m.writeFileInWorkspace(ctx, wsName, f.dst, f.cwd, data); writeErr != nil {
+			fmt.Fprintf(os.Stderr, "[daytona] warning: failed to inject %s: %v\n", f.dst, writeErr)
+		}
 	}
 	return nil
 }
@@ -967,6 +990,7 @@ func (m *Manager) runDaytonaPostCreate(ctx context.Context, wsName, name string)
 	if err != nil || code != 0 {
 		return fmt.Errorf("post-create gt prime failed (exit=%d): %v stdout=%s stderr=%s", code, err, stdout, stderr)
 	}
+
 	return nil
 }
 
