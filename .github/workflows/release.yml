@@ -32,6 +32,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-mingw-w64-x86-64 gcc-aarch64-linux-gnu
 
+      - name: Reject replace directives in go.mod
+        run: |
+          if grep -qE '^replace\s' go.mod; then
+            echo "ERROR: go.mod contains replace directives — aborting release."
+            echo "Replace directives break 'go install ...@latest'."
+            echo "See: https://github.com/steveyegge/gastown/issues/2230"
+            grep -n '^replace' go.mod
+            exit 1
+          fi
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7
         with:
