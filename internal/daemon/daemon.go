@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -17,12 +16,10 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	"github.com/google/uuid"
 	beadsdk "github.com/steveyegge/beads"
 	"gopkg.in/natefinch/lumberjack.v2"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/boot"
-	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/deacon"
 	"github.com/steveyegge/gastown/internal/doltserver"
@@ -981,9 +978,9 @@ func (d *Daemon) checkDeaconHeartbeat() {
 				return
 			}
 			// Grace period expired without any heartbeat - Deacon failed to start
-			d.logger.Printf("Deacon started %s ago but hasn't written heartbeat - restarting",
-				timeSinceStart.Round(time.Minute))
-			d.restartStuckDeacon(sessionName)
+			// Detection only: stuck-agent-dog plugin handles context-aware restart
+			d.logger.Printf("STUCK DEACON: started %s ago but hasn't written heartbeat (session: %s)",
+				timeSinceStart.Round(time.Minute), sessionName)
 			return
 		}
 
@@ -996,9 +993,9 @@ func (d *Daemon) checkDeaconHeartbeat() {
 				return
 			}
 			// Grace period expired but heartbeat still from before start
-			d.logger.Printf("Deacon started %s ago but heartbeat still pre-restart - Deacon stuck at startup",
-				timeSinceStart.Round(time.Minute))
-			d.restartStuckDeacon(sessionName)
+			// Detection only: stuck-agent-dog plugin handles context-aware restart
+			d.logger.Printf("STUCK DEACON: started %s ago but heartbeat still pre-restart (session: %s)",
+				timeSinceStart.Round(time.Minute), sessionName)
 			return
 		}
 
@@ -1038,7 +1035,8 @@ func (d *Daemon) checkDeaconHeartbeat() {
 	// PATCH-002: Reduced from 30m to 10m for faster recovery.
 	// Must be > backoff-max (5m) to avoid false positive kills during legitimate sleep.
 	if age > 10*time.Minute {
-		d.restartStuckDeacon(sessionName)
+		// Detection only: stuck-agent-dog plugin handles context-aware restart
+		d.logger.Printf("STUCK DEACON: heartbeat stale for %s, session %s needs restart", age.Round(time.Minute), sessionName)
 	} else {
 		// Stuck but not critically - nudge to wake up
 		d.logger.Printf("Deacon stuck for %s - nudging session", age.Round(time.Minute))
@@ -1048,20 +1046,6 @@ func (d *Daemon) checkDeaconHeartbeat() {
 	}
 }
 
-// restartStuckDeacon kills and restarts a stuck Deacon session.
-// Extracted for reuse by PATCH-005 grace period logic.
-func (d *Daemon) restartStuckDeacon(sessionName string) {
-	// Check if session exists before trying to kill
-	hasSession, _ := d.tmux.HasSession(sessionName)
-	if hasSession {
-		d.logger.Printf("Killing stuck Deacon session %s", sessionName)
-		if err := d.tmux.KillSessionWithProcesses(sessionName); err != nil {
-			d.logger.Printf("Error killing stuck Deacon: %v", err)
-		}
-	}
-	// Spawn new Deacon immediately
-	d.ensureDeaconRunning()
-}
 
 // ensureWitnessesRunning ensures witnesses are running for configured rigs.
 // Called on each heartbeat to maintain witness patrol loops.
@@ -1940,16 +1924,8 @@ func (d *Daemon) checkPolecatHealth(rigName, polecatName string) {
 	_ = events.LogFeed(events.TypeSessionDeath, sessionName,
 		events.SessionDeathPayload(sessionName, rigName+"/polecats/"+polecatName, "crash detected by daemon health check", "daemon"))
 
-	// Auto-restart the polecat
-	restartErr := d.restartPolecatSession(rigName, polecatName, sessionName)
-	if restartErr != nil {
-		d.logger.Printf("Error restarting polecat %s/%s: %v", rigName, polecatName, restartErr)
-	} else {
-		d.logger.Printf("Successfully restarted crashed polecat %s/%s", rigName, polecatName)
-	}
-
-	// Always notify witness of crash (with restart outcome)
-	d.notifyWitnessOfCrashedPolecat(rigName, polecatName, info.HookBead, restartErr)
+	// Notify witness — stuck-agent-dog plugin handles context-aware restart
+	d.notifyWitnessOfCrashedPolecat(rigName, polecatName, info.HookBead)
 }
 
 // recordSessionDeath records a session death and checks for mass death pattern.
@@ -2002,132 +1978,17 @@ func (d *Daemon) emitMassDeathEvent() {
 	d.recentDeaths = nil
 }
 
-// restartPolecatSession restarts a crashed polecat session.
-func (d *Daemon) restartPolecatSession(rigName, polecatName, sessionName string) error {
-	// Check rig operational state before auto-restarting
-	if operational, reason := d.isRigOperational(rigName); !operational {
-		return fmt.Errorf("cannot restart polecat: %s", reason)
-	}
-
-	// Calculate rig path for agent config resolution
-	rigPath := filepath.Join(d.config.TownRoot, rigName)
-
-	// Determine working directory (handle both new and old structures)
-	// New structure: polecats/<name>/<rigname>/
-	// Old structure: polecats/<name>/
-	workDir := filepath.Join(rigPath, "polecats", polecatName, rigName)
-	if _, err := os.Stat(workDir); os.IsNotExist(err) {
-		// Fall back to old structure
-		workDir = filepath.Join(rigPath, "polecats", polecatName)
-	}
-
-	// Verify the worktree exists
-	if _, err := os.Stat(workDir); os.IsNotExist(err) {
-		return fmt.Errorf("polecat worktree does not exist: %s", workDir)
-	}
-
-	// Pre-sync workspace (ensure beads are current)
-	d.syncWorkspace(workDir)
-
-	// Generate a fresh run ID for this restart so all telemetry from the
-	// crash-restarted session is correlated under a new GASTA root span.
-	runID := uuid.New().String()
-
-	// Build startup command BEFORE creating the session so we can use
-	// NewSessionWithCommand (command as initial pane process). This eliminates
-	// the race condition in the old EnsureSessionFresh + SendKeys pattern where
-	// the shell might not be ready to receive keystrokes, producing empty windows.
-	envVars := config.AgentEnv(config.AgentEnvConfig{
-		Role:        "polecat",
-		Rig:         rigName,
-		AgentName:   polecatName,
-		TownRoot:    d.config.TownRoot,
-		SessionName: sessionName,
-	})
-	// Inject GT_RUN into envVars before BuildStartupCommand so the startup
-	// command includes it (exec env …) and the loop below propagates it to
-	// the tmux session environment.
-	envVars["GT_RUN"] = runID
-	rc := config.ResolveRoleAgentConfig("polecat", d.config.TownRoot, rigPath)
-	startCmd := config.BuildStartupCommand(envVars, rigPath, "")
-
-	// Create session with command as initial process (replaces EnsureSessionFresh + SendKeys).
-	// EnsureSessionFreshWithCommand kills zombie sessions and creates a new one atomically.
-	if err := d.tmux.EnsureSessionFreshWithCommand(sessionName, workDir, startCmd); err != nil {
-		if errors.Is(err, tmux.ErrSessionRunning) {
-			d.logger.Printf("Session %s already running with healthy agent, skipping restart", sessionName)
-			return nil
-		}
-		return fmt.Errorf("creating session: %w", err)
-	}
-
-	// Record polecat spawn metric.
-	d.metrics.recordPolecatSpawn(d.ctx, rigName)
-
-	// Set environment variables in tmux session table (for debugging/monitoring tools).
-	// The process itself gets env vars via 'exec env ...' in the startup command.
-	for k, v := range envVars {
-		_ = d.tmux.SetEnvironment(sessionName, k, v)
-	}
-
-	// Set GT_AGENT in tmux session env so tools querying tmux environment
-	// (e.g., witness patrol) can detect non-Claude agents.
-	// BuildStartupCommand sets GT_AGENT in process env via exec env, but that
-	// isn't visible to tmux show-environment.
-	if rc.ResolvedAgent != "" {
-		_ = d.tmux.SetEnvironment(sessionName, "GT_AGENT", rc.ResolvedAgent)
-	}
-
-	// Set GT_PROCESS_NAMES for accurate liveness detection of custom agents.
-	processNames := config.ResolveProcessNames(rc.ResolvedAgent, rc.Command)
-	_ = d.tmux.SetEnvironment(sessionName, "GT_PROCESS_NAMES", strings.Join(processNames, ","))
-
-	// Record agent's pane_id for ZFC-compliant liveness checks (gt-qmsx).
-	if paneID, err := d.tmux.GetPaneID(sessionName); err == nil {
-		_ = d.tmux.SetEnvironment(sessionName, "GT_PANE_ID", paneID)
-	}
-
-	// Apply theme
-	theme := tmux.AssignTheme(rigName)
-	_ = d.tmux.ConfigureGasTownSession(sessionName, theme, rigName, polecatName, "polecat")
-
-	// Set pane-died hook for future crash detection
-	agentID := fmt.Sprintf("%s/%s", rigName, polecatName)
-	_ = d.tmux.SetPaneDiedHook(sessionName, agentID)
-
-	// Wait for Claude to start, then accept startup dialogs if they appear.
-	if err := d.tmux.WaitForCommand(sessionName, constants.SupportedShells, constants.ClaudeStartTimeout); err != nil {
-		// Non-fatal - Claude might still start
-	}
-	_ = d.tmux.AcceptStartupDialogs(sessionName)
-
-	return nil
-}
-
 // notifyWitnessOfCrashedPolecat notifies the witness when a polecat crash is detected.
-// If restartErr is nil, the notification is informational (restart succeeded).
-// If restartErr is non-nil, the notification indicates manual intervention may be needed.
-func (d *Daemon) notifyWitnessOfCrashedPolecat(rigName, polecatName, hookBead string, restartErr error) {
+// The stuck-agent-dog plugin handles context-aware restart decisions.
+func (d *Daemon) notifyWitnessOfCrashedPolecat(rigName, polecatName, hookBead string) {
 	witnessAddr := rigName + "/witness"
-	var subject, body string
-	if restartErr == nil {
-		subject = fmt.Sprintf("CRASHED_POLECAT: %s/%s restarted", rigName, polecatName)
-		body = fmt.Sprintf(`Polecat %s crashed and was automatically restarted.
+	subject := fmt.Sprintf("CRASHED_POLECAT: %s/%s detected", rigName, polecatName)
+	body := fmt.Sprintf(`Polecat %s crash detected (session dead, work on hook).
 
 hook_bead: %s
 
-No action required.`,
-			polecatName, hookBead)
-	} else {
-		subject = fmt.Sprintf("CRASHED_POLECAT: %s/%s restart failed", rigName, polecatName)
-		body = fmt.Sprintf(`Polecat %s crashed and automatic restart failed.
-
-hook_bead: %s
-restart_error: %v
-
-Manual intervention may be required.`,
-			polecatName, hookBead, restartErr)
-	}
+Restart deferred to stuck-agent-dog plugin for context-aware recovery.`,
+		polecatName, hookBead)
 
 	cmd := exec.Command(d.gtPath, "mail", "send", witnessAddr, "-s", subject, "-m", body) //nolint:gosec // G204: args are constructed internally
 	cmd.Dir = d.config.TownRoot
