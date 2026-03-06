@@ -676,7 +676,14 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 
 		// Initialize beads — warn if resolved to a local .beads/ (no redirect).
 		// Without a redirect, MR beads are invisible to the Refinery.
-		resolvedBeads := beads.ResolveBeadsDir(cwd)
+		// In Daytona proxy mode, cwd is the town root (not the polecat worktree),
+		// so resolve from the rig path to ensure MR beads land in the rig's
+		// beads directory where the Refinery can find them.
+		beadsCwd := cwd
+		if isDaytonaProxy {
+			beadsCwd = filepath.Join(townRoot, rigName)
+		}
+		resolvedBeads := beads.ResolveBeadsDir(beadsCwd)
 		if beads.IsLocalBeadsDir(cwd, resolvedBeads) {
 			fmt.Fprintf(os.Stderr, "WARNING: beads resolved to local dir %s (no shared-beads redirect)\n", resolvedBeads)
 			fmt.Fprintf(os.Stderr, "  MR beads written here will be invisible to the Refinery — run 'gt polecat repair' to fix\n")
