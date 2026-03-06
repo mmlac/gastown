@@ -373,10 +373,10 @@ func runHook(_ *cobra.Command, args []string) error {
 	const hookBackoffMax = 10 * time.Second
 	var lastHookErr error
 	for attempt := 1; attempt <= hookMaxRetries; attempt++ {
-		hookBdCmd := exec.Command("bd", "update", beadID, "--status=hooked", "--assignee="+agentID)
-		hookBdCmd.Dir = townRoot
-		hookBdCmd.Stderr = os.Stderr
-		if err := hookBdCmd.Run(); err != nil {
+		if err := BdCmd("update", beadID, "--status=hooked", "--assignee="+agentID).
+			Dir(townRoot).
+			WithAutoCommit().
+			Run(); err != nil {
 			lastHookErr = err
 			if attempt < hookMaxRetries {
 				backoff := slingBackoff(attempt, hookBaseBackoff, hookBackoffMax)
