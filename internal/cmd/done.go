@@ -103,6 +103,12 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	// No deferred session kill — the polecat transitions to IDLE with sandbox
 	// preserved. The Witness handles any cleanup if the polecat gets stuck.
 
+	// Detect Daytona/proxy mode: when gt done is called from inside a Daytona
+	// sandbox, it's proxied to the host. The git repo is in the sandbox, not on
+	// the host. We use the bare .repo.git on the host for branch resolution
+	// and skip worktree-specific checks (uncommitted changes, etc.).
+	isDaytonaProxy := os.Getenv("GT_PROXY_IDENTITY") != ""
+
 	// Find workspace with fallback for deleted worktrees (hq-3xaxy)
 	// If the polecat's worktree was deleted by Witness before gt done finishes,
 	// getcwd will fail. We fall back to GT_TOWN_ROOT env var in that case.
@@ -150,7 +156,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	// - The mayor rig path (Claude Code Bash tool CWD reset)
 	// - Any non-polecat path within the rig
 	cwdIsPolecatWorktree := strings.Contains(cwd, "/polecats/")
-	if cwdAvailable && !cwdIsPolecatWorktree {
+	if cwdAvailable && !cwdIsPolecatWorktree && !isDaytonaProxy {
 		if polecatName := os.Getenv("GT_POLECAT"); polecatName != "" && rigName != "" {
 			polecatClone := filepath.Join(townRoot, rigName, "polecats", polecatName, rigName)
 			if _, err := os.Stat(polecatClone); err == nil {
@@ -188,9 +194,13 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		}
 	}
 
-	// Initialize git - use cwd if available, otherwise use rig's mayor clone
+	// Initialize git — for Daytona proxy mode, use the bare .repo.git on the
+	// host since the worktree is inside the sandbox and not accessible here.
 	var g *git.Git
-	if cwdAvailable {
+	if isDaytonaProxy {
+		repoGit := filepath.Join(townRoot, rigName, ".repo.git")
+		g = git.NewGit(repoGit)
+	} else if cwdAvailable {
 		g = git.NewGit(cwd)
 	} else {
 		// Fallback: use the rig's mayor clone for git operations
@@ -198,9 +208,26 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		g = git.NewGit(mayorClone)
 	}
 
-	// Get current branch - try env var first if cwd is gone
+	// Get current branch.
+	// Daytona proxy mode: resolve from agent bead metadata since we can't
+	// query the sandbox's git checkout. The branch was pushed to .repo.git.
 	var branch string
-	if !cwdAvailable {
+	if isDaytonaProxy {
+		// Try GT_BRANCH first, then fall back to polecat name pattern.
+		branch = os.Getenv("GT_BRANCH")
+		if branch == "" {
+			if polecatName := os.Getenv("GT_POLECAT"); polecatName != "" {
+				// Search .repo.git for a matching polecat branch.
+				branches, _ := g.ListBranches("polecat/" + polecatName)
+				if len(branches) > 0 {
+					branch = branches[0]
+				} else {
+					branch = fmt.Sprintf("polecat/%s", polecatName)
+					style.PrintWarning("could not find branch for polecat %s in .repo.git, using fallback: %s", polecatName, branch)
+				}
+			}
+		}
+	} else if !cwdAvailable {
 		// Try to get branch from GT_BRANCH env var (set by session manager)
 		branch = os.Getenv("GT_BRANCH")
 	}
@@ -229,6 +256,10 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 
 	// Auto-detect cleanup status if not explicitly provided
 	// This prevents premature polecat cleanup by ensuring witness knows git state
+	if doneCleanupStatus == "" && isDaytonaProxy {
+		// Daytona proxy: sandbox handles cleanup; branch was already pushed.
+		doneCleanupStatus = "clean"
+	}
 	if doneCleanupStatus == "" {
 		if !cwdAvailable {
 			// Can't detect git state without working directory, default to unknown
@@ -354,19 +385,29 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// 1. Working directory availability (can't verify git state without it)
 		// 2. Uncommitted changes (work that would be lost)
 		// 3. Unique commits compared to origin (ensures branch was pushed with actual work)
+		//
+		// In Daytona proxy mode, the worktree is inside the sandbox and not
+		// accessible from the host. The polecat already committed and pushed
+		// its branch, so we skip worktree-level checks and only verify the
+		// branch exists in .repo.git with commits ahead of the default branch.
+		if isDaytonaProxy {
+			doneCleanupStatus = "clean" // sandbox handles its own cleanup
+		}
 
 		// Block if working directory not available - can't verify git state
-		if !cwdAvailable {
+		if !isDaytonaProxy && !cwdAvailable {
 			return fmt.Errorf("cannot complete: working directory not available (worktree deleted?)\nUse --status DEFERRED to exit without completing")
 		}
 
 		// Block if there are uncommitted changes (would be lost on completion)
-		workStatus, err := g.CheckUncommittedWork()
-		if err != nil {
-			return fmt.Errorf("checking git status: %w", err)
-		}
-		if workStatus.HasUncommittedChanges {
-			return fmt.Errorf("cannot complete: uncommitted changes would be lost\nCommit your changes first, or use --status DEFERRED to exit without completing\nUncommitted: %s", workStatus.String())
+		if !isDaytonaProxy {
+			workStatus, err := g.CheckUncommittedWork()
+			if err != nil {
+				return fmt.Errorf("checking git status: %w", err)
+			}
+			if workStatus.HasUncommittedChanges {
+				return fmt.Errorf("cannot complete: uncommitted changes would be lost\nCommit your changes first, or use --status DEFERRED to exit without completing\nUncommitted: %s", workStatus.String())
+			}
 		}
 
 		// Check if branch has commits ahead of origin/default
