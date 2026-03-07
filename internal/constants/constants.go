@@ -125,8 +125,13 @@ const (
 	// DaytonaCreateTimeout is the timeout for creating a daytona workspace.
 	DaytonaCreateTimeout = 120 * time.Second
 
-	// DaytonaListTimeout is the timeout for listing or reconciling daytona workspaces.
+	// DaytonaListTimeout is the timeout for listing daytona workspaces.
 	DaytonaListTimeout = 30 * time.Second
+
+	// DaytonaReconcileTimeout is the overall timeout for reconciliation operations
+	// (stop, archive, delete). Uses a separate context from listing so that a slow
+	// list call doesn't starve reconcile operations of their time budget.
+	DaytonaReconcileTimeout = 120 * time.Second
 
 	// DaytonaStopTimeout is the timeout for stopping or deleting a daytona workspace.
 	// These operations are heavier than list and need more time under load.

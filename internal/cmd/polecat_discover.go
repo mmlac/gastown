@@ -138,11 +138,13 @@ func runPolecatDiscover(cmd *cobra.Command, args []string) error {
 
 	// Create daytona client and discover workspaces
 	client := daytona.NewClient(installPrefix)
-	ctx, cancel := context.WithTimeout(context.Background(), constants.DaytonaListTimeout)
-	defer cancel()
+
+	// Use a dedicated context for listing — short timeout since it's a read-only call.
+	listCtx, listCancel := context.WithTimeout(context.Background(), constants.DaytonaListTimeout)
+	defer listCancel()
 
 	// List all owned workspaces from daytona
-	workspaces, err := client.ListOwned(ctx)
+	workspaces, err := client.ListOwned(listCtx)
 	if err != nil {
 		return fmt.Errorf("listing daytona workspaces: %w", err)
 	}
@@ -162,6 +164,7 @@ func runPolecatDiscover(cmd *cobra.Command, args []string) error {
 	}
 
 	// Reconcile if requested — delegate to daytona.Reconcile
+	// Use a separate context so listing time doesn't eat into the reconcile budget.
 	if polecatDiscoverReconcile {
 		result.Reconciled = true
 		result.DryRun = polecatDiscoverDryRun
@@ -177,7 +180,10 @@ func runPolecatDiscover(cmd *cobra.Command, args []string) error {
 		opts := daytona.ReconcileOptions{DryRun: polecatDiscoverDryRun}
 		logger := log.New(io.Discard, "", 0)
 
-		reconcileResult := daytona.Reconcile(ctx, client, report, opts, beadResetter, nil, logger)
+		reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), constants.DaytonaReconcileTimeout)
+		defer reconcileCancel()
+
+		reconcileResult := daytona.Reconcile(reconcileCtx, client, report, opts, beadResetter, nil, logger)
 		result.ReconcileActions = buildReconcileActions(report, reconcileResult, polecatDiscoverDryRun)
 	}
 
