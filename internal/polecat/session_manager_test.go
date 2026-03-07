@@ -826,7 +826,7 @@ func TestStopDaytonaWorkspaceOnStop_AutoStopTrue(t *testing.T) {
 	if call.Name != "daytona" {
 		t.Errorf("expected command 'daytona', got %q", call.Name)
 	}
-	wantArgs := []string{"stop", "gt-test1234-testrig--onyx", "--yes"}
+	wantArgs := []string{"stop", "gt-test1234-testrig--onyx"}
 	if strings.Join(call.Args, " ") != strings.Join(wantArgs, " ") {
 		t.Errorf("args = %v, want %v", call.Args, wantArgs)
 	}
