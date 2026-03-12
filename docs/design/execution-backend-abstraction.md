@@ -1,8 +1,9 @@
 # Execution Backend Abstraction Layer
 
-> Design document for pluggable execution backends in Gas Town.
-> Replaces the hardcoded tmux dependency with an interface-based architecture
-> that supports local (tmux), remote (Daytona), and future backends.
+> Design document for pluggable remote execution in Gas Town.
+> tmux remains the universal session multiplexer. The exec-wrapper plugin
+> system (PR #2689) provides the injection point for remote backends like
+> Daytona. This replaces the earlier proposal to abstract tmux away entirely.
 
 ## Motivation
 
@@ -10,22 +11,54 @@ Gas Town currently has tmux hardcoded throughout session management, dispatch,
 and patrol systems. The Daytona integration (PR #2594, `feat/daytona-polecats`)
 demonstrated that remote execution is viable — the engineering produced a
 complete mTLS proxy, reconciliation state machine, and lifecycle manager across
-~6,600 lines — but the integration threads through ~20 internal packages because
-there is no execution backend abstraction.
+~6,600 lines — but the integration threads through ~20 internal packages with
+`isRemoteMode()` conditionals because there was no clean injection point.
 
-The reviewer feedback identified three missing abstractions:
+The reviewer feedback identified three missing abstractions. The original design
+proposed replacing tmux with an `ExecutionBackend` interface. However, examining
+the actual Daytona code reveals that **tmux is already the session multiplexer
+for remote mode** — `buildDaytonaCommand()` produces a `daytona exec` string
+that runs as the tmux pane command. The Daytona branch doesn't replace tmux; it
+wraps the agent command that tmux executes.
 
-1. **ExecutionBackend interface** on SessionManager (tmux becomes one impl)
-2. **DispatchTarget interface** in the sling system
-3. **Pluggable patrol registry** in the daemon
+This insight, combined with the exec-wrapper plugin type landed in PR #2689,
+yields a simpler architecture:
 
-This document specifies all three interfaces and the migration path to implement
-them, informed by the existing Daytona code.
+1. **tmux stays** as the universal session backend — no `ExecutionBackend` interface
+2. **Exec-wrapper plugins** inject remote execution (Daytona, SSH, etc.) between
+   env vars and the agent binary in the tmux pane command
+3. **Sandbox lifecycle hooks** on exec-wrapper plugins handle workspace
+   create/start/stop/destroy around session lifecycle
+4. **DispatchTarget interface** still cleans up the sling system (unchanged)
+5. **PatrolRegistry** still cleans up the daemon (unchanged)
+
+### Why this is better than the original design
+
+The original `ExecutionBackend` interface required reimplementing 11 methods
+(`HasSession`, `CreateSession`, `KillSession`, `SetEnv`, `GetEnv`, `SendKeys`,
+`CaptureOutput`, `CheckHealth`, `WaitReady`, `Attach`, `ListSessions`) for
+every backend. But for Daytona, the answers are:
+
+- `HasSession` → tmux `has-session` (the tmux session wrapping `daytona exec`)
+- `KillSession` → tmux `kill-session` (kills the `daytona exec` process)
+- `SetEnv` / `GetEnv` → tmux `set-environment` / `show-environment`
+- `SendKeys` → tmux `send-keys` (stdin forwarded through `daytona exec --tty`)
+- `CaptureOutput` → tmux `capture-pane` (stdout comes back through tty)
+- `CheckHealth` → tmux pane process check (is `daytona` alive?)
+- `Attach` → tmux `attach-session` (terminal attaches to the `daytona exec` pane)
+- `ListSessions` → tmux `list-sessions`
+
+Every single method delegates to tmux. The "DaytonaBackend" would be a thin
+wrapper that calls tmux for 10 of 11 methods and only differs in `CreateSession`
+(where it prepends `daytona exec` to the command). That's not an interface —
+that's a command prefix. Which is exactly what exec-wrapper already is.
+
+---
 
 ## Inventory: What the Daytona Branch Built
 
-Before designing abstractions, here is what exists in `feat/daytona-polecats`
-and should inform the new architecture:
+Before designing the integration, here is what exists in `feat/daytona-polecats`
+and must be preserved:
 
 ### internal/daytona/ — Client, Reconciliation, Retry
 
@@ -84,152 +117,481 @@ Go SDK, claude-code, and gt-proxy-client. Non-root user (uid 1000).
 
 ---
 
-## Interface 1: ExecutionBackend
+## Architecture: tmux + Exec-Wrapper
 
-### Problem
+### The execution stack
 
-`SessionManager` (internal/polecat/session_manager.go, 1074 lines) holds
-`*tmux.Tmux` directly. All session operations — create, kill, env, capture,
-health check, attach — go through tmux subprocess calls. The Daytona
-integration added `daytonaClient` and `rigSettings` fields plus an
-`isRemoteMode()` check, but still uses tmux as the session wrapper
-(running `daytona exec` as a tmux command).
-
-### Current coupling points
+Every agent session in Gas Town runs inside a tmux pane. What varies is the
+command that the pane executes:
 
 ```
-session_manager.go:
-  Line 46:  tmux *tmux.Tmux                    ← struct field
-  Line 270: m.tmux.HasSession(sessionID)        ← existence check
-  Line 276: m.tmux.KillSessionWithProcesses()   ← killing
-  Line 431: m.tmux.NewSessionWithCommand()      ← creation
-  Line 486: m.tmux.SetEnvironment()             ← env management
-  Line 520: m.tmux.WaitForCommand()             ← startup detection
-  Line 691: m.tmux.CheckSessionHealth()         ← health checking
+┌─────────────────────────────────────────────────────────────┐
+│ tmux session (always present)                               │
+│                                                             │
+│  Local polecat:                                             │
+│  exec env GT_RIG=foo GT_POLECAT=bar ... claude --prompt "…" │
+│                                                             │
+│  Daytona polecat:                                           │
+│  exec env GT_RUN=abc ... \                                  │
+│    daytona exec gt-inst-rig--bar --tty -- \                 │
+│      env GT_RIG=foo GT_POLECAT=bar ... \                    │
+│        claude --prompt "…"                                  │
+│                                                             │
+│  Future SSH polecat:                                        │
+│  exec env GT_RUN=abc ... \                                  │
+│    ssh -t user@host \                                       │
+│      env GT_RIG=foo GT_POLECAT=bar ... \                    │
+│        claude --prompt "…"                                  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### Proposed interface
+The exec-wrapper plugin system (PR #2689) already provides this injection
+point. The startup command is assembled as:
+
+```
+exec env <outer-env> ... <exec-wrapper-args> <agent-command>
+```
+
+Where `<exec-wrapper-args>` is an optional command prefix loaded from rig
+settings or a plugin definition.
+
+### How tmux operations work through the wrapper
+
+Every tmux operation continues to work because `daytona exec --tty` forwards
+stdin/stdout/stderr as a PTY. From tmux's perspective, the pane contains a
+process that produces terminal output — it doesn't matter that the process is
+`daytona exec` tunneling to a remote container rather than a local `claude`
+binary.
+
+| tmux operation | How it works through Daytona |
+|---|---|
+| `has-session` | Checks if the tmux session exists (it does — wrapping `daytona exec`) |
+| `kill-session` | Kills the tmux session → SIGHUP to `daytona exec` → container process terminates |
+| `set-environment` | Sets vars in tmux's env table (used for `gt` metadata, not passed to container) |
+| `send-keys` | Sends keystrokes to the pane → forwarded through `daytona exec --tty` to container stdin |
+| `capture-pane` | Captures pane content → shows whatever `daytona exec --tty` renders (agent output) |
+| `list-sessions` | Lists all tmux sessions (local and remote polecats appear identically) |
+| `attach-session` | Attaches terminal to pane → interactive access through the `daytona exec` tunnel |
+
+**Health checking** works because the tmux pane's foreground process is
+`daytona exec`. If the daytona tunnel dies (network failure, workspace stopped),
+the pane process exits and tmux reports the session as dead — the same signal
+as a local agent crash. The witness detects this identically.
+
+**Prompt detection** (`IsAtPrompt`) reads tmux pane content looking for
+sentinel markers. Since `daytona exec --tty` faithfully relays terminal
+output, the same markers appear in the pane buffer regardless of where the
+agent actually runs.
+
+### Where the model breaks: inner env vars
+
+There is one important distinction in the command structure. The exec-wrapper
+as landed in PR #2689 is a simple prefix — it does not distinguish between
+"outer" env vars (visible to the wrapper process) and "inner" env vars
+(visible only inside the container):
+
+```
+# PR #2689 exec-wrapper (flat):
+exec env OUTER=1 INNER=2 wrapper-cmd -- agent-cmd
+
+# What Daytona needs (nested):
+exec env OUTER=1 daytona exec ws --tty -- env INNER=2 agent-cmd
+```
+
+The Daytona branch's `buildDaytonaCommand()` handles this by constructing
+a nested `env` invocation: identity/proxy/cert vars go inside the `daytona
+exec ... --` boundary (they must be visible inside the container), while
+session-scoped vars like `GT_RUN` go outside (visible to the tmux process
+for `gt` metadata queries).
+
+This means the exec-wrapper system needs to be extended to support **env var
+partitioning** — some vars are outer (pre-wrapper), some are inner
+(post-wrapper, pre-agent). See [Exec-Wrapper Extensions](#exec-wrapper-extensions)
+below.
+
+---
+
+## Exec-Wrapper Extensions for Sandbox Lifecycle
+
+PR #2689 introduced exec-wrapper as a static command prefix. For Daytona
+integration, we need three extensions:
+
+### Extension 1: Template Variables in Wrapper Args
+
+The wrapper args must include the workspace name, which varies per polecat:
+
+```toml
+# Current (static):
+wrapper = ["exitbox", "run", "--profile=gastown-polecat", "--"]
+
+# Needed (templated):
+wrapper = ["daytona", "exec", "{{workspace}}", "--tty", "--"]
+```
+
+**Template variables available at session start time:**
+
+| Variable | Expansion | Source |
+|----------|-----------|--------|
+| `{{workspace}}` | `gt-<installID>-<rig>--<polecat>` | `daytona.Client.WorkspaceName()` |
+| `{{rig}}` | Rig name | `SessionStartOptions.Rig` |
+| `{{polecat}}` | Polecat name | `SessionStartOptions.Polecat` |
+| `{{install_prefix}}` | `gt-<installID>` | `TownConfig.ShortInstallationID()` |
+| `{{work_dir}}` | Container working directory | Rig config or default `/home/user/project` |
+
+**Implementation**: Template expansion happens in `resolveExecWrapper()` at
+the point where it's already loading from rig settings. The expansion context
+is a `WrapperContext` struct passed from `SessionManager.Start()`:
 
 ```go
-// ExecutionBackend abstracts how agent sessions are created, managed,
-// and observed. tmux is one implementation; Daytona, SSH, and local
-// process backends are others.
-type ExecutionBackend interface {
-    // Lifecycle
-    HasSession(ctx context.Context, id string) (bool, error)
-    CreateSession(ctx context.Context, id string, opts CreateSessionOpts) error
-    KillSession(ctx context.Context, id string, force bool) error
-
-    // Environment
-    SetEnv(ctx context.Context, id string, key, value string) error
-    GetEnv(ctx context.Context, id string, key string) (string, error)
-
-    // Interaction
-    SendKeys(ctx context.Context, id string, keys string) error
-    CaptureOutput(ctx context.Context, id string, lines int) (string, error)
-
-    // Health & Readiness
-    CheckHealth(ctx context.Context, id string) (HealthStatus, error)
-    WaitReady(ctx context.Context, id string, timeout time.Duration) error
-
-    // User attachment (interactive)
-    Attach(ctx context.Context, id string) error
-
-    // Enumeration
-    ListSessions(ctx context.Context) ([]SessionInfo, error)
+// WrapperContext provides values for template expansion in exec-wrapper args.
+type WrapperContext struct {
+    Rig            string
+    Polecat        string
+    InstallPrefix  string
+    WorkDir        string
+    WorkspaceName  string // pre-computed: <installPrefix>-<rig>--<polecat>
 }
 
-type CreateSessionOpts struct {
-    WorkDir     string
-    Command     string
-    Env         map[string]string
-    WindowName  string   // optional, backend-specific
-}
-
-type HealthStatus int
-const (
-    StatusHealthy   HealthStatus = iota
-    StatusIdle
-    StatusCrashed
-    StatusNotFound
-)
-
-type SessionInfo struct {
-    ID           string
-    Created      time.Time
-    LastActivity time.Time
-    IsAttached   bool
+// ExpandWrapper replaces {{var}} placeholders in wrapper args.
+func ExpandWrapper(wrapper []string, ctx WrapperContext) []string {
+    replacer := strings.NewReplacer(
+        "{{workspace}}", ctx.WorkspaceName,
+        "{{rig}}", ctx.Rig,
+        "{{polecat}}", ctx.Polecat,
+        "{{install_prefix}}", ctx.InstallPrefix,
+        "{{work_dir}}", ctx.WorkDir,
+    )
+    expanded := make([]string, len(wrapper))
+    for i, arg := range wrapper {
+        expanded[i] = replacer.Replace(arg)
+    }
+    return expanded
 }
 ```
 
-### Implementations
+### Extension 2: Inner Environment Variables
 
-**TmuxBackend** — wraps existing `internal/tmux.Tmux`:
+The exec-wrapper must support env vars that are injected _after_ the wrapper
+command, inside the remote execution context. These are distinct from the
+outer env vars that tmux's `exec env ...` sets.
 
-```go
-type TmuxBackend struct {
-    tmux *tmux.Tmux
-}
+**Why this matters**: When `daytona exec ws --tty --` tunnels into a container,
+the outer env vars are NOT inherited by the container process. The container
+has its own environment, set at workspace creation time. Per-session vars
+(identity, proxy certs, branch overrides) must be passed inline after the
+`--` delimiter.
 
-func (t *TmuxBackend) HasSession(_ context.Context, id string) (bool, error) {
-    return t.tmux.HasSession(id)
-}
+**Config structure:**
 
-func (t *TmuxBackend) CreateSession(_ context.Context, id string, opts CreateSessionOpts) error {
-    return t.tmux.NewSessionWithCommand(id, opts.WorkDir, opts.Command)
-}
-// ... delegates all methods to tmux.Tmux
-```
-
-**DaytonaBackend** — wraps `internal/daytona.Client`:
-
-```go
-type DaytonaBackend struct {
-    client      *daytona.Client
-    proxyAdmin  *proxy.AdminClient
-    rigSettings *config.RigSettings
-}
-
-func (d *DaytonaBackend) CreateSession(ctx context.Context, id string, opts CreateSessionOpts) error {
-    // 1. Create or find workspace
-    // 2. Issue mTLS cert via proxyAdmin
-    // 3. Inject cert into workspace via daytona exec
-    // 4. Start agent session via daytona exec with env vars
-    return nil
-}
-
-func (d *DaytonaBackend) KillSession(ctx context.Context, id string, force bool) error {
-    // 1. Stop workspace
-    // 2. Revoke cert
-    // 3. Archive workspace (if configured)
-    return nil
+```json
+{
+  "runtime": {
+    "exec_wrapper": ["daytona", "exec", "{{workspace}}", "--tty", "--"],
+    "exec_wrapper_inner_env": {
+      "GT_PROXY_URL": "https://{{proxy_addr}}",
+      "GT_PROXY_CERT": "/etc/gt/certs/client.crt",
+      "GT_PROXY_KEY": "/etc/gt/certs/client.key",
+      "GT_PROXY_CA": "/etc/gt/certs/ca.crt",
+      "GIT_SSL_CERT": "/etc/gt/certs/client.crt",
+      "GIT_SSL_KEY": "/etc/gt/certs/client.key",
+      "GIT_SSL_CAINFO": "/etc/gt/certs/ca.crt"
+    }
+  }
 }
 ```
 
-### SessionManager migration
+**Command assembly** in `BuildStartupCommand()`:
 
 ```go
-// Before
-type SessionManager struct {
-    tmux          *tmux.Tmux
-    daytonaClient *daytona.Client
-    rigSettings   *config.RigSettings
+// Current (PR #2689):
+// exec env OUTER=val ... <wrapper> agent-cmd
+cmd = "exec env " + outerEnvStr + " " + wrapperStr + " " + agentCmd
+
+// Extended:
+// exec env OUTER=val ... <wrapper> env INNER=val ... agent-cmd
+cmd = "exec env " + outerEnvStr + " " + wrapperStr + " "
+if len(innerEnv) > 0 {
+    cmd += "env " + innerEnvStr + " "
+}
+cmd += agentCmd
+```
+
+The inner env also supports template expansion (e.g., `{{proxy_addr}}` resolves
+from `RemoteBackend.ProxyAddr`).
+
+**Which vars go where:**
+
+| Variable | Location | Reason |
+|----------|----------|--------|
+| `GT_RUN` | Outer | Session-scoped telemetry ID; read by `gt` on the host |
+| `GT_RIG` | Both | Needed by host `gt` commands AND container `bd`/`gt` |
+| `GT_POLECAT` | Both | Same — used in both contexts |
+| `GT_ROLE` | Inner | Only the agent inside the container reads this |
+| `GT_PROXY_URL` | Inner | Container connects to proxy; host doesn't need this |
+| `GT_PROXY_CERT/KEY/CA` | Inner | mTLS certs are inside the container filesystem |
+| `GIT_SSL_*` | Inner | Git operations happen inside the container |
+| `GIT_AUTHOR_*` | Inner | Commits happen inside the container |
+| `GT_REPO_BRANCH` | Inner | Branch override for workspace reuse |
+| `BD_DOLT_AUTO_COMMIT` | Inner | Beads config for the agent process |
+| `GT_BRANCH` | Outer | Used by `gt done` on the host for nuked-worktree fallback |
+| `GT_POLECAT_PATH` | Outer | Used by `gt done` on the host |
+
+### Extension 3: Sandbox Lifecycle Hooks
+
+The exec-wrapper is a command prefix — it's stateless. But Daytona workspaces
+have lifecycle requirements:
+
+1. **Before session start**: Workspace must exist and be running; mTLS cert
+   must be issued and injected into the workspace's cert volume
+2. **After session stop**: Cert must be revoked; workspace optionally stopped
+   or archived
+
+These hooks run at the `SessionManager` level, not inside the wrapper command:
+
+```go
+// SandboxLifecycle is implemented by exec-wrapper plugins that manage
+// external sandbox state (workspace creation, cert management, cleanup).
+// SessionManager calls these hooks around session create/destroy.
+type SandboxLifecycle interface {
+    // PreStart is called before the tmux session is created.
+    // For Daytona: creates/starts workspace, issues cert, injects cert volume.
+    // Returns inner env vars to inject after the wrapper's -- delimiter.
+    PreStart(ctx context.Context, opts SandboxOpts) (innerEnv map[string]string, err error)
+
+    // PostStop is called after the tmux session is killed.
+    // For Daytona: revokes cert, optionally stops/deletes workspace.
+    PostStop(ctx context.Context, opts SandboxOpts) error
+
+    // Reconcile is called periodically by the DaytonaReconcilePatrol.
+    // Discovers orphaned workspaces/beads and cleans up.
+    Reconcile(ctx context.Context, opts ReconcileOpts) error
+}
+
+type SandboxOpts struct {
+    Rig           string
+    Polecat       string
+    InstallPrefix string
+    WorkspaceName string
+    RigSettings   *config.RigSettings
+    ProxyCA       *proxy.CA  // for cert issuance
+}
+
+type ReconcileOpts struct {
+    Rig           string
+    InstallPrefix string
+    RigSettings   *config.RigSettings
+    BeadsClient   *beads.Beads
+}
+```
+
+**Integration with SessionManager:**
+
+```go
+func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
+    // ... existing validation, config resolution ...
+
+    // If this rig has a sandbox lifecycle, run PreStart.
+    var innerEnv map[string]string
+    if m.sandbox != nil {
+        sandboxOpts := SandboxOpts{
+            Rig:           m.rig.Name,
+            Polecat:       polecat,
+            InstallPrefix: m.installPrefix,
+            WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
+            RigSettings:   m.rigSettings,
+            ProxyCA:       m.proxyCA,
+        }
+        var err error
+        innerEnv, err = m.sandbox.PreStart(ctx, sandboxOpts)
+        if err != nil {
+            return fmt.Errorf("sandbox pre-start failed: %w", err)
+        }
+    }
+
+    // Build command with exec-wrapper and inner env.
+    command := buildCommand(runtimeConfig, beacon, wrapperCtx, innerEnv)
+
+    // Create tmux session (same as today).
+    if err := m.tmux.NewSessionWithCommand(sessionID, workDir, command); err != nil {
+        return err
+    }
     // ...
 }
 
-// After
-type SessionManager struct {
-    backend ExecutionBackend  // injected at construction
-    // ...
-}
+func (m *SessionManager) Stop(polecat string, force bool) error {
+    // Kill tmux session (same as today).
+    m.tmux.KillSessionWithProcesses(sessionID, force)
 
-func NewSessionManager(backend ExecutionBackend, r *rig.Rig) *SessionManager {
-    return &SessionManager{backend: backend, rig: r}
+    // If this rig has a sandbox lifecycle, run PostStop.
+    if m.sandbox != nil {
+        sandboxOpts := SandboxOpts{...}
+        if err := m.sandbox.PostStop(ctx, sandboxOpts); err != nil {
+            slog.Warn("sandbox post-stop failed", "polecat", polecat, "err", err)
+            // Non-fatal — workspace cleanup can be retried by reconciliation.
+        }
+    }
 }
 ```
 
-The `isRemoteMode()` check disappears — the caller constructs either a
-TmuxBackend or DaytonaBackend based on rig config and injects it.
+---
+
+## DaytonaSandbox Implementation
+
+The existing `internal/daytona/` code maps directly to the `SandboxLifecycle`
+interface:
+
+```go
+// DaytonaSandbox implements SandboxLifecycle for Daytona remote execution.
+type DaytonaSandbox struct {
+    client     *daytona.Client
+    proxyAdmin *proxy.AdminClient
+}
+
+func NewDaytonaSandbox(installPrefix string, proxyAdminAddr string) *DaytonaSandbox {
+    return &DaytonaSandbox{
+        client:     daytona.NewClient(installPrefix),
+        proxyAdmin: proxy.NewAdminClient(proxyAdminAddr),
+    }
+}
+
+func (d *DaytonaSandbox) WorkspaceName(rig, polecat string) string {
+    return d.client.WorkspaceName(rig, polecat)
+}
+```
+
+### PreStart
+
+Maps to the workspace creation + cert issuance logic currently in
+`SpawnPolecatForSling()` and `buildDaytonaCommand()`:
+
+```go
+func (d *DaytonaSandbox) PreStart(ctx context.Context, opts SandboxOpts) (map[string]string, error) {
+    wsName := opts.WorkspaceName
+
+    // 1. Ensure workspace exists and is running.
+    //    Reuses existing workspace if available (idempotent create).
+    if !d.client.WorkspaceExists(ctx, wsName) {
+        createOpts := daytona.CreateOptions{
+            Image:      opts.RigSettings.RemoteBackend.Image,
+            Snapshot:   opts.RigSettings.RemoteBackend.Snapshot,
+            Dockerfile: opts.RigSettings.RemoteBackend.Dockerfile,
+            Profile:    opts.RigSettings.RemoteBackend.Profile,
+            EnvVars: map[string]string{
+                "GT_RIG":     opts.Rig,
+                "GT_POLECAT": opts.Polecat,
+                "GT_ROLE":    fmt.Sprintf("%s/polecats/%s", opts.Rig, opts.Polecat),
+            },
+            AutoStopInterval: opts.RigSettings.RemoteBackend.AutoStopInterval,
+        }
+        if err := d.client.Create(ctx, wsName, createOpts); err != nil {
+            return nil, fmt.Errorf("creating workspace %s: %w", wsName, err)
+        }
+    }
+
+    // Start the workspace (no-op if already running).
+    if err := d.client.Start(ctx, wsName); err != nil {
+        return nil, fmt.Errorf("starting workspace %s: %w", wsName, err)
+    }
+
+    // 2. Issue mTLS cert for this polecat's proxy access.
+    certPEM, keyPEM, err := d.proxyAdmin.IssueCert(ctx, proxy.CertRequest{
+        Identity: fmt.Sprintf("%s/polecats/%s", opts.Rig, opts.Polecat),
+        Rig:      opts.Rig,
+        Polecat:  opts.Polecat,
+    })
+    if err != nil {
+        return nil, fmt.Errorf("issuing proxy cert: %w", err)
+    }
+
+    // 3. Inject cert into workspace via daytona exec.
+    certDir := constants.DefaultRemoteCertDir
+    if err := d.client.InjectCerts(ctx, wsName, certDir, certPEM, keyPEM, opts.ProxyCA.CACertPEM()); err != nil {
+        return nil, fmt.Errorf("injecting certs into workspace: %w", err)
+    }
+
+    // 4. Return inner env vars for the agent process inside the container.
+    proxyAddr := constants.DefaultProxyAddr
+    if opts.RigSettings.RemoteBackend.ProxyAddr != "" {
+        proxyAddr = opts.RigSettings.RemoteBackend.ProxyAddr
+    }
+
+    innerEnv := map[string]string{
+        "GT_RIG":            opts.Rig,
+        "GT_POLECAT":        opts.Polecat,
+        "GT_ROLE":           fmt.Sprintf("%s/polecats/%s", opts.Rig, opts.Polecat),
+        "GT_PROXY_URL":      "https://" + proxyAddr,
+        "GT_PROXY_CERT":     certDir + "/client.crt",
+        "GT_PROXY_KEY":      certDir + "/client.key",
+        "GT_PROXY_CA":       certDir + "/ca.crt",
+        "GIT_SSL_CERT":      certDir + "/client.crt",
+        "GIT_SSL_KEY":       certDir + "/client.key",
+        "GIT_SSL_CAINFO":    certDir + "/ca.crt",
+        "GIT_AUTHOR_NAME":   opts.Polecat,
+        "GIT_AUTHOR_EMAIL":  opts.Polecat + "@gastown.local",
+        "GIT_COMMITTER_NAME":  opts.Polecat,
+        "GIT_COMMITTER_EMAIL": opts.Polecat + "@gastown.local",
+        "BD_DOLT_AUTO_COMMIT": "off",
+    }
+    if opts.Branch != "" {
+        innerEnv["GT_REPO_BRANCH"] = opts.Branch
+    }
+
+    return innerEnv, nil
+}
+```
+
+### PostStop
+
+Maps to cert revocation + optional workspace stop currently in
+`SessionManager.Stop()`:
+
+```go
+func (d *DaytonaSandbox) PostStop(ctx context.Context, opts SandboxOpts) error {
+    // 1. Revoke cert BEFORE any bead state changes.
+    //    This ordering is critical: revoking first prevents the (now-dead)
+    //    polecat's cert from being used by a rogue process.
+    identity := fmt.Sprintf("%s/polecats/%s", opts.Rig, opts.Polecat)
+    if err := d.proxyAdmin.RevokeCert(ctx, identity); err != nil {
+        slog.Warn("cert revocation failed", "identity", identity, "err", err)
+        // Non-fatal — reconciliation will catch orphaned certs.
+    }
+
+    // 2. Optionally stop the workspace.
+    if opts.RigSettings.RemoteBackend.AutoStop {
+        wsName := opts.WorkspaceName
+        if err := d.client.Stop(ctx, wsName); err != nil {
+            slog.Warn("workspace stop failed", "workspace", wsName, "err", err)
+        }
+    }
+
+    // 3. Optionally delete the workspace.
+    if opts.RigSettings.RemoteBackend.AutoDelete {
+        wsName := opts.WorkspaceName
+        if err := d.client.Delete(ctx, wsName); err != nil {
+            slog.Warn("workspace delete failed", "workspace", wsName, "err", err)
+        }
+    }
+
+    return nil
+}
+```
+
+### Reconcile
+
+Maps directly to the existing `internal/daytona/reconcile.go`:
+
+```go
+func (d *DaytonaSandbox) Reconcile(ctx context.Context, opts ReconcileOpts) error {
+    return daytona.Reconcile(ctx, daytona.ReconcileOptions{
+        Client:        d.client,
+        ProxyAdmin:    d.proxyAdmin,
+        Rig:           opts.Rig,
+        InstallPrefix: opts.InstallPrefix,
+        BeadsClient:   opts.BeadsClient,
+        PerOpTimeout:  30 * time.Second,
+    })
+}
+```
 
 ---
 
@@ -280,13 +642,17 @@ type StartOpts struct {
 }
 ```
 
+Note: `StartSession` no longer takes an `ExecutionBackend` parameter. It always
+uses tmux. The exec-wrapper (if any) is resolved from rig settings and baked
+into the command string before `tmux.NewSessionWithCommand()` is called.
+
 ### Implementations
 
 ```go
-// RigTarget spawns a polecat in a rig
+// RigTarget spawns a polecat in a rig.
 type RigTarget struct {
     rigName   string
-    backend   ExecutionBackend
+    tmux      *tmux.Tmux
     spawnInfo *SpawnedPolecatInfo  // populated by Prepare()
 }
 
@@ -297,6 +663,11 @@ func (r *RigTarget) Prepare(ctx context.Context) error {
 }
 
 func (r *RigTarget) StartSession(ctx context.Context, opts StartOpts) (string, error) {
+    // SessionManager.Start handles:
+    //   1. Sandbox PreStart (if configured)
+    //   2. Exec-wrapper template expansion
+    //   3. Inner env var injection
+    //   4. tmux session creation
     return r.spawnInfo.StartSession()
 }
 
@@ -317,14 +688,14 @@ type ExistingAgentTarget struct { ... }
 
 ```go
 // ResolveTarget creates the appropriate DispatchTarget from a target string.
-func ResolveTarget(target string, backend ExecutionBackend) (DispatchTarget, error) {
+func ResolveTarget(target string, t *tmux.Tmux) (DispatchTarget, error) {
     if rigName, ok := IsRigName(target); ok {
-        return NewRigTarget(rigName, backend), nil
+        return NewRigTarget(rigName, t), nil
     }
     if dogName, ok := IsDogTarget(target); ok {
-        return NewDogTarget(dogName, backend), nil
+        return NewDogTarget(dogName, t), nil
     }
-    return NewExistingAgentTarget(target, backend)
+    return NewExistingAgentTarget(target, t)
 }
 ```
 
@@ -381,8 +752,8 @@ type PatrolHandler interface {
 // PatrolEnv provides context to patrol handlers.
 type PatrolEnv struct {
     TownRoot string
-    RigName  string  // non-empty only when RequiresRig() == true
-    Backend  ExecutionBackend
+    RigName  string          // non-empty only when RequiresRig() == true
+    Sandbox  SandboxLifecycle // nil for rigs without remote backend
     Logger   *slog.Logger
 }
 
@@ -414,6 +785,11 @@ func (r *PatrolRegistry) RunEnabled(ctx context.Context, env PatrolEnv) {
 }
 ```
 
+Note: `PatrolEnv` now carries `SandboxLifecycle` instead of `ExecutionBackend`.
+The `DaytonaReconcilePatrol` calls `env.Sandbox.Reconcile()` — the reconciliation
+logic stays in `internal/daytona/reconcile.go` but is invoked through the
+interface.
+
 ### Built-in patrol registrations
 
 ```go
@@ -424,7 +800,7 @@ func DefaultRegistry() *PatrolRegistry {
     r.Register(&DeaconPatrol{}, &PatrolConfig{Enabled: true})
     r.Register(&DoltRemotesPatrol{}, &PatrolConfig{Enabled: false})
     r.Register(&DoltBackupPatrol{}, &PatrolConfig{Enabled: false})
-    r.Register(&DaytonaReconcilePatrol{}, &PatrolConfig{Enabled: false})
+    r.Register(&SandboxReconcilePatrol{}, &PatrolConfig{Enabled: false})
     // ... etc
     return r
 }
@@ -434,27 +810,298 @@ The daemon heartbeat loop becomes:
 
 ```go
 func (d *Daemon) heartbeat(ctx context.Context) {
-    env := PatrolEnv{TownRoot: d.townRoot, Backend: d.backend, Logger: d.logger}
+    env := PatrolEnv{TownRoot: d.townRoot, Logger: d.logger}
     d.registry.RunEnabled(ctx, env)
 }
 ```
 
 ---
 
+## SessionManager Changes
+
+The key structural change to `SessionManager` is replacing the Daytona-specific
+fields with a single optional `SandboxLifecycle` interface:
+
+```go
+// Before (feat/daytona-polecats)
+type SessionManager struct {
+    tmux          *tmux.Tmux
+    rig           *rig.Rig
+    proxyAdmin    *proxy.AdminClient
+    beads         *beads.Beads
+    daytonaClient *daytona.Client
+    rigSettings   *config.RigSettings
+}
+
+// After
+type SessionManager struct {
+    tmux     *tmux.Tmux            // always present — the universal session backend
+    rig      *rig.Rig
+    sandbox  SandboxLifecycle      // nil for local-only rigs
+    settings *config.RigSettings   // for exec-wrapper resolution
+}
+```
+
+### Construction
+
+```go
+func NewSessionManager(t *tmux.Tmux, r *rig.Rig) *SessionManager {
+    sm := &SessionManager{tmux: t, rig: r}
+
+    // Load rig settings for exec-wrapper and remote backend config.
+    settingsPath := filepath.Join(r.Path, "settings", "config.json")
+    settings, err := config.LoadRigSettings(settingsPath)
+    if err == nil && settings != nil {
+        sm.settings = settings
+
+        // If remote backend is configured, construct the sandbox lifecycle.
+        if settings.RemoteBackend != nil && settings.RemoteBackend.Provider == "daytona" {
+            townRoot := filepath.Dir(filepath.Dir(r.Path))
+            townConfig, _ := config.LoadTownConfig(filepath.Join(townRoot, "mayor", "town.json"))
+            prefix := townConfig.ShortInstallationID()
+            adminAddr := constants.DefaultProxyAdminAddr
+            if settings.RemoteBackend.ProxyAdminAddr != "" {
+                adminAddr = settings.RemoteBackend.ProxyAdminAddr
+            }
+            sm.sandbox = NewDaytonaSandbox(prefix, adminAddr)
+        }
+    }
+
+    return sm
+}
+```
+
+### isRemoteMode() replacement
+
+The `isRemoteMode()` check becomes `m.sandbox != nil`:
+
+```go
+// Before
+func (m *SessionManager) isRemoteMode() bool {
+    return m.daytonaClient != nil && m.rigSettings != nil && m.rigSettings.RemoteBackend != nil
+}
+
+// After — no method needed, just check the field
+if m.sandbox != nil {
+    // remote sandbox path
+}
+```
+
+### Start flow (unified)
+
+```go
+func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
+    // ... validation, config resolution (unchanged) ...
+
+    // 1. Run sandbox PreStart if configured.
+    var innerEnv map[string]string
+    if m.sandbox != nil {
+        sandboxOpts := SandboxOpts{
+            Rig:           m.rig.Name,
+            Polecat:       polecat,
+            WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
+            RigSettings:   m.settings,
+            ProxyCA:       m.proxyCA,
+            Branch:        opts.Branch,
+        }
+        var err error
+        innerEnv, err = m.sandbox.PreStart(ctx, sandboxOpts)
+        if err != nil {
+            return fmt.Errorf("sandbox pre-start: %w", err)
+        }
+    }
+
+    // 2. Resolve exec-wrapper from rig settings (PR #2689 path).
+    wrapper := resolveExecWrapper(m.rig.Path)
+    if len(wrapper) > 0 && m.sandbox != nil {
+        // Expand template variables in wrapper args.
+        wrapper = ExpandWrapper(wrapper, WrapperContext{
+            Rig:           m.rig.Name,
+            Polecat:       polecat,
+            InstallPrefix: m.installPrefix,
+            WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
+        })
+    }
+
+    // 3. Build startup command.
+    //    BuildStartupCommand already handles exec-wrapper insertion (PR #2689).
+    //    We extend it to also insert inner env vars after the wrapper.
+    command := config.BuildStartupCommand(envVars, m.rig.Path, beacon)
+
+    // If inner env vars exist, inject them between wrapper and agent command.
+    if len(innerEnv) > 0 {
+        command = injectInnerEnv(command, innerEnv)
+    }
+
+    // 4. Determine working directory.
+    //    Remote polecats have no local worktree — use the marker directory.
+    workDir := opts.WorkDir
+    if workDir == "" {
+        if m.sandbox != nil {
+            workDir = m.polecatDir(polecat)  // marker dir for tmux cwd
+        } else {
+            workDir = m.clonePath(polecat)   // local git worktree
+        }
+    }
+
+    // 5. Create tmux session (same API for local and remote).
+    if err := m.tmux.NewSessionWithCommand(sessionID, workDir, command); err != nil {
+        if m.sandbox != nil {
+            // Rollback: stop workspace if session creation failed.
+            m.sandbox.PostStop(ctx, SandboxOpts{...})
+        }
+        return err
+    }
+
+    // 6. Set tmux environment variables (metadata for gt commands on the host).
+    m.tmux.SetEnvironment(sessionID, "GT_RIG", m.rig.Name)
+    m.tmux.SetEnvironment(sessionID, "GT_POLECAT", polecat)
+    m.tmux.SetEnvironment(sessionID, "GT_RUN", runID)
+    // ...
+
+    return nil
+}
+```
+
+### Stop flow (unified)
+
+```go
+func (m *SessionManager) Stop(polecat string, force bool) error {
+    sessionID := m.sessionID(polecat)
+
+    // 1. Kill tmux session (always tmux, even for remote polecats).
+    if err := m.tmux.KillSessionWithProcesses(sessionID, force); err != nil {
+        return err
+    }
+
+    // 2. Run sandbox PostStop if configured.
+    if m.sandbox != nil {
+        sandboxOpts := SandboxOpts{
+            Rig:           m.rig.Name,
+            Polecat:       polecat,
+            WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
+            RigSettings:   m.settings,
+        }
+        if err := m.sandbox.PostStop(ctx, sandboxOpts); err != nil {
+            slog.Warn("sandbox post-stop failed", "polecat", polecat, "err", err)
+        }
+    }
+
+    return nil
+}
+```
+
+---
+
+## Rig Configuration
+
+### Local rig (no changes)
+
+```json
+{
+  "type": "rig-settings",
+  "version": 1,
+  "agent": "claude"
+}
+```
+
+No exec-wrapper, no sandbox lifecycle. Polecats run locally in git worktrees
+inside tmux sessions.
+
+### Remote rig (Daytona via exec-wrapper)
+
+```json
+{
+  "type": "rig-settings",
+  "version": 1,
+  "agent": "claude",
+  "runtime": {
+    "exec_wrapper": ["daytona", "exec", "{{workspace}}", "--tty", "--"]
+  },
+  "remote_backend": {
+    "provider": "daytona",
+    "image": "ghcr.io/anthropics/gas-town-polecat:latest",
+    "snapshot": "gt-polecat-v0.12.0",
+    "proxy_addr": "proxy.example.com:8443",
+    "auto_stop": true,
+    "auto_stop_interval": 30,
+    "network_block_all": true
+  }
+}
+```
+
+The `remote_backend` triggers construction of `DaytonaSandbox`.
+The `runtime.exec_wrapper` provides the command prefix for tmux pane commands.
+Both are needed: the sandbox handles lifecycle, the wrapper handles command injection.
+
+### Mixed-mode town
+
+```
+town/
+├── rig-a/  →  local (no remote_backend)
+│   └── settings/config.json: { "agent": "claude" }
+├── rig-b/  →  daytona remote
+│   └── settings/config.json: { "agent": "claude", "remote_backend": { "provider": "daytona", ... } }
+└── rig-c/  →  local with exec-wrapper (sandboxed but not remote)
+    └── settings/config.json: { "runtime": { "exec_wrapper": ["exitbox", "run", "--profile=gastown", "--"] } }
+```
+
+This demonstrates the three modes:
+1. **Bare local** (rig-a): tmux → agent
+2. **Remote sandbox** (rig-b): tmux → daytona exec → agent (with lifecycle hooks)
+3. **Local sandbox** (rig-c): tmux → exitbox → agent (wrapper only, no lifecycle)
+
+---
+
 ## Migration Plan
 
-### Phase 1: ExecutionBackend interface (foundation)
+### Phase 1: Exec-Wrapper Extensions
 
-1. Define `ExecutionBackend` interface in `internal/backend/`
-2. Implement `TmuxBackend` wrapping existing `internal/tmux.Tmux`
-3. Update `SessionManager` to accept `ExecutionBackend` instead of `*tmux.Tmux`
-4. All callers construct `TmuxBackend` — no behavior change
-5. **Tests**: Verify all existing tests pass with TmuxBackend wrapper
+Extend PR #2689's exec-wrapper with template variables and inner env support.
 
-**Estimated scope**: ~15 files touched. The interface is thin; TmuxBackend
-delegates 1:1 to existing tmux methods.
+1. Add `WrapperContext` struct and `ExpandWrapper()` to `internal/config/`
+2. Add `exec_wrapper_inner_env` to `RuntimeConfig`
+3. Extend `BuildStartupCommand()` to inject inner env after wrapper args
+4. Add `injectInnerEnv()` helper that inserts `env K=V ...` between the wrapper
+   `--` delimiter and the agent command
+5. **Tests**: Verify command assembly produces correct nested env structure
 
-### Phase 2: DispatchTarget interface
+**Scope**: ~5 files. The exec-wrapper insertion point already exists; this
+adds template expansion and a second env injection point.
+
+**Key files:**
+- `internal/config/loader.go` — `BuildStartupCommand`, `resolveExecWrapper`
+- `internal/config/types.go` — `RuntimeConfig.ExecWrapperInnerEnv`
+- `internal/config/wrapper.go` (new) — `WrapperContext`, `ExpandWrapper`
+- `internal/config/loader_test.go` — command assembly tests
+
+### Phase 2: SandboxLifecycle Interface
+
+Define the lifecycle interface and implement DaytonaSandbox.
+
+1. Define `SandboxLifecycle` interface in `internal/sandbox/`
+2. Implement `DaytonaSandbox` wrapping existing `internal/daytona/` code
+3. Update `SessionManager` to hold optional `SandboxLifecycle`
+4. Wire `PreStart` into `SessionManager.Start()` before tmux session creation
+5. Wire `PostStop` into `SessionManager.Stop()` after tmux session kill
+6. Remove `daytonaClient`, `rigSettings`, `proxyAdmin`, `beads` fields from
+   `SessionManager` (replaced by `sandbox SandboxLifecycle`)
+7. Remove `isRemoteMode()` method
+8. Remove `buildDaytonaCommand()` (replaced by exec-wrapper + inner env)
+9. Remove `SetDaytona()` method (replaced by construction-time injection)
+
+**Scope**: ~12 files. The Daytona logic already exists; this restructures
+the integration points.
+
+**Key files:**
+- `internal/sandbox/lifecycle.go` (new) — `SandboxLifecycle` interface
+- `internal/sandbox/daytona.go` (new) — `DaytonaSandbox` implementation
+- `internal/polecat/session_manager.go` — structural changes
+- `internal/cmd/polecat_spawn.go` — sandbox construction at spawn time
+
+### Phase 3: DispatchTarget Interface
+
+Clean up the sling dispatch system.
 
 1. Define `DispatchTarget` interface in `internal/dispatch/`
 2. Implement `RigTarget`, `DogTarget`, `ExistingAgentTarget`
@@ -462,75 +1109,30 @@ delegates 1:1 to existing tmux methods.
 4. Refactor `executeSling()` to use `DispatchTarget`
 5. Move spawn/dispatch logic into target implementations
 
-**Estimated scope**: ~10 files. The dispatch logic already exists; this
-restructures it behind an interface.
+**Scope**: ~10 files. The dispatch logic already exists; this restructures
+it behind an interface.
 
-### Phase 3: PatrolRegistry
+### Phase 4: PatrolRegistry
+
+Clean up the daemon patrol system.
 
 1. Define `PatrolHandler` interface and `PatrolRegistry` in `internal/patrol/`
 2. Extract each patrol's logic into a handler implementation
 3. Replace `IsPatrolEnabled()` with registry lookups
 4. Refactor daemon heartbeat to iterate registry
+5. `SandboxReconcilePatrol` calls `env.Sandbox.Reconcile()`
 
-**Estimated scope**: ~8 files. The patrol logic stays the same; the registry
-replaces the switch/case dispatch.
-
-### Phase 4: DaytonaBackend implementation
-
-1. Implement `DaytonaBackend` satisfying `ExecutionBackend`
-2. Move Daytona client, proxy, reconciliation code behind the backend
-3. Backend selection in rig config: `execution_backend = "tmux" | "daytona"`
-4. `DaytonaReconcilePatrol` uses the backend's reconciliation logic
-5. Remove `daytonaClient` and `rigSettings` fields from SessionManager
-
-**Estimated scope**: Primarily wrapping existing `internal/daytona/` code.
-The client, reconcile, retry, and proxy code from `feat/daytona-polecats`
-slots in directly as the backend implementation.
+**Scope**: ~8 files. The patrol logic stays the same; the registry replaces
+the switch/case dispatch.
 
 ### Phase 5: Cleanup
 
-1. Remove `isRemoteMode()` checks from SessionManager
+1. Remove `isRemoteMode()` checks from all packages
 2. Remove Daytona-specific fields from SessionManager struct
-3. Audit all `m.tmux` references (should be zero after Phase 1)
-4. Integration tests with both backends
-
----
-
-## Backend Selection
-
-Rig configuration determines which backend is used:
-
-```json
-{
-  "execution_backend": "daytona",
-  "remote_backend": {
-    "provider": "daytona",
-    "image": "ghcr.io/anthropics/gas-town-polecat:latest",
-    "class": "medium",
-    "proxy_addr": "proxy.example.com:8443",
-    "network_block_all": true,
-    "auto_stop_interval": "30m"
-  }
-}
-```
-
-The daemon reads `execution_backend` per rig and constructs the appropriate
-backend:
-
-```go
-func backendForRig(rig *rig.Rig, settings *config.RigSettings) ExecutionBackend {
-    switch settings.ExecutionBackend {
-    case "daytona":
-        return NewDaytonaBackend(settings.RemoteBackend)
-    default:
-        return NewTmuxBackend()
-    }
-}
-```
-
-Mixed-mode is supported: some rigs use tmux (local), others use Daytona
-(remote). The daemon, sling, and patrol systems all receive the appropriate
-backend per rig.
+3. Audit all direct `m.tmux` references that should go through the sandbox
+4. Integration tests: local polecat, exitbox-wrapped polecat, Daytona polecat
+5. Remove the Daytona-specific session start/stop paths in favour of the
+   unified sandbox lifecycle flow
 
 ---
 
@@ -540,10 +1142,10 @@ backend per rig.
 
 | Component | Status |
 |-----------|--------|
-| `internal/daytona/client.go` | Preserved as-is, used by DaytonaBackend |
-| `internal/daytona/reconcile.go` | Preserved, called by DaytonaReconcilePatrol |
-| `internal/daytona/retry.go` | Preserved, used by DaytonaBackend |
-| `internal/proxy/` (all) | Preserved, proxy is backend-independent |
+| `internal/daytona/client.go` | Preserved, wrapped by DaytonaSandbox |
+| `internal/daytona/reconcile.go` | Preserved, called by DaytonaSandbox.Reconcile() |
+| `internal/daytona/retry.go` | Preserved, used by DaytonaSandbox |
+| `internal/proxy/` (all) | Preserved, proxy is independent of session management |
 | `Dockerfile.daytona` | Preserved as polecat container image |
 | `docs/daytona-backend.md` | Updated to reference new architecture |
 | All test files | Preserved, tests are self-contained |
@@ -552,42 +1154,84 @@ backend per rig.
 
 | Component | Change |
 |-----------|--------|
-| `SessionManager` | `*tmux.Tmux` → `ExecutionBackend` interface |
+| `SessionManager` | `daytonaClient`/`rigSettings`/`proxyAdmin` → `sandbox SandboxLifecycle` |
+| `SessionManager.Start()` | Daytona if/else → unified flow with optional sandbox.PreStart |
+| `SessionManager.Stop()` | Daytona cert revocation → sandbox.PostStop |
+| `buildDaytonaCommand()` | Removed — replaced by exec-wrapper + inner env |
+| `isRemoteMode()` | Removed — replaced by `sandbox != nil` |
+| `SetDaytona()` | Removed — sandbox injected at construction |
 | `executeSling()` | Three-path switch → `DispatchTarget.StartSession()` |
 | `daemon.go` heartbeat | Hardcoded patrols → `PatrolRegistry.RunEnabled()` |
 | `IsPatrolEnabled()` | Removed, replaced by registry |
-| `isRemoteMode()` | Removed, backend selection at construction |
+| `BuildStartupCommand()` | Extended with inner env injection after wrapper |
+| `resolveExecWrapper()` | Extended with template variable expansion |
 
 ### New
 
 | Component | Purpose |
 |-----------|---------|
-| `internal/backend/` | ExecutionBackend interface + TmuxBackend |
+| `internal/sandbox/` | SandboxLifecycle interface + DaytonaSandbox impl |
+| `internal/config/wrapper.go` | WrapperContext, ExpandWrapper, template expansion |
 | `internal/dispatch/` | DispatchTarget interface + implementations |
 | `internal/patrol/` | PatrolRegistry + PatrolHandler interface |
-| `internal/backend/daytona.go` | DaytonaBackend (wraps internal/daytona/) |
+
+### Removed (from feat/daytona-polecats)
+
+| Component | Reason |
+|-----------|--------|
+| `SessionManager.buildDaytonaCommand()` | Replaced by exec-wrapper + inner env |
+| `SessionManager.isRemoteMode()` | Replaced by `sandbox != nil` check |
+| `SessionManager.SetDaytona()` | Construction-time injection instead |
+| `SessionManager.daytonaClient` field | Moved into DaytonaSandbox |
+| `SessionManager.rigSettings` field | Moved into DaytonaSandbox |
+| `SessionManager.proxyAdmin` field | Moved into DaytonaSandbox |
 
 ---
 
-## Open Questions
+## Resolved Design Questions
 
-1. **Pane concept**: Tmux has panes; Daytona has exec sessions. Should the
-   interface expose pane IDs or abstract them away? Current recommendation:
-   abstract away — return a session-scoped identifier that backends can
-   interpret (tmux pane ID, daytona exec PID, etc.).
+The original design had 5 open questions. With the tmux-stays architecture,
+most are resolved:
 
-2. **User attachment**: `tmux attach` is a terminal operation. For Daytona,
-   attachment might mean `daytona exec -it` or opening a browser. Should
-   `Attach()` be part of the core interface or a separate `InteractiveBackend`?
+1. **Pane concept**: ~~Should the interface expose pane IDs?~~ **Resolved.**
+   tmux is always the pane provider. Pane IDs are tmux pane IDs. No abstraction
+   needed.
 
-3. **Prompt detection**: `IsAtPrompt()` currently reads tmux pane content.
-   Remote backends need an alternative readiness signal (process exit code,
-   health endpoint, sentinel file).
+2. **User attachment**: ~~Separate InteractiveBackend?~~ **Resolved.** `tmux
+   attach-session` works for all backends. The `daytona exec --tty` tunnel
+   provides full PTY forwarding, so the user sees the remote agent's terminal
+   natively.
 
-4. **Volume management**: The Daytona implementation uses shared cert volumes.
-   Should the ExecutionBackend interface expose volume operations, or should
-   cert management be handled outside the backend?
+3. **Prompt detection**: ~~Remote backends need alternative readiness signal.~~
+   **Resolved.** `IsAtPrompt()` reads tmux pane content, which shows the remote
+   agent's output via `daytona exec --tty`. Same sentinel markers work. If the
+   daytona tunnel fails before the agent reaches the prompt, the pane process
+   exits and tmux reports it as dead — the standard crash detection path handles
+   this.
 
-5. **Patrol interval ownership**: Should intervals live in the registry config
-   or on the PatrolHandler? Current design: handler provides default, config
+4. **Volume management**: ~~Should ExecutionBackend expose volume operations?~~
+   **Resolved.** Volume management (cert injection) is handled by
+   `DaytonaSandbox.PreStart()` via `daytona exec` — it's a sandbox lifecycle
+   concern, not a session management concern.
+
+5. **Patrol interval ownership**: Unchanged — handler provides default, config
    overrides.
+
+### New question: exec-wrapper vs remote_backend coupling
+
+Should `remote_backend` automatically imply an exec-wrapper, or must both be
+configured explicitly?
+
+**Recommendation**: Explicit. The exec-wrapper is a general-purpose mechanism
+(also used for local sandboxes like exitbox). The remote_backend triggers
+sandbox lifecycle hooks. A rig could theoretically have a remote_backend with
+no exec-wrapper (if the agent binary is pre-installed in the container and
+accessible via PATH), though this is unlikely in practice. Keeping them separate
+preserves the layering:
+
+- Exec-wrapper = "how to invoke the agent process" (command wrapping)
+- Remote backend = "where the sandbox lives and how to manage it" (lifecycle)
+
+The configuration examples above show both fields set. A validation warning
+should fire if `remote_backend` is set but `exec_wrapper` is empty, since
+this almost certainly indicates a misconfiguration.
