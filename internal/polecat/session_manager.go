@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,6 +50,30 @@ type SessionManager struct {
 	settings      *config.RigSettings  // for exec-wrapper resolution
 	installPrefix string               // shortened installation identifier (gt-<installID>)
 	proxyCA       *proxy.CA            // CA for issuing mTLS client certificates
+
+	// mu guards the locks map itself. Each polecat gets its own mutex to
+	// serialize Start/Stop operations and prevent races like concurrent
+	// PreStart (double cert issuance) or Start+Stop interleaving.
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+// polecatLock returns the per-polecat mutex, creating it if needed.
+// This serializes Start/Stop operations for the same polecat to prevent
+// races like concurrent PreStart (double cert issuance), Start+Stop
+// interleaving, or double PostStop via StopAll.
+func (m *SessionManager) polecatLock(polecat string) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.locks == nil {
+		m.locks = make(map[string]*sync.Mutex)
+	}
+	lk, ok := m.locks[polecat]
+	if !ok {
+		lk = &sync.Mutex{}
+		m.locks[polecat] = lk
+	}
+	return lk
 }
 
 // SessionManagerOption configures optional SessionManager fields.
@@ -263,6 +288,12 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	// Serialize Start/Stop for this polecat to prevent races.
+	lk := m.polecatLock(polecat)
+	lk.Lock()
+	defer lk.Unlock()
+
 	if !m.hasPolecat(polecat) {
 		return fmt.Errorf("%w: %s", ErrPolecatNotFound, polecat)
 	}
@@ -664,6 +695,12 @@ func (m *SessionManager) Stop(ctx context.Context, polecat string, force bool) e
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	// Serialize Start/Stop for this polecat to prevent races.
+	lk := m.polecatLock(polecat)
+	lk.Lock()
+	defer lk.Unlock()
+
 	sessionID := m.SessionName(polecat)
 
 	// tmux session lifecycle: HasSession, GetEnvironment, SendKeysRaw, and

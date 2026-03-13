@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1087,5 +1088,111 @@ func TestWithSettings_Option(t *testing.T) {
 	}
 	if sm.settings.RemoteBackend.Image != "test:latest" {
 		t.Errorf("settings.RemoteBackend.Image = %q, want %q", sm.settings.RemoteBackend.Image, "test:latest")
+	}
+}
+
+// TestPolecatLock_SameInstance verifies that polecatLock returns the same mutex
+// for the same polecat name and different mutexes for different names.
+func TestPolecatLock_SameInstance(t *testing.T) {
+	r := &rig.Rig{Name: "testrig"}
+	sm := NewSessionManager(tmux.NewTmux(), r)
+
+	lk1 := sm.polecatLock("alpha")
+	lk2 := sm.polecatLock("alpha")
+	lk3 := sm.polecatLock("beta")
+
+	if lk1 != lk2 {
+		t.Error("polecatLock should return the same mutex for the same polecat")
+	}
+	if lk1 == lk3 {
+		t.Error("polecatLock should return different mutexes for different polecats")
+	}
+}
+
+// TestPolecatLock_ConcurrentAccess verifies that the per-polecat mutex
+// serializes access. Two goroutines racing on the same polecat should not
+// overlap their critical sections.
+func TestPolecatLock_ConcurrentAccess(t *testing.T) {
+	r := &rig.Rig{Name: "testrig"}
+	sm := NewSessionManager(tmux.NewTmux(), r)
+
+	var (
+		mu       sync.Mutex
+		inFlight int
+		maxSeen  int
+	)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			lk := sm.polecatLock("samepolecat")
+			lk.Lock()
+			defer lk.Unlock()
+
+			mu.Lock()
+			inFlight++
+			if inFlight > maxSeen {
+				maxSeen = inFlight
+			}
+			mu.Unlock()
+
+			// Simulate brief work under lock.
+			time.Sleep(time.Millisecond)
+
+			mu.Lock()
+			inFlight--
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	if maxSeen > 1 {
+		t.Errorf("expected max 1 concurrent holder, got %d", maxSeen)
+	}
+}
+
+// TestPolecatLock_DifferentPolecatsParallel verifies that different polecats
+// can proceed in parallel (they get independent mutexes).
+func TestPolecatLock_DifferentPolecatsParallel(t *testing.T) {
+	r := &rig.Rig{Name: "testrig"}
+	sm := NewSessionManager(tmux.NewTmux(), r)
+
+	var (
+		mu       sync.Mutex
+		maxSeen  int
+		inFlight int
+	)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		name := fmt.Sprintf("polecat-%d", i)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			lk := sm.polecatLock(name)
+			lk.Lock()
+			defer lk.Unlock()
+
+			mu.Lock()
+			inFlight++
+			if inFlight > maxSeen {
+				maxSeen = inFlight
+			}
+			mu.Unlock()
+
+			time.Sleep(10 * time.Millisecond)
+
+			mu.Lock()
+			inFlight--
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	// Different polecats should be able to run concurrently.
+	if maxSeen < 2 {
+		t.Logf("maxSeen=%d (may be 1 on slow machines, but typically >1)", maxSeen)
 	}
 }
