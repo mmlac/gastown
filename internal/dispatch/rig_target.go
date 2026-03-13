@@ -122,6 +122,30 @@ func (r *RigTarget) Rollback(ctx context.Context) error {
 	return r.rollbackFn(ctx, r.spawn)
 }
 
+// BaseBranch returns the effective base branch from the spawn result.
+// Returns empty string before Prepare() is called.
+func (r *RigTarget) BaseBranch() string {
+	if r.spawn == nil {
+		return ""
+	}
+	return r.spawn.BaseBranch
+}
+
+// PolecatName returns the polecat name from the spawn result.
+// Returns empty string before Prepare() is called.
+func (r *RigTarget) PolecatName() string {
+	if r.spawn == nil {
+		return ""
+	}
+	return r.spawn.PolecatName
+}
+
+// SpawnResult returns the spawn result for backward compatibility with
+// callers that need rig-specific spawn metadata. Returns nil before Prepare().
+func (r *RigTarget) SpawnResultData() *SpawnResult {
+	return r.spawn
+}
+
 // IsSessionRunning checks whether the polecat's tmux session is active.
 // Returns false if Prepare() has not been called.
 func (r *RigTarget) IsSessionRunning(ctx context.Context) (bool, error) {
