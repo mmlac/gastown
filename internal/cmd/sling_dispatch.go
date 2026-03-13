@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/dispatch"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/mail"
 	"github.com/steveyegge/gastown/internal/style"
@@ -43,6 +44,10 @@ type SlingParams struct {
 	CallerContext    string // Identifies the caller for shutdown messages (e.g., "queue-dispatch", "batch-sling")
 	TownRoot         string
 	BeadsDir         string
+
+	// Target is an optional pre-resolved DispatchTarget. If nil, a RigTarget
+	// is constructed from RigName (backward-compatible default).
+	Target dispatch.DispatchTarget
 }
 
 // SlingResult captures the outcome of executeSling for caller-level tracking.
@@ -55,7 +60,10 @@ type SlingResult struct {
 	AttachedMolecule string
 }
 
-// executeSling performs the unified per-bead polecat/rig dispatch.
+// executeSling performs the unified per-bead dispatch via the DispatchTarget
+// interface. The target is resolved (rig, dog, or existing agent), prepared,
+// and then the formula/hook/session flow runs through the polymorphic target.
+//
 // Batch sling and queue dispatch call this function. The single-sling path
 // (runSling) retains its own implementation for now (handles dogs, mayor,
 // nudge, and other non-rig targets). See TODO in sling.go.
@@ -72,7 +80,7 @@ type SlingResult struct {
 // Steps:
 //  1. Get bead info + status check
 //  2. Burn stale molecules (if formula and force)
-//  3. Spawn polecat (via spawnPolecatForSling)
+//  3. Prepare target (via DispatchTarget.Prepare — spawns polecat, resolves dog, etc.)
 //  4. Auto-convoy (if !NoConvoy)
 //  5. Cook formula (unless SkipCook)
 //  6. Instantiate formula on bead (wisp + bond)
@@ -80,8 +88,7 @@ type SlingResult struct {
 //  8. Log sling event
 //  9. Update agent hook_bead state
 //  10. Store fields in bead (dispatcher, args, attached_molecule, no_merge)
-//  11. Create Dolt branch
-//  12. Start polecat session
+//  11. Start session (via DispatchTarget.StartSession)
 func executeSling(params SlingParams) (*SlingResult, error) {
 	townRoot := params.TownRoot
 	if townRoot == "" {
@@ -219,29 +226,31 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 		}
 	}
 
-	// 3. Spawn polecat (via spawnPolecatForSling)
-	spawnOpts := SlingSpawnOptions{
-		Force:      params.Force,
-		Account:    params.Account,
-		HookBead:   params.BeadID,
-		Agent:      params.Agent,
-		BaseBranch: params.BaseBranch,
-		// Create is always true for rig targets: executeSling only handles
-		// rig-targeted dispatch (batch sling + queue dispatch), where a fresh
-		// polecat must be spawned. The single-sling path (runSling) handles
-		// the --create flag for non-rig targets via resolveTarget.
-		Create: true,
+	// 3. Resolve and prepare the dispatch target.
+	// If a pre-resolved Target was provided, use it directly.
+	// Otherwise, build a RigTarget from RigName (backward-compatible default).
+	target := params.Target
+	var capture *spawnInfoCapture // populated by RigTarget.Prepare for backward compat
+	if target == nil {
+		target, capture = buildRigTargetFromParams(params)
 	}
-	spawnInfo, err := spawnPolecatForSling(params.RigName, spawnOpts)
-	if err != nil {
-		result.ErrMsg = err.Error()
-		return result, fmt.Errorf("failed to spawn polecat: %w", err)
-	}
-	result.SpawnInfo = spawnInfo
-	result.PolecatName = spawnInfo.PolecatName
 
-	targetAgent := spawnInfo.AgentID()
-	hookWorkDir := spawnInfo.ClonePath
+	ctx := context.Background()
+	if err := target.Prepare(ctx); err != nil {
+		result.ErrMsg = err.Error()
+		return result, fmt.Errorf("failed to prepare target: %w", err)
+	}
+
+	// Populate backward-compatible result fields from the prepared target.
+	targetAgent := target.AgentID()
+	hookWorkDir := target.WorkDir()
+	if rt, ok := target.(*dispatch.RigTarget); ok {
+		result.PolecatName = rt.PolecatName()
+		// Populate SpawnInfo for callers that still need it.
+		if capture != nil && capture.info != nil {
+			result.SpawnInfo = capture.info
+		}
+	}
 
 	// 4. Auto-convoy (if !NoConvoy)
 	convoyID := ""
@@ -260,14 +269,25 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 		}
 	}
 
+	// rollbackOnError is a helper that cleans up both the target and bead artifacts.
+	rollbackOnError := func(beadID, workDir, convoy string) {
+		if rerr := target.Rollback(ctx); rerr != nil {
+			fmt.Printf("  %s Target rollback failed: %v\n", style.Dim.Render("Warning:"), rerr)
+		}
+		// Also run the legacy bead-level rollback (molecule burn, unhook, convoy cleanup).
+		if capture != nil && capture.info != nil {
+			rollbackSlingArtifactsFn(capture.info, beadID, workDir, convoy)
+		}
+	}
+
 	// 5. Cook formula (unless SkipCook)
 	formulaCooked := params.SkipCook
 	if params.FormulaName != "" && !formulaCooked {
 		workDir := beads.ResolveHookDir(townRoot, params.BeadID, hookWorkDir)
 		if err := CookFormula(params.FormulaName, workDir, townRoot); err != nil {
 			if params.FormulaFailFatal {
-				// Rollback spawned polecat on fatal cook failure
-				rollbackSlingArtifactsFn(spawnInfo, params.BeadID, hookWorkDir, convoyID)
+				// Rollback spawned target on fatal cook failure
+				rollbackOnError(params.BeadID, hookWorkDir, convoyID)
 				result.ErrMsg = fmt.Sprintf("cook failed: %v", err)
 				return result, fmt.Errorf("cooking formula %s: %w", params.FormulaName, err)
 			}
@@ -286,14 +306,21 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 		rigCmdVars := loadRigCommandVars(townRoot, params.RigName)
 		// Build per-bead vars: rig defaults first, then user vars (higher priority)
 		allVars = append(rigCmdVars, params.Vars...)
-		if spawnInfo.BaseBranch != "" && spawnInfo.BaseBranch != "main" {
-			allVars = append(allVars, fmt.Sprintf("base_branch=%s", spawnInfo.BaseBranch))
+		// Inject base_branch from the target if available (rig targets resolve
+		// the effective base branch during Prepare, which may differ from the
+		// CLI flag due to epic integration branch auto-detection).
+		effectiveBaseBranch := params.BaseBranch
+		if rt, ok := target.(*dispatch.RigTarget); ok && rt.BaseBranch() != "" {
+			effectiveBaseBranch = rt.BaseBranch()
 		}
-		formulaResult, err := InstantiateFormulaOnBead(context.Background(), params.FormulaName, params.BeadID, info.Title, hookWorkDir, townRoot, true, allVars)
+		if effectiveBaseBranch != "" && effectiveBaseBranch != "main" {
+			allVars = append(allVars, fmt.Sprintf("base_branch=%s", effectiveBaseBranch))
+		}
+		formulaResult, err := InstantiateFormulaOnBead(ctx, params.FormulaName, params.BeadID, info.Title, hookWorkDir, townRoot, true, allVars)
 		if err != nil {
 			if params.FormulaFailFatal {
-				// Rollback spawned polecat on fatal formula failure
-				rollbackSlingArtifactsFn(spawnInfo, params.BeadID, hookWorkDir, convoyID)
+				// Rollback spawned target on fatal formula failure
+				rollbackOnError(params.BeadID, hookWorkDir, convoyID)
 				result.ErrMsg = fmt.Sprintf("formula failed: %v", err)
 				return result, fmt.Errorf("instantiating formula %s: %w", params.FormulaName, err)
 			}
@@ -311,13 +338,21 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 	// 7. Hook bead with retry
 	hookDir := beads.ResolveHookDir(townRoot, beadToHook, hookWorkDir)
 	if err := hookBeadWithRetry(beadToHook, targetAgent, hookDir); err != nil {
-		// Clean up orphaned polecat to avoid leaving spawned-but-unhookable polecats
-		cleanupSpawnedPolecat(spawnInfo, params.RigName, convoyID)
+		// Clean up orphaned target to avoid leaving spawned-but-unhookable artifacts
+		if capture != nil && capture.info != nil {
+			cleanupSpawnedPolecat(capture.info, params.RigName, convoyID)
+		} else if rerr := target.Rollback(ctx); rerr != nil {
+			fmt.Printf("  %s Target rollback failed: %v\n", style.Dim.Render("Warning:"), rerr)
+		}
 		result.ErrMsg = "hook failed"
 		return result, fmt.Errorf("failed to hook bead: %w", err)
 	}
 
-	fmt.Printf("  %s Work attached to %s\n", style.Bold.Render("✓"), spawnInfo.PolecatName)
+	displayName := targetAgent
+	if result.PolecatName != "" {
+		displayName = result.PolecatName
+	}
+	fmt.Printf("  %s Work attached to %s\n", style.Bold.Render("✓"), displayName)
 
 	// 8. Log sling event
 	actor := detectActor()
@@ -347,19 +382,89 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 		updateAgentMode(targetAgent, params.Mode, hookWorkDir, beadsDir)
 	}
 
-	// 11. Start polecat session
-	pane, err := spawnInfo.StartSession()
+	// 11. Start session (via DispatchTarget.StartSession)
+	pane, err := target.StartSession(ctx, dispatch.StartOpts{})
 	if err != nil {
 		fmt.Printf("  %s Could not start session: %v, cleaning up partial state...\n", style.Dim.Render("✗"), err)
-		rollbackSlingArtifactsFn(spawnInfo, beadToHook, hookWorkDir, convoyID)
+		rollbackOnError(beadToHook, hookWorkDir, convoyID)
 		result.ErrMsg = fmt.Sprintf("session failed: %v", err)
-		return result, fmt.Errorf("starting polecat session: %w", err)
+		return result, fmt.Errorf("starting session: %w", err)
 	}
-	fmt.Printf("  %s Session started for %s\n", style.Bold.Render("▶"), spawnInfo.PolecatName)
+	fmt.Printf("  %s Session started for %s\n", style.Bold.Render("▶"), displayName)
 	_ = pane
 
 	result.Success = true
 	return result, nil
+}
+
+// spawnInfoCapture holds a SpawnedPolecatInfo that is populated by closures
+// during RigTarget.Prepare(). This allows executeSling to access the spawn
+// info for backward-compatible result fields after the target is prepared.
+type spawnInfoCapture struct {
+	info *SpawnedPolecatInfo
+}
+
+// buildRigTargetFromParams constructs a RigTarget with closures that delegate
+// to the existing spawn/session infrastructure. This provides backward
+// compatibility: callers that set SlingParams.RigName (without a pre-resolved
+// Target) get the same behavior as before the DispatchTarget refactor.
+//
+// Returns both the target and a capture struct whose info field is populated
+// when Prepare() is called (for backward-compat result fields).
+func buildRigTargetFromParams(params SlingParams) (*dispatch.RigTarget, *spawnInfoCapture) {
+	capture := &spawnInfoCapture{}
+
+	spawnFn := func(ctx context.Context) (*dispatch.SpawnResult, error) {
+		opts := SlingSpawnOptions{
+			Force:      params.Force,
+			Account:    params.Account,
+			HookBead:   params.BeadID,
+			Agent:      params.Agent,
+			BaseBranch: params.BaseBranch,
+			// Create is always true for rig targets: executeSling only handles
+			// rig-targeted dispatch (batch sling + queue dispatch), where a fresh
+			// polecat must be spawned. The single-sling path (runSling) handles
+			// the --create flag for non-rig targets via resolveTarget.
+			Create: true,
+		}
+		info, err := spawnPolecatForSling(params.RigName, opts)
+		if err != nil {
+			return nil, err
+		}
+		capture.info = info
+		return &dispatch.SpawnResult{
+			RigName:     params.RigName,
+			PolecatName: info.PolecatName,
+			ClonePath:   info.ClonePath,
+			SessionName: info.SessionName,
+			BaseBranch:  info.BaseBranch,
+			Branch:      info.Branch,
+		}, nil
+	}
+
+	startFn := func(ctx context.Context, spawn *dispatch.SpawnResult, opts dispatch.StartOpts) (string, error) {
+		if capture.info == nil {
+			return "", fmt.Errorf("spawn info not available (Prepare not called?)")
+		}
+		return capture.info.StartSession()
+	}
+
+	rollbackFn := func(ctx context.Context, spawn *dispatch.SpawnResult) error {
+		if capture.info != nil {
+			cleanupSpawnedPolecat(capture.info, params.RigName, "")
+		}
+		return nil
+	}
+
+	checkFn := func(ctx context.Context, spawn *dispatch.SpawnResult) (bool, error) {
+		if capture.info == nil {
+			return false, nil
+		}
+		return false, nil
+	}
+
+	rt := dispatch.NewRigTarget(params.RigName, spawnFn, startFn, rollbackFn, checkFn)
+	return rt, capture
 }
 
 // findTownRoot is defined in hook.go
