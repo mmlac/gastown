@@ -269,9 +269,11 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 
 	sessionID := m.SessionName(polecat)
 
-	// Check if session already exists.
-	// If an existing session's pane process has died, kill the stale session
-	// and proceed rather than returning ErrSessionRunning (gt-jn40ft).
+	// tmux session lifecycle: check for existing session before creation.
+	// HasSession and KillSessionWithProcesses are direct tmux operations —
+	// they query/manage the tmux server's session table, which is host-side
+	// state independent of any sandbox. Sandbox PreStart runs later, after
+	// this pre-flight check confirms no stale session exists.
 	running, err := m.tmux.HasSession(sessionID)
 	if err != nil {
 		return fmt.Errorf("checking session: %w", err)
@@ -440,7 +442,10 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 		certSerial = sandboxInnerEnv["GT_CERT_SERIAL"]
 	}
 
-	// Create session with command directly to avoid send-keys race condition.
+	// tmux session creation: NewSessionWithCommand is the core tmux operation
+	// that creates a new session with the agent command. This runs AFTER sandbox
+	// PreStart (which provisions the remote workspace) and BEFORE env var setup.
+	// On failure, the rollback path below calls sandbox.PostStop to clean up.
 	// See: https://github.com/anthropics/gastown/issues/280
 	if err := m.tmux.NewSessionWithCommand(sessionID, workDir, command); err != nil {
 		// Rollback: if sandbox was pre-started, clean up on tmux failure.
@@ -465,9 +470,11 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 		return fmt.Errorf("creating session: %w", err)
 	}
 
-	// Set environment (non-fatal: session works without these)
-	// Use centralized AgentEnv for consistency across all role startup paths
-	// Note: townRoot already defined above for ResolveRoleAgentConfig
+	// tmux environment variables: SetEnvironment writes key-value pairs to the
+	// tmux session's environment table. These are host-side metadata that the
+	// agent process reads via show-environment. Sandbox-mediated env vars are
+	// injected separately via sandboxInnerEnv (passed through the exec-wrapper's
+	// -- delimiter). The tmux env table survives session restarts.
 	envVars := config.AgentEnv(config.AgentEnvConfig{
 		Role:             "polecat",
 		Rig:              m.rig.Name,
@@ -518,9 +525,9 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 	processNames := config.ResolveProcessNames(runtimeConfig.ResolvedAgent, runtimeConfig.Command)
 	debugSession("SetEnvironment GT_PROCESS_NAMES", m.tmux.SetEnvironment(sessionID, "GT_PROCESS_NAMES", strings.Join(processNames, ",")))
 
-	// Record agent's pane_id for ZFC-compliant liveness checks (gt-qmsx).
-	// Declared pane identity replaces process-tree inference in IsRuntimeRunning
-	// and FindAgentPane. Legacy sessions without GT_PANE_ID fall back to scanning.
+	// tmux pane identity: GetPaneID queries the tmux server for the pane's
+	// unique ID, stored in the session env for ZFC-compliant liveness checks
+	// (gt-qmsx). This is pure tmux state — not sandbox-mediated.
 	if paneID, err := m.tmux.GetPaneID(sessionID); err == nil {
 		debugSession("SetEnvironment GT_PANE_ID", m.tmux.SetEnvironment(sessionID, "GT_PANE_ID", paneID))
 	}
@@ -533,46 +540,42 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 		}
 	}
 
-	// Apply theme (non-fatal)
+	// tmux session configuration: theme, crash hooks, and visual setup are
+	// pure tmux operations on the host-side session. These work transparently
+	// whether the agent runs locally or via daytona exec --tty tunnel.
 	theme := tmux.AssignTheme(m.rig.Name)
 	debugSession("ConfigureGasTownSession", m.tmux.ConfigureGasTownSession(sessionID, theme, m.rig.Name, polecat, "polecat"))
 
-	// Set pane-died hook for crash detection (non-fatal)
+	// tmux hook: pane-died triggers crash detection callback (non-fatal)
 	agentID := fmt.Sprintf("%s/%s", m.rig.Name, polecat)
 	debugSession("SetPaneDiedHook", m.tmux.SetPaneDiedHook(sessionID, agentID))
 
-	// Wait for Claude to start (non-fatal)
+	// tmux startup sequence: WaitForCommand, AcceptStartupDialogs, and
+	// WaitForRuntimeReady observe the tmux pane output to detect agent
+	// readiness. These poll CapturePane internally — all terminal I/O
+	// flows through the tmux pane, transparent to sandbox tunneling.
 	debugSession("WaitForCommand", m.tmux.WaitForCommand(sessionID, constants.SupportedShells, constants.ClaudeStartTimeout))
-
-	// Accept startup dialogs (workspace trust + bypass permissions) if they appear
 	debugSession("AcceptStartupDialogs", m.tmux.AcceptStartupDialogs(sessionID))
-
-	// Wait for runtime to be fully ready at the prompt (not just started).
-	// Uses prompt-based polling for agents with ReadyPromptPrefix (e.g., Claude "❯ "),
-	// falling back to ReadyDelayMs sleep for agents without prompt detection.
 	debugSession("WaitForRuntimeReady", m.tmux.WaitForRuntimeReady(sessionID, runtimeConfig, constants.ClaudeStartTimeout))
 
-	// Handle fallback nudges for non-hook agents.
+	// tmux nudge delivery: NudgeSession and WaitForRuntimeReady use tmux
+	// send-keys and capture-pane to deliver work instructions to the agent.
+	// These are terminal I/O operations transparent to sandbox tunneling.
 	// See StartupFallbackInfo in runtime package for the fallback matrix.
 	if fallbackInfo.SendBeaconNudge && fallbackInfo.SendStartupNudge && fallbackInfo.StartupNudgeDelayMs == 0 {
-		// Hooks + no prompt: Single combined nudge (hook already ran gt prime synchronously)
 		combined := beacon + "\n\n" + runtime.StartupNudgeContent()
 		debugSession("SendCombinedNudge", m.tmux.NudgeSession(sessionID, combined))
 	} else {
 		if fallbackInfo.SendBeaconNudge {
-			// Agent doesn't support CLI prompt - send beacon via nudge
 			debugSession("SendBeaconNudge", m.tmux.NudgeSession(sessionID, beacon))
 		}
 
 		if fallbackInfo.StartupNudgeDelayMs > 0 {
-			// Wait for agent to finish processing beacon + gt prime before sending work instructions.
-			// Uses prompt-based detection where available; falls back to max(ReadyDelayMs, StartupNudgeDelayMs).
 			primeWaitRC := runtime.RuntimeConfigWithMinDelay(runtimeConfig, fallbackInfo.StartupNudgeDelayMs)
 			debugSession("WaitForPrimeReady", m.tmux.WaitForRuntimeReady(sessionID, primeWaitRC, constants.ClaudeStartTimeout))
 		}
 
 		if fallbackInfo.SendStartupNudge {
-			// Send work instructions via nudge
 			debugSession("SendStartupNudge", m.tmux.NudgeSession(sessionID, runtime.StartupNudgeContent()))
 		}
 	}
@@ -584,11 +587,13 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 		m.verifyStartupNudgeDelivery(sessionID, runtimeConfig)
 	}
 
-	// Legacy fallback for other startup paths (non-fatal)
+	// tmux startup fallback: RunStartupFallback passes m.tmux for terminal
+	// I/O to handle agents that don't support hooks or prompt detection.
 	_ = runtime.RunStartupFallback(m.tmux, sessionID, "polecat", runtimeConfig)
 
-	// Verify session survived startup - if the command crashed, the session may have died.
-	// Without this check, Start() would return success even if the pane died during initialization.
+	// tmux post-startup verification: HasSession confirms the session survived
+	// startup, GetEnvironment reads the GT_AGENT value from the tmux env table.
+	// Both are host-side tmux queries — no sandbox interaction needed.
 	running, err = m.tmux.HasSession(sessionID)
 	if err != nil {
 		return fmt.Errorf("verifying session: %w", err)
@@ -597,9 +602,8 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 		return fmt.Errorf("session %s died during startup (agent command may have failed)", sessionID)
 	}
 
-	// Validate GT_AGENT is set. Without GT_AGENT, IsAgentAlive falls back to
-	// ["node", "claude"] process detection and witness patrol will auto-nuke
-	// polecats running non-Claude agents (e.g., opencode). Fail fast.
+	// Validate GT_AGENT is set — without it, witness patrol will auto-nuke
+	// polecats running non-Claude agents. Fail fast and clean up.
 	gtAgent, _ := m.tmux.GetEnvironment(sessionID, "GT_AGENT")
 	if gtAgent == "" {
 		_ = m.tmux.KillSessionWithProcesses(sessionID)
@@ -648,6 +652,10 @@ func (m *SessionManager) Stop(ctx context.Context, polecat string, force bool) e
 	}
 	sessionID := m.SessionName(polecat)
 
+	// tmux session lifecycle: HasSession, GetEnvironment, SendKeysRaw, and
+	// KillSessionWithProcesses are all direct tmux operations. Stop() reads
+	// the cert serial from tmux env (host-side metadata) before destroying the
+	// session, then calls sandbox.PostStop for remote workspace cleanup.
 	running, err := m.tmux.HasSession(sessionID)
 	if err != nil {
 		return fmt.Errorf("checking session: %w", err)
@@ -657,20 +665,18 @@ func (m *SessionManager) Stop(ctx context.Context, polecat string, force bool) e
 	}
 
 	// Read cert serial from tmux env BEFORE killing the session.
-	// The serial was stored by Start() after PreStart issued the certificate.
 	var certSerial string
 	if m.sandbox != nil {
 		certSerial, _ = m.tmux.GetEnvironment(sessionID, "GT_CERT_SERIAL")
 	}
 
-	// Try graceful shutdown first
+	// Graceful shutdown via tmux send-keys (C-c), then force kill.
 	if !force {
 		_ = m.tmux.SendKeysRaw(sessionID, "C-c")
 		session.WaitForSessionExit(m.tmux, sessionID, constants.GracefulShutdownTimeout)
 	}
 
-	// Use KillSessionWithProcesses to ensure all descendant processes are killed.
-	// This prevents orphan bash processes from Claude's Bash tool surviving session termination.
+	// KillSessionWithProcesses ensures all descendant processes are killed.
 	if err := m.tmux.KillSessionWithProcesses(sessionID); err != nil {
 		return fmt.Errorf("killing session: %w", err)
 	}
@@ -696,8 +702,8 @@ func (m *SessionManager) Stop(ctx context.Context, polecat string, force bool) e
 }
 
 // IsRunning checks if a polecat session is active and healthy.
-// Checks both tmux session existence AND agent process liveness to avoid
-// reporting zombie sessions (tmux alive but Claude dead) as "running".
+// CheckSessionHealth is a tmux query that checks both session existence and
+// agent process liveness — pure host-side tmux state, no sandbox interaction.
 func (m *SessionManager) IsRunning(polecat string) (bool, error) {
 	sessionID := m.SessionName(polecat)
 	status := m.tmux.CheckSessionHealth(sessionID, 0)
@@ -705,6 +711,8 @@ func (m *SessionManager) IsRunning(polecat string) (bool, error) {
 }
 
 // Status returns detailed status for a polecat session.
+// HasSession and GetSessionInfo are tmux queries for session metadata
+// (creation time, window count, activity) — host-side tmux state.
 func (m *SessionManager) Status(polecat string) (*SessionInfo, error) {
 	sessionID := m.SessionName(polecat)
 
@@ -759,7 +767,7 @@ func (m *SessionManager) Status(polecat string) (*SessionInfo, error) {
 }
 
 // List returns information about all sessions for this rig.
-// This includes polecats, witness, refinery, and crew sessions.
+// ListSessions queries the tmux server for all session names — pure host-side state.
 // Use ListPolecats() to get only polecat sessions.
 func (m *SessionManager) List() ([]SessionInfo, error) {
 	sessions, err := m.tmux.ListSessions()
@@ -808,6 +816,8 @@ func (m *SessionManager) ListPolecats() ([]SessionInfo, error) {
 }
 
 // Attach attaches to a polecat session.
+// AttachSession is a tmux operation that switches the terminal to the session's
+// pane — works transparently whether the agent runs locally or via sandbox tunnel.
 func (m *SessionManager) Attach(polecat string) error {
 	sessionID := m.SessionName(polecat)
 
@@ -823,6 +833,8 @@ func (m *SessionManager) Attach(polecat string) error {
 }
 
 // Capture returns the recent output from a polecat session.
+// CapturePane reads from the tmux pane's scrollback buffer — terminal I/O
+// that works transparently through daytona exec --tty tunnel.
 func (m *SessionManager) Capture(polecat string, lines int) (string, error) {
 	sessionID := m.SessionName(polecat)
 
@@ -838,6 +850,7 @@ func (m *SessionManager) Capture(polecat string, lines int) (string, error) {
 }
 
 // CaptureSession returns the recent output from a session by raw session ID.
+// Same tmux CapturePane operation as Capture, but accepts a raw session ID.
 func (m *SessionManager) CaptureSession(sessionID string, lines int) (string, error) {
 	running, err := m.tmux.HasSession(sessionID)
 	if err != nil {
@@ -851,6 +864,8 @@ func (m *SessionManager) CaptureSession(sessionID string, lines int) (string, er
 }
 
 // Inject sends a message to a polecat session.
+// SendKeysDebounced writes keystrokes to the tmux pane — terminal I/O that
+// works transparently through the sandbox tunnel.
 func (m *SessionManager) Inject(polecat, message string) error {
 	sessionID := m.SessionName(polecat)
 
@@ -932,15 +947,9 @@ func (m *SessionManager) validateIssue(issueID, workDir string) error {
 
 // verifyStartupNudgeDelivery checks if the polecat started working after the
 // startup nudge and retries the nudge if the agent is still idle at its prompt.
-// This fixes the Mode B race condition (GH#1379) where the startup nudge arrives
-// before Claude Code is ready, causing the polecat to sit idle.
-//
-// The approach models ensureAgentReady (sling_helpers.go): after the nudge, wait
-// a verification delay, then check if the agent is at its idle prompt. If idle,
-// re-send the nudge and check again, up to StartupNudgeMaxRetries times.
-//
-// Non-fatal: if verification fails or times out, the session is left running.
-// The witness zombie patrol will eventually detect and handle truly idle polecats.
+// Uses tmux HasSession, IsAtPrompt (capture-pane), and NudgeSession (send-keys)
+// — all terminal I/O transparent to sandbox tunneling. Non-fatal: the witness
+// zombie patrol handles truly idle polecats if verification fails.
 func (m *SessionManager) verifyStartupNudgeDelivery(sessionID string, rc *config.RuntimeConfig) {
 	// Only verify for agents with prompt detection. Without ReadyPromptPrefix,
 	// we can't distinguish "idle at prompt" from "busy processing".
