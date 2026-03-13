@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -85,6 +86,7 @@ type ReconcileFunc func(ctx context.Context, opts ReconcileOpts) error
 type DaytonaSandbox struct {
 	client      WorkspaceClient
 	certIssuer  CertIssuer
+	reconcileMu sync.RWMutex
 	reconcileFn ReconcileFunc
 }
 
@@ -268,12 +270,23 @@ func (d *DaytonaSandbox) PostStop(ctx context.Context, opts SandboxOpts) error {
 	return certErr
 }
 
+// SetReconcileFunc sets the reconciliation function. It is safe to call
+// concurrently with Reconcile.
+func (d *DaytonaSandbox) SetReconcileFunc(fn ReconcileFunc) {
+	d.reconcileMu.Lock()
+	d.reconcileFn = fn
+	d.reconcileMu.Unlock()
+}
+
 // Reconcile is called periodically by patrol to discover orphaned workspaces
 // and beads, and clean them up. Each orphan gets an independent deadline to
 // prevent one slow operation from starving others.
 func (d *DaytonaSandbox) Reconcile(ctx context.Context, opts ReconcileOpts) error {
-	if d.reconcileFn != nil {
-		return d.reconcileFn(ctx, opts)
+	d.reconcileMu.RLock()
+	fn := d.reconcileFn
+	d.reconcileMu.RUnlock()
+	if fn != nil {
+		return fn(ctx, opts)
 	}
 	return nil
 }
