@@ -200,20 +200,17 @@ func rigInList(rig string, rigs []string) bool {
 }
 
 // DefaultRegistry returns a pre-configured registry with the built-in patrols.
-// All patrols are registered but most are disabled by default — the daemon
-// config enables them based on the operator's daemon.json.
+// All patrols are registered but disabled by default — the daemon config
+// enables them based on the operator's daemon.json.
 func DefaultRegistry() *Registry {
 	r := NewRegistry()
-	// Built-in patrols will be registered here as they are migrated from
-	// the hardcoded daemon heartbeat loop. Each patrol type implements
-	// Handler and is registered with its default config.
-	//
-	// Example (to be added as patrols are migrated):
-	//   r.Register(&WitnessPatrol{}, &Config{Enabled: true})
-	//   r.Register(&RefineryPatrol{}, &Config{Enabled: true})
-	//   r.Register(&DeaconPatrol{}, &Config{Enabled: true})
-	//   r.Register(&DoltRemotesPatrol{}, &Config{Enabled: false})
-	//   r.Register(&DoltBackupPatrol{}, &Config{Enabled: false})
-	//   r.Register(&SandboxReconcilePatrol{}, &Config{Enabled: false})
+	r.Register(&DoltRemotesPatrol{}, &Config{Enabled: false})
+	r.Register(&DoltBackupPatrol{}, &Config{Enabled: false})
+	r.Register(&JsonlGitBackupPatrol{}, &Config{Enabled: false})
+	r.Register(&WispReaperPatrol{}, &Config{Enabled: false})
+	r.Register(&DoctorDogPatrol{}, &Config{Enabled: false})
+	r.Register(&CompactorDogPatrol{}, &Config{Enabled: false})
+	r.Register(&ScheduledMaintenancePatrol{}, &Config{Enabled: false})
+	r.Register(&SandboxReconcilePatrol{}, &Config{Enabled: false})
 	return r
 }
