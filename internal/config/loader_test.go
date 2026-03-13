@@ -5193,6 +5193,33 @@ func TestInjectInnerEnv_NoWrapperJustAgentCmd(t *testing.T) {
 	}
 }
 
+func TestInjectInnerEnv_SkipsInvalidKeys(t *testing.T) {
+	cmd := "exec env GT_ROLE='polecat' -- claude"
+	// Mix of valid and invalid keys — invalid ones should be silently skipped
+	result := InjectInnerEnv(cmd, map[string]string{
+		"GOOD_KEY":  "val1",
+		"FOO BAR":   "val2",
+		"$(inject)": "val3",
+		"ALSO_GOOD": "val4",
+	})
+	expected := "exec env GT_ROLE='polecat' -- env ALSO_GOOD=val4 GOOD_KEY=val1 claude"
+	if result != expected {
+		t.Errorf("got: %q\nwant: %q", result, expected)
+	}
+}
+
+func TestInjectInnerEnv_AllInvalidKeysReturnsOriginal(t *testing.T) {
+	cmd := "exec env GT_ROLE='polecat' -- claude"
+	result := InjectInnerEnv(cmd, map[string]string{
+		"BAD KEY":    "val1",
+		"1NVALID":    "val2",
+		"semi;colon": "val3",
+	})
+	if result != cmd {
+		t.Errorf("expected original command when all keys invalid\ngot: %q\nwant: %q", result, cmd)
+	}
+}
+
 func TestResolveExecWrapper_StaticWrapperZeroContext(t *testing.T) {
 	t.Parallel()
 	rigPath := t.TempDir()

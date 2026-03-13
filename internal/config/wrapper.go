@@ -48,6 +48,9 @@ func ExpandInnerEnvValues(innerEnv map[string]string, ctx WrapperContext) map[st
 	replacer := newWrapperReplacer(ctx)
 	expanded := make(map[string]string, len(innerEnv))
 	for k, v := range innerEnv {
+		if !ValidateEnvKey(k) {
+			continue
+		}
 		expanded[k] = replacer.Replace(v)
 	}
 	return expanded

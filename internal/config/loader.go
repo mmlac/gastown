@@ -2177,12 +2177,19 @@ func InjectInnerEnv(command string, innerEnv map[string]string) string {
 		return command
 	}
 
-	// Build sorted env assignments
+	// Build sorted env assignments, skipping invalid keys
 	keys := make([]string, 0, len(innerEnv))
 	for k := range innerEnv {
+		if !ValidateEnvKey(k) {
+			continue
+		}
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+
+	if len(keys) == 0 {
+		return command
+	}
 
 	var envParts []string
 	for _, k := range keys {
