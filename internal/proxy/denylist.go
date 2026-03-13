@@ -10,7 +10,7 @@ import (
 // which is unique per RFC 5280 within a single CA's issued certificates.
 //
 // The deny list is checked during the TLS handshake via VerifyPeerCertificate.
-// Entries are never removed (TTLs are short; the whole CA rotates periodically).
+// Call Reset periodically to prune stale entries after CA rotation. (gtd-uay)
 type DenyList struct {
 	mu     sync.RWMutex
 	denied map[string]bool
@@ -42,4 +42,13 @@ func (d *DenyList) Len() int {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return len(d.denied)
+}
+
+// Reset clears all entries from the deny list. This should be called
+// periodically (e.g. on CA rotation or a sweep interval) to prevent
+// unbounded growth from accumulated revoked cert serials. (gtd-uay)
+func (d *DenyList) Reset() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.denied = make(map[string]bool)
 }
