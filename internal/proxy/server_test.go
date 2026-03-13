@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +24,24 @@ import (
 // discardLogger returns a slog.Logger that discards all output (keeps test output clean).
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// installDummyCommands creates dummy executables in a temp directory and prepends
+// it to PATH so that exec.LookPath succeeds for the given commands. This prevents
+// test failures on systems where gt/bd are not installed (e.g., Windows CI).
+func installDummyCommands(t *testing.T, commands ...string) {
+	t.Helper()
+	binDir := t.TempDir()
+	for _, cmd := range commands {
+		name := cmd
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(""), 0755); err != nil {
+			t.Fatalf("write dummy %s: %v", cmd, err)
+		}
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func TestNew(t *testing.T) {
@@ -46,6 +66,7 @@ func TestNew(t *testing.T) {
 	})
 
 	t.Run("AllowedCommands are stored in allowed map", func(t *testing.T) {
+		installDummyCommands(t, "gt", "bd")
 		srv, err := New(Config{TownRoot: t.TempDir(), AllowedCommands: []string{"gt", "bd"}, Logger: discardLogger()}, nil)
 		require.NoError(t, err)
 		assert.True(t, srv.allowed["gt"])
@@ -54,6 +75,7 @@ func TestNew(t *testing.T) {
 	})
 
 	t.Run("isAllowed reflects allowed map", func(t *testing.T) {
+		installDummyCommands(t, "gt", "bd")
 		srv, err := New(Config{TownRoot: t.TempDir(), AllowedCommands: []string{"gt", "bd"}, Logger: discardLogger()}, nil)
 		require.NoError(t, err)
 		assert.True(t, srv.isAllowed("gt"))
@@ -63,6 +85,7 @@ func TestNew(t *testing.T) {
 	})
 
 	t.Run("AllowedCommands with path separators are rejected", func(t *testing.T) {
+		installDummyCommands(t, "bd")
 		srv, err := New(Config{TownRoot: t.TempDir(), AllowedCommands: []string{"/usr/bin/gt", "bd", `C:\gt.exe`}, Logger: discardLogger()}, nil)
 		require.NoError(t, err)
 		assert.False(t, srv.isAllowed("/usr/bin/gt"), "absolute path should be rejected")
