@@ -210,8 +210,14 @@ func (d *DaytonaSandbox) PostStop(ctx context.Context, opts SandboxOpts) error {
 			"rig", opts.Rig, "polecat", opts.Polecat)
 	}
 
+	// RemoteBackend may be nil when PostStop runs in local-only mode or after
+	// a config change removed the remote backend. Unlike PreStart (which errors
+	// on nil RemoteBackend because workspace creation requires it), PostStop
+	// treats nil as a no-op: there is no remote workspace to stop or delete.
 	rb := opts.RigSettings.RemoteBackend
 	if rb == nil {
+		slog.Debug("PostStop: RemoteBackend is nil, skipping workspace cleanup",
+			"rig", opts.Rig, "polecat", opts.Polecat)
 		return nil
 	}
 
