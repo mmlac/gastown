@@ -785,6 +785,8 @@ func TestSessionManager_Start_NoSandbox(t *testing.T) {
 // with the correct SandboxOpts and uses the polecatDir (marker directory) as the
 // working directory instead of the clone path.
 func TestSessionManager_Start_WithSandbox(t *testing.T) {
+	requireTmux(t)
+
 	// When sandbox is configured, Start() should:
 	// 1. Use polecatDir (not clonePath) as workDir
 	// 2. Call PreStart with correct opts before creating tmux session
