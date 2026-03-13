@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/proxy"
@@ -405,6 +404,32 @@ func TestPreStart_NoRemoteBackend(t *testing.T) {
 	}
 }
 
+func TestPreStart_ExistsError(t *testing.T) {
+	client := newMockClient("gt-abc")
+	client.existsErr = errors.New("API timeout")
+	issuer := &mockCertIssuer{}
+	d := NewDaytonaSandbox(client, issuer, nil)
+
+	ctx := context.Background()
+	opts := defaultOpts("gt-abc-TestRig--obsidian")
+
+	_, err := d.PreStart(ctx, opts)
+	if err == nil {
+		t.Fatal("PreStart() should return error when Exists fails")
+	}
+	if !errors.Is(err, client.existsErr) {
+		t.Errorf("error should wrap exists error, got: %v", err)
+	}
+
+	// Should NOT have attempted Create or Start.
+	if len(client.createCalls) != 0 {
+		t.Errorf("expected no Create calls after Exists error, got %v", client.createCalls)
+	}
+	if len(client.startCalls) != 0 {
+		t.Errorf("expected no Start calls after Exists error, got %v", client.startCalls)
+	}
+}
+
 func TestPostStop_CertRevocation(t *testing.T) {
 	client := newMockClient("gt-abc")
 	issuer := &mockCertIssuer{}
@@ -637,6 +662,3 @@ func TestReconcile_ErrorPropagation(t *testing.T) {
 func TestInterfaceCompliance(t *testing.T) {
 	var _ Lifecycle = (*DaytonaSandbox)(nil)
 }
-
-// Suppress unused import warnings.
-var _ = time.Second
