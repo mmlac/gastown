@@ -2001,7 +2001,7 @@ func BuildStartupCommand(envVars map[string]string, rigPath, prompt string) stri
 	// Apply exec wrapper from rig/town settings if not already set on the resolved config.
 	// ExecWrapper is a deployment-level setting (sandbox/container) independent of agent choice.
 	if len(rc.ExecWrapper) == 0 {
-		rc.ExecWrapper = resolveExecWrapper(rigPath)
+		rc.ExecWrapper = resolveExecWrapper(rigPath, WrapperContext{})
 	}
 
 	// Copy env vars to avoid mutating caller map
@@ -2294,7 +2294,7 @@ func BuildStartupCommandWithAgentOverride(envVars map[string]string, rigPath, pr
 
 	// Apply exec wrapper from rig/town settings if not already set on the resolved config.
 	if len(rc.ExecWrapper) == 0 {
-		rc.ExecWrapper = resolveExecWrapper(rigPath)
+		rc.ExecWrapper = resolveExecWrapper(rigPath, WrapperContext{})
 	}
 
 	// Copy env vars to avoid mutating caller map
@@ -2458,14 +2458,20 @@ func BuildCrewStartupCommandWithAgentOverride(rigName, crewName, rigPath, prompt
 	return BuildStartupCommandWithAgentOverride(envVars, rigPath, prompt, agentOverride)
 }
 
-// resolveExecWrapper loads the exec_wrapper from rig settings.
+// resolveExecWrapper loads the exec_wrapper from rig settings and optionally
+// expands template variables via ExpandWrapper(). If ctx is zero-value,
+// template expansion is skipped (backwards-compatible).
 // ExecWrapper is a deployment-level setting (sandbox/container) that wraps the agent binary.
 // It is independent of agent choice — exitbox wraps Claude, Codex, or any other runtime.
-func resolveExecWrapper(rigPath string) []string {
+func resolveExecWrapper(rigPath string, ctx WrapperContext) []string {
 	if rigPath != "" {
 		if rigSettings, err := LoadRigSettings(RigSettingsPath(rigPath)); err == nil && rigSettings != nil {
 			if rigSettings.Runtime != nil && len(rigSettings.Runtime.ExecWrapper) > 0 {
-				return rigSettings.Runtime.ExecWrapper
+				wrapper := rigSettings.Runtime.ExecWrapper
+				if ctx != (WrapperContext{}) {
+					wrapper = ExpandWrapper(wrapper, ctx)
+				}
+				return wrapper
 			}
 		}
 	}

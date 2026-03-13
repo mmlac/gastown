@@ -5192,3 +5192,127 @@ func TestInjectInnerEnv_NoWrapperJustAgentCmd(t *testing.T) {
 		t.Errorf("got: %q\nwant: %q", result, expected)
 	}
 }
+
+func TestResolveExecWrapper_StaticWrapperZeroContext(t *testing.T) {
+	t.Parallel()
+	rigPath := t.TempDir()
+
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		ExecWrapper: []string{"exitbox", "run", "--profile=test", "--"},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	// Zero-value context: no expansion, wrapper returned as-is
+	result := resolveExecWrapper(rigPath, WrapperContext{})
+	expected := []string{"exitbox", "run", "--profile=test", "--"}
+	if len(result) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(result), result)
+	}
+	for i, v := range expected {
+		if result[i] != v {
+			t.Errorf("arg[%d] = %q, want %q", i, result[i], v)
+		}
+	}
+}
+
+func TestResolveExecWrapper_DaytonaTemplateExpansion(t *testing.T) {
+	t.Parallel()
+	rigPath := t.TempDir()
+
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		ExecWrapper: []string{"daytona", "exec", "{{workspace}}", "--tty", "--"},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	ctx := WrapperContext{
+		Rig:           "furiosa",
+		Polecat:       "obsidian",
+		InstallPrefix: "gt-abc123",
+		WorkDir:       "/home/user/project",
+		WorkspaceName: "gt-abc123-furiosa--obsidian",
+	}
+	result := resolveExecWrapper(rigPath, ctx)
+	if len(result) != 5 {
+		t.Fatalf("expected 5 args, got %d: %v", len(result), result)
+	}
+	if result[2] != "gt-abc123-furiosa--obsidian" {
+		t.Errorf("workspace not expanded: got %q, want %q", result[2], "gt-abc123-furiosa--obsidian")
+	}
+	if result[0] != "daytona" || result[3] != "--tty" || result[4] != "--" {
+		t.Errorf("static args changed: %v", result)
+	}
+}
+
+func TestResolveExecWrapper_AllTemplateVariables(t *testing.T) {
+	t.Parallel()
+	rigPath := t.TempDir()
+
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		ExecWrapper: []string{
+			"wrapper",
+			"--rig={{rig}}",
+			"--polecat={{polecat}}",
+			"--prefix={{install_prefix}}",
+			"--workdir={{work_dir}}",
+			"--ws={{workspace}}",
+		},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	ctx := WrapperContext{
+		Rig:           "myrig",
+		Polecat:       "mypolecat",
+		InstallPrefix: "gt-xyz",
+		WorkDir:       "/work/dir",
+		WorkspaceName: "gt-xyz-myrig--mypolecat",
+	}
+	result := resolveExecWrapper(rigPath, ctx)
+	expected := []string{
+		"wrapper",
+		"--rig=myrig",
+		"--polecat=mypolecat",
+		"--prefix=gt-xyz",
+		"--workdir=/work/dir",
+		"--ws=gt-xyz-myrig--mypolecat",
+	}
+	if len(result) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(result), result)
+	}
+	for i, v := range expected {
+		if result[i] != v {
+			t.Errorf("arg[%d] = %q, want %q", i, result[i], v)
+		}
+	}
+}
+
+func TestResolveExecWrapper_NoExecWrapperConfigured(t *testing.T) {
+	t.Parallel()
+	rigPath := t.TempDir()
+
+	// Rig settings with no exec_wrapper
+	rigSettings := NewRigSettings()
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	result := resolveExecWrapper(rigPath, WrapperContext{})
+	if result != nil {
+		t.Errorf("expected nil for no exec_wrapper, got: %v", result)
+	}
+
+	// Also test with a non-zero context — still nil
+	ctx := WrapperContext{Rig: "test", WorkspaceName: "ws"}
+	result = resolveExecWrapper(rigPath, ctx)
+	if result != nil {
+		t.Errorf("expected nil for no exec_wrapper with context, got: %v", result)
+	}
+}
