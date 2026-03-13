@@ -455,7 +455,7 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 				CertSerial:    certSerial,
 			}
 			// Use a separate context with timeout for rollback since the original
-			// ctx may already be cancelled (which triggered the failure path).
+			// ctx may already be canceled (which triggered the failure path).
 			rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer rollbackCancel()
 			if postErr := m.sandbox.PostStop(rollbackCtx, rollbackOpts); postErr != nil {

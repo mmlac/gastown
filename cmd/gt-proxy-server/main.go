@@ -60,7 +60,7 @@ func main() {
 	}
 	fileCfg, err := loadConfig(cfgPath)
 	if err != nil {
-		slog.Error("failed to load config file", "path", cfgPath, "err", err)
+		slog.Error("failed to load config file", "path", cfgPath, "err", err) //nolint:gosec // G706: cfgPath is from CLI flag or hardcoded default, not user input
 		os.Exit(1)
 	}
 
@@ -172,7 +172,7 @@ func discoverAllowedSubcmds() string {
 	return result
 }
 
-// buildAllowedSubcmds serialises a map[string][]string back into the semicolon-separated
+// buildAllowedSubcmds serializes a map[string][]string back into the semicolon-separated
 // "cmd:sub1,sub2,..." format expected by parseAllowedSubcmds.
 func buildAllowedSubcmds(m map[string][]string) string {
 	parts := make([]string, 0, len(m))

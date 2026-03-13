@@ -499,7 +499,7 @@ func (c *Client) Info(ctx context.Context, name string) (*WorkspaceInfo, error) 
 	return &info, nil
 }
 
-// ExecOptions configures optional behaviour for Exec calls.
+// ExecOptions configures optional behavior for Exec calls.
 type ExecOptions struct {
 	// Env sets environment variables inside the workspace via an inline
 	// `env K=V` prefix (daytona exec does not support --env).

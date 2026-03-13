@@ -66,7 +66,7 @@ func (c *AdminClient) IssueCert(ctx context.Context, rig, name, ttl string) (*Is
 	if err != nil {
 		return nil, fmt.Errorf("issue-cert request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
@@ -102,7 +102,7 @@ func (c *AdminClient) DenyCert(ctx context.Context, serial string) error {
 	if err != nil {
 		return fmt.Errorf("deny-cert request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
@@ -127,7 +127,7 @@ func (c *AdminClient) Ping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
