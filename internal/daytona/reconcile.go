@@ -249,17 +249,18 @@ func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opt
 				logger.Printf("Orphaned workspace %s is in error state (rig=%s, polecat=%s), attempting stop",
 					item.Workspace.Name, item.Rig, item.Polecat)
 				opCtx, opCancel := context.WithTimeout(ctx, opTimeout)
+				defer opCancel()
 				if err := client.Stop(opCtx, item.Workspace.Name); err != nil {
 					logger.Printf("Warning: failed to stop errored orphaned workspace %s: %v", item.Workspace.Name, err)
 					result.Errors = append(result.Errors, fmt.Errorf("stop errored %s: %w", item.Workspace.Name, err))
 				} else {
 					result.WorkspacesStopped++
 				}
-				opCancel()
 
 			case "stopped":
 				// Already stopped — archive to reduce storage cost.
 				opCtx, opCancel := context.WithTimeout(ctx, opTimeout)
+				defer opCancel()
 				if err := client.Archive(opCtx, item.Workspace.Name); err != nil {
 					logger.Printf("Warning: failed to archive stopped orphaned workspace %s: %v", item.Workspace.Name, err)
 					result.Errors = append(result.Errors, fmt.Errorf("archive %s: %w", item.Workspace.Name, err))
@@ -268,12 +269,12 @@ func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opt
 						item.Workspace.Name, item.Rig, item.Polecat)
 					result.WorkspacesArchived++
 				}
-				opCancel()
 
 			default:
 				// "running" or any other active state — stop it, then archive.
-				opCtx, opCancel := context.WithTimeout(ctx, opTimeout)
-				if err := client.Stop(opCtx, item.Workspace.Name); err != nil {
+				stopCtx, stopCancel := context.WithTimeout(ctx, opTimeout)
+				defer stopCancel()
+				if err := client.Stop(stopCtx, item.Workspace.Name); err != nil {
 					logger.Printf("Warning: failed to stop orphaned workspace %s: %v", item.Workspace.Name, err)
 					result.Errors = append(result.Errors, fmt.Errorf("stop %s: %w", item.Workspace.Name, err))
 				} else {
@@ -281,27 +282,28 @@ func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opt
 						item.Workspace.Name, item.Rig, item.Polecat)
 					result.WorkspacesStopped++
 					// Archive after successful stop to move to cheaper storage.
-					if err := client.Archive(opCtx, item.Workspace.Name); err != nil {
+					archiveCtx, archiveCancel := context.WithTimeout(ctx, opTimeout)
+					defer archiveCancel()
+					if err := client.Archive(archiveCtx, item.Workspace.Name); err != nil {
 						logger.Printf("Warning: failed to archive orphaned workspace %s: %v", item.Workspace.Name, err)
 						result.Errors = append(result.Errors, fmt.Errorf("archive %s: %w", item.Workspace.Name, err))
 					} else {
 						result.WorkspacesArchived++
 					}
 				}
-				opCancel()
 			}
 
 			// Delete if configured.
 			if opts.AutoDelete {
-				opCtx, opCancel := context.WithTimeout(ctx, opTimeout)
-				if err := client.Delete(opCtx, item.Workspace.Name); err != nil {
+				delCtx, delCancel := context.WithTimeout(ctx, opTimeout)
+				defer delCancel()
+				if err := client.Delete(delCtx, item.Workspace.Name); err != nil {
 					logger.Printf("Warning: failed to delete orphaned workspace %s: %v", item.Workspace.Name, err)
 					result.Errors = append(result.Errors, fmt.Errorf("delete %s: %w", item.Workspace.Name, err))
 				} else {
 					logger.Printf("Deleted orphaned workspace %s", item.Workspace.Name)
 					result.WorkspacesDeleted++
 				}
-				opCancel()
 			}
 
 		case ActionOrphanedBead:
@@ -316,15 +318,15 @@ func Reconcile(ctx context.Context, client *Client, report *ReconcileReport, opt
 
 			// Revoke cert BEFORE resetting the bead (reset clears the serial).
 			if certRevoker != nil && item.CertSerial != "" {
-				opCtx, opCancel := context.WithTimeout(ctx, opTimeout)
-				if err := certRevoker(opCtx, item.CertSerial); err != nil {
+				revokeCtx, revokeCancel := context.WithTimeout(ctx, opTimeout)
+				defer revokeCancel()
+				if err := certRevoker(revokeCtx, item.CertSerial); err != nil {
 					logger.Printf("Warning: failed to revoke cert for orphaned bead %s (serial %s): %v",
 						item.BeadID, item.CertSerial, err)
 					result.Errors = append(result.Errors, fmt.Errorf("revoke cert %s: %w", item.CertSerial, err))
 				} else {
 					result.CertsRevoked++
 				}
-				opCancel()
 			}
 
 			if err := beadResetter(item.BeadID); err != nil {
