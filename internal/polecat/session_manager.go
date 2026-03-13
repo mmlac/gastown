@@ -312,6 +312,7 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 	// This creates/starts the remote workspace, issues mTLS certs, and returns
 	// inner env vars to inject after the exec-wrapper's -- delimiter.
 	var sandboxInnerEnv map[string]string
+	sandboxNeedsCleanup := false
 	if m.sandbox != nil {
 		sandboxOpts := sandbox.SandboxOpts{
 			Rig:           m.rig.Name,
@@ -327,6 +328,35 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 		if preErr != nil {
 			return fmt.Errorf("sandbox pre-start: %w", preErr)
 		}
+
+		// Deferred cleanup: call PostStop if Start returns an error after PreStart
+		// succeeded. This covers all failure paths (tmux creation failure, session
+		// died during startup, GT_AGENT not set) and ensures certs are revoked,
+		// Daytona workspaces stopped, and containers cleaned up. (gtd-8ld)
+		sandboxNeedsCleanup = true
+		defer func() {
+			if !sandboxNeedsCleanup {
+				return
+			}
+			serial := ""
+			if sandboxInnerEnv != nil {
+				serial = sandboxInnerEnv["GT_CERT_SERIAL"]
+			}
+			rollbackOpts := sandbox.SandboxOpts{
+				Rig:           m.rig.Name,
+				Polecat:       polecat,
+				InstallPrefix: m.installPrefix,
+				WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
+				RigSettings:   m.settings,
+				ProxyCA:       m.proxyCA,
+				CertSerial:    serial,
+			}
+			rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer rollbackCancel()
+			if postErr := m.sandbox.PostStop(rollbackCtx, rollbackOpts); postErr != nil {
+				debugSession("sandbox PostStop rollback", postErr)
+			}
+		}()
 	}
 
 	// Resolve runtime config for the agent that will actually run in this session.
@@ -445,28 +475,9 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 	// tmux session creation: NewSessionWithCommand is the core tmux operation
 	// that creates a new session with the agent command. This runs AFTER sandbox
 	// PreStart (which provisions the remote workspace) and BEFORE env var setup.
-	// On failure, the rollback path below calls sandbox.PostStop to clean up.
+	// On failure, the deferred PostStop cleanup handles sandbox rollback. (gtd-8ld)
 	// See: https://github.com/anthropics/gastown/issues/280
 	if err := m.tmux.NewSessionWithCommand(sessionID, workDir, command); err != nil {
-		// Rollback: if sandbox was pre-started, clean up on tmux failure.
-		if m.sandbox != nil {
-			rollbackOpts := sandbox.SandboxOpts{
-				Rig:           m.rig.Name,
-				Polecat:       polecat,
-				InstallPrefix: m.installPrefix,
-				WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
-				RigSettings:   m.settings,
-				ProxyCA:       m.proxyCA,
-				CertSerial:    certSerial,
-			}
-			// Use a separate context with timeout for rollback since the original
-			// ctx may already be canceled (which triggered the failure path).
-			rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer rollbackCancel()
-			if postErr := m.sandbox.PostStop(rollbackCtx, rollbackOpts); postErr != nil {
-				debugSession("sandbox rollback after tmux failure", postErr)
-			}
-		}
 		return fmt.Errorf("creating session: %w", err)
 	}
 
@@ -631,6 +642,9 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 	// Record the agent instantiation event (GASTA root span).
 	session.RecordAgentInstantiateFromDir(context.Background(), runID, runtimeConfig.ResolvedAgent,
 		"polecat", polecat, sessionID, m.rig.Name, townRoot, opts.Issue, workDir)
+
+	// Disarm the deferred PostStop cleanup — startup succeeded. (gtd-8ld)
+	sandboxNeedsCleanup = false
 
 	return nil
 }
