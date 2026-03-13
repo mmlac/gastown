@@ -17,6 +17,7 @@ import (
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/proxy"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/runtime"
 	"github.com/steveyegge/gastown/internal/sandbox"
@@ -46,6 +47,7 @@ type SessionManager struct {
 	rig      *rig.Rig
 	sandbox  sandbox.Lifecycle    // nil for local-only rigs
 	settings *config.RigSettings  // for exec-wrapper resolution
+	proxyCA  *proxy.CA            // CA for issuing mTLS client certificates
 }
 
 // SessionManagerOption configures optional SessionManager fields.
@@ -56,6 +58,14 @@ type SessionManagerOption func(*SessionManager)
 func WithSandbox(s sandbox.Lifecycle) SessionManagerOption {
 	return func(sm *SessionManager) {
 		sm.sandbox = s
+	}
+}
+
+// WithProxyCA sets the CA used for issuing mTLS client certificates.
+// When set, the CA is passed to sandbox PreStart/PostStop via SandboxOpts.ProxyCA.
+func WithProxyCA(ca *proxy.CA) SessionManagerOption {
+	return func(sm *SessionManager) {
+		sm.proxyCA = ca
 	}
 }
 
@@ -297,6 +307,7 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 			Polecat:       polecat,
 			WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
 			RigSettings:   m.settings,
+			ProxyCA:       m.proxyCA,
 			Branch:        opts.Branch,
 		}
 		var preErr error
@@ -429,6 +440,7 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 				Polecat:       polecat,
 				WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
 				RigSettings:   m.settings,
+				ProxyCA:       m.proxyCA,
 				CertSerial:    certSerial,
 			}
 			// Use a separate context with timeout for rollback since the original
@@ -660,6 +672,7 @@ func (m *SessionManager) Stop(ctx context.Context, polecat string, force bool) e
 			Polecat:       polecat,
 			WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
 			RigSettings:   m.settings,
+			ProxyCA:       m.proxyCA,
 			CertSerial:    certSerial,
 		}
 		if err := m.sandbox.PostStop(ctx, opts); err != nil {
