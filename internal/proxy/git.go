@@ -88,6 +88,11 @@ func (s *Server) handleGit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(rig) > 256 {
+		http.Error(w, "rig name too long", http.StatusBadRequest)
+		return
+	}
+
 	if !rigNameRe.MatchString(rig) {
 		http.Error(w, "invalid rig name", http.StatusBadRequest)
 		return
@@ -154,6 +159,12 @@ func (s *Server) handleInfoRefs(w http.ResponseWriter, r *http.Request, repoPath
 	pktLine := fmt.Sprintf("# service=%s\n", service)
 	fmt.Fprintf(w, "%04x%s0000", len(pktLine)+4, pktLine)
 
+	// NOTE: 200 status is now committed. If the git subprocess fails after this
+	// point, the client receives a 200 with partial/corrupt output. This is an
+	// inherent limitation of the git smart-HTTP protocol: the pkt-line service
+	// prefix must precede git's output, and writing it commits the response status.
+	// The repo existence pre-flight in handleGit eliminates the most common failure
+	// (missing repo). Git subprocess failures are logged for server-side diagnosis.
 	var errBuf strings.Builder
 	cmd := exec.CommandContext(r.Context(), service, "--stateless-rpc", "--advertise-refs", repoPath)
 	cmd.Stdout = w
@@ -169,6 +180,10 @@ func (s *Server) handlePack(w http.ResponseWriter, r *http.Request, repoPath, se
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Ensure request body is closed even if git subprocess dies early,
+	// preventing file descriptor leaks on aborted connections.
+	defer r.Body.Close()
 
 	identity := cnToIdentity(clientCN)
 
