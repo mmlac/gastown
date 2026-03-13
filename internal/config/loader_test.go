@@ -5655,3 +5655,91 @@ func TestBuildStartupCommand_EmptyInnerEnvParam_Unchanged(t *testing.T) {
 		t.Errorf("empty param should match no param:\n  no-param: %q\n  empty-param: %q", cmdNoParam, cmdEmptyParam)
 	}
 }
+
+func TestResolveExecWrapperInnerEnv_WithConfiguredEnv(t *testing.T) {
+	t.Parallel()
+	rigPath := t.TempDir()
+
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		ExecWrapperInnerEnv: map[string]string{
+			"DAYTONA_WORKSPACE": "{{workspace}}",
+			"GT_RIG":            "{{rig}}",
+			"STATIC_VAR":        "static_value",
+		},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	result := resolveExecWrapperInnerEnv(rigPath)
+	if result == nil {
+		t.Fatal("expected non-nil map, got nil")
+	}
+	if len(result) != 3 {
+		t.Fatalf("expected 3 entries, got %d: %v", len(result), result)
+	}
+	if result["DAYTONA_WORKSPACE"] != "{{workspace}}" {
+		t.Errorf("DAYTONA_WORKSPACE = %q, want %q", result["DAYTONA_WORKSPACE"], "{{workspace}}")
+	}
+	if result["GT_RIG"] != "{{rig}}" {
+		t.Errorf("GT_RIG = %q, want %q", result["GT_RIG"], "{{rig}}")
+	}
+	if result["STATIC_VAR"] != "static_value" {
+		t.Errorf("STATIC_VAR = %q, want %q", result["STATIC_VAR"], "static_value")
+	}
+}
+
+func TestResolveExecWrapperInnerEnv_NotConfigured(t *testing.T) {
+	t.Parallel()
+	rigPath := t.TempDir()
+
+	// Rig settings with no exec_wrapper_inner_env
+	rigSettings := NewRigSettings()
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	result := resolveExecWrapperInnerEnv(rigPath)
+	if result != nil {
+		t.Errorf("expected nil for no exec_wrapper_inner_env, got: %v", result)
+	}
+}
+
+func TestResolveExecWrapperInnerEnv_EmptyMap(t *testing.T) {
+	t.Parallel()
+	rigPath := t.TempDir()
+
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		ExecWrapperInnerEnv: map[string]string{},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	result := resolveExecWrapperInnerEnv(rigPath)
+	if result != nil {
+		t.Errorf("expected nil for empty exec_wrapper_inner_env map, got: %v", result)
+	}
+}
+
+func TestResolveExecWrapperInnerEnv_EmptyRigPath(t *testing.T) {
+	t.Parallel()
+
+	result := resolveExecWrapperInnerEnv("")
+	if result != nil {
+		t.Errorf("expected nil for empty rigPath, got: %v", result)
+	}
+}
+
+func TestResolveExecWrapperInnerEnv_InvalidSettingsFile(t *testing.T) {
+	t.Parallel()
+	rigPath := t.TempDir()
+
+	// No rig settings file exists at this path — LoadRigSettings should fail gracefully
+	result := resolveExecWrapperInnerEnv(rigPath)
+	if result != nil {
+		t.Errorf("expected nil for missing rig settings file, got: %v", result)
+	}
+}
