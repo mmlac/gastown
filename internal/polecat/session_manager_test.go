@@ -109,7 +109,7 @@ func TestStartPolecatNotFound(t *testing.T) {
 	}
 	m := NewSessionManager(tmux.NewTmux(), r)
 
-	err := m.Start("Unknown", SessionStartOptions{})
+	err := m.Start(context.Background(), "Unknown", SessionStartOptions{})
 	if err == nil {
 		t.Error("expected error for unknown polecat")
 	}
@@ -168,7 +168,7 @@ func TestStopNotFound(t *testing.T) {
 	}
 	m := NewSessionManager(tmux.NewTmux(), r)
 
-	err := m.Stop("Toast", false)
+	err := m.Stop(context.Background(), "Toast", false)
 	if err != ErrSessionNotFound {
 		t.Errorf("Stop = %v, want ErrSessionNotFound", err)
 	}
@@ -694,7 +694,7 @@ func TestSessionManager_Start_SandboxFailure(t *testing.T) {
 		},
 	}))
 
-	err := sm.Start(polecatName, SessionStartOptions{})
+	err := sm.Start(context.Background(), polecatName, SessionStartOptions{})
 	if err == nil {
 		t.Fatal("Start() should fail when sandbox PreStart returns error")
 	}
@@ -839,7 +839,7 @@ func TestSessionManager_Start_WithSandbox(t *testing.T) {
 	captureErr := errors.New("capture-opts-sentinel")
 	sbx.preStartErr = captureErr
 
-	_ = sm.Start(polecatName, SessionStartOptions{Branch: "feat/test-branch"})
+	_ = sm.Start(context.Background(), polecatName, SessionStartOptions{Branch: "feat/test-branch"})
 
 	if len(sbx.preStartCalls) != 1 {
 		t.Fatalf("expected 1 PreStart call, got %d", len(sbx.preStartCalls))
@@ -907,7 +907,7 @@ func TestSessionManager_Stop_WithSandbox(t *testing.T) {
 	}
 
 	// Stop the session (force to avoid graceful shutdown timeout).
-	if err := sm.Stop(polecatName, true); err != nil {
+	if err := sm.Stop(context.Background(), polecatName, true); err != nil {
 		t.Fatalf("Stop() error: %v", err)
 	}
 
@@ -973,7 +973,7 @@ func TestSessionManager_Stop_WithSandbox_PostStopError(t *testing.T) {
 	t.Cleanup(func() { _ = tm.KillSession(sessionID) })
 
 	// Stop should succeed even though PostStop will error.
-	err := sm.Stop(polecatName, true)
+	err := sm.Stop(context.Background(), polecatName, true)
 	if err != nil {
 		t.Fatalf("Stop() should succeed despite PostStop error, got: %v", err)
 	}
@@ -1012,7 +1012,7 @@ func TestSessionManager_Stop_NoSandbox(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = tm.KillSession(sessionID) })
 
-	if err := sm.Stop(polecatName, true); err != nil {
+	if err := sm.Stop(context.Background(), polecatName, true); err != nil {
 		t.Fatalf("Stop() error: %v", err)
 	}
 

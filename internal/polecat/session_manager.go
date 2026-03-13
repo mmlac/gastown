@@ -238,7 +238,12 @@ func (m *SessionManager) polecatSlot(polecat string) int {
 }
 
 // Start creates and starts a new session for a polecat.
-func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
+// The provided context controls cancellation of sandbox operations (PreStart).
+// If ctx is nil, context.Background() is used for backward compatibility.
+func (m *SessionManager) Start(ctx context.Context, polecat string, opts SessionStartOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if !m.hasPolecat(polecat) {
 		return fmt.Errorf("%w: %s", ErrPolecatNotFound, polecat)
 	}
@@ -295,7 +300,7 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 			Branch:        opts.Branch,
 		}
 		var preErr error
-		sandboxInnerEnv, preErr = m.sandbox.PreStart(context.Background(), sandboxOpts)
+		sandboxInnerEnv, preErr = m.sandbox.PreStart(ctx, sandboxOpts)
 		if preErr != nil {
 			return fmt.Errorf("sandbox pre-start: %w", preErr)
 		}
@@ -419,7 +424,11 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 				WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
 				RigSettings:   m.settings,
 			}
-			if postErr := m.sandbox.PostStop(context.Background(), rollbackOpts); postErr != nil {
+			// Use a separate context with timeout for rollback since the original
+			// ctx may already be cancelled (which triggered the failure path).
+			rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer rollbackCancel()
+			if postErr := m.sandbox.PostStop(rollbackCtx, rollbackOpts); postErr != nil {
 				debugSession("sandbox rollback after tmux failure", postErr)
 			}
 		}
@@ -595,7 +604,12 @@ func (m *SessionManager) isSessionStale(sessionID string) bool {
 }
 
 // Stop terminates a polecat session.
-func (m *SessionManager) Stop(polecat string, force bool) error {
+// The provided context controls cancellation of sandbox operations (PostStop).
+// If ctx is nil, context.Background() is used for backward compatibility.
+func (m *SessionManager) Stop(ctx context.Context, polecat string, force bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	sessionID := m.SessionName(polecat)
 
 	running, err := m.tmux.HasSession(sessionID)
@@ -627,7 +641,7 @@ func (m *SessionManager) Stop(polecat string, force bool) error {
 			WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
 			RigSettings:   m.settings,
 		}
-		if err := m.sandbox.PostStop(context.Background(), opts); err != nil {
+		if err := m.sandbox.PostStop(ctx, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: sandbox post-stop failed for %s: %v\n", polecat, err)
 		}
 	}
@@ -811,7 +825,12 @@ func (m *SessionManager) Inject(polecat, message string) error {
 }
 
 // StopAll terminates all polecat sessions for this rig.
-func (m *SessionManager) StopAll(force bool) error {
+// The provided context controls cancellation of sandbox operations.
+// If ctx is nil, context.Background() is used for backward compatibility.
+func (m *SessionManager) StopAll(ctx context.Context, force bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	infos, err := m.ListPolecats()
 	if err != nil {
 		return err
@@ -819,7 +838,7 @@ func (m *SessionManager) StopAll(force bool) error {
 
 	var errs []error
 	for _, info := range infos {
-		if err := m.Stop(info.Polecat, force); err != nil {
+		if err := m.Stop(ctx, info.Polecat, force); err != nil {
 			errs = append(errs, fmt.Errorf("stopping %s: %w", info.Polecat, err))
 		}
 	}
