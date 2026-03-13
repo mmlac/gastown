@@ -24,8 +24,11 @@ func newWrapperReplacer(ctx WrapperContext) *strings.Replacer {
 
 // ExpandWrapper replaces {{var}} placeholders in wrapper args.
 func ExpandWrapper(wrapper []string, ctx WrapperContext) []string {
-	if len(wrapper) == 0 {
+	if wrapper == nil {
 		return nil
+	}
+	if len(wrapper) == 0 {
+		return []string{}
 	}
 	replacer := newWrapperReplacer(ctx)
 	expanded := make([]string, len(wrapper))

@@ -6,13 +6,17 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestExpandWrapper_EmptySlice(t *testing.T) {
+func TestExpandWrapper_NilReturnsNil(t *testing.T) {
 	ctx := WrapperContext{Rig: "myrig", Polecat: "mypolecat"}
 	result := ExpandWrapper(nil, ctx)
 	assert.Nil(t, result)
+}
 
-	result = ExpandWrapper([]string{}, ctx)
-	assert.Nil(t, result)
+func TestExpandWrapper_EmptyReturnsEmpty(t *testing.T) {
+	ctx := WrapperContext{Rig: "myrig", Polecat: "mypolecat"}
+	result := ExpandWrapper([]string{}, ctx)
+	assert.NotNil(t, result)
+	assert.Equal(t, []string{}, result)
 }
 
 func TestExpandWrapper_StaticArgs(t *testing.T) {
