@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/steveyegge/gastown/internal/config"
@@ -569,7 +570,7 @@ func TestPostStop_NoAutoStopOrDelete(t *testing.T) {
 	}
 }
 
-func TestPostStop_CertRevocationError_NonFatal(t *testing.T) {
+func TestPostStop_CertRevocationError_ReturnsError(t *testing.T) {
 	client := newMockClient("gt-abc")
 	issuer := &mockCertIssuer{denyErr: errors.New("proxy down")}
 	d := NewDaytonaSandbox(client, issuer, nil)
@@ -579,15 +580,64 @@ func TestPostStop_CertRevocationError_NonFatal(t *testing.T) {
 	opts.CertSerial = "abc123"
 	opts.RigSettings.RemoteBackend.AutoStop = true
 
-	// PostStop should NOT return an error even if cert revocation fails.
+	// PostStop should return an error when cert revocation fails after retries.
 	err := d.PostStop(ctx, opts)
-	if err != nil {
-		t.Fatalf("PostStop() should be non-fatal on cert revocation error, got: %v", err)
+	if err == nil {
+		t.Fatal("PostStop() should return error on cert revocation failure")
+	}
+	if !strings.Contains(err.Error(), "proxy down") {
+		t.Errorf("expected error to contain 'proxy down', got: %v", err)
 	}
 
-	// Should still attempt to stop the workspace.
+	// Should have retried DenyCert the configured number of times.
+	if len(issuer.denyCalls) != certRevocationRetries {
+		t.Errorf("expected %d DenyCert attempts, got %d", certRevocationRetries, len(issuer.denyCalls))
+	}
+
+	// Should still attempt to stop the workspace despite cert failure.
 	if len(client.stopCalls) != 1 {
 		t.Errorf("expected workspace Stop even after cert failure, got %d calls", len(client.stopCalls))
+	}
+}
+
+// mockTransientCertIssuer fails the first N calls to DenyCert, then succeeds.
+type mockTransientCertIssuer struct {
+	mockCertIssuer
+	failCount    int // how many times to fail before succeeding
+	callCount    int
+	transientErr error
+}
+
+func (m *mockTransientCertIssuer) DenyCert(ctx context.Context, serial string) error {
+	m.denyCalls = append(m.denyCalls, serial)
+	m.callCount++
+	if m.callCount <= m.failCount {
+		return m.transientErr
+	}
+	return nil
+}
+
+func TestPostStop_CertRevocationRetrySuccess(t *testing.T) {
+	client := newMockClient("gt-abc")
+	issuer := &mockTransientCertIssuer{
+		failCount:    1,
+		transientErr: errors.New("proxy temporarily unavailable"),
+	}
+	d := NewDaytonaSandbox(client, issuer, nil)
+
+	ctx := context.Background()
+	opts := defaultOpts("gt-abc-TestRig--obsidian")
+	opts.CertSerial = "abc123"
+
+	// Should succeed after retrying.
+	err := d.PostStop(ctx, opts)
+	if err != nil {
+		t.Fatalf("PostStop() should succeed after transient failure, got: %v", err)
+	}
+
+	// Should have called DenyCert twice (1 failure + 1 success).
+	if issuer.callCount != 2 {
+		t.Errorf("expected 2 DenyCert attempts, got %d", issuer.callCount)
 	}
 }
 

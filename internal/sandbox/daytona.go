@@ -190,20 +190,48 @@ func (d *DaytonaSandbox) PreStart(ctx context.Context, opts SandboxOpts) (map[st
 	return innerEnv, nil
 }
 
+// certRevocationRetries is the number of DenyCert attempts before giving up.
+const certRevocationRetries = 3
+
+// certRevocationBaseDelay is the initial backoff between DenyCert retries.
+const certRevocationBaseDelay = 1 * time.Second
+
 // PostStop is called after the tmux session is killed.
 // It revokes the polecat's mTLS certificate (critical ordering: revoke before
 // any bead state changes to prevent a rogue process from using the cert),
 // then optionally stops and/or deletes the workspace.
 //
-// All errors are non-fatal — reconciliation handles cleanup that PostStop misses.
+// Cert revocation failure is returned as an error after workspace cleanup
+// completes, so callers can detect incomplete revocation.
+// Workspace stop/delete errors remain non-fatal (logged as warnings).
 func (d *DaytonaSandbox) PostStop(ctx context.Context, opts SandboxOpts) error {
 	// 1. Revoke cert BEFORE any bead state changes.
 	//    This ordering is critical: revoking first prevents the (now-dead)
 	//    polecat's cert from being used by a rogue process.
+	var certErr error
 	if opts.CertSerial != "" {
-		if err := d.certIssuer.DenyCert(ctx, opts.CertSerial); err != nil {
-			slog.Warn("cert revocation failed", "serial", opts.CertSerial, "err", err)
-			// Non-fatal — reconciliation will catch orphaned certs.
+		for attempt := 1; attempt <= certRevocationRetries; attempt++ {
+			if err := d.certIssuer.DenyCert(ctx, opts.CertSerial); err != nil {
+				certErr = err
+				if attempt < certRevocationRetries {
+					delay := certRevocationBaseDelay * time.Duration(1<<(attempt-1))
+					slog.Warn("cert revocation failed, retrying",
+						"serial", opts.CertSerial, "attempt", attempt, "err", err)
+					select {
+					case <-ctx.Done():
+						certErr = fmt.Errorf("cert revocation interrupted: %w", ctx.Err())
+					case <-time.After(delay):
+						continue
+					}
+				}
+				break
+			}
+			certErr = nil
+			break
+		}
+		if certErr != nil {
+			slog.Error("cert revocation failed after retries",
+				"serial", opts.CertSerial, "attempts", certRevocationRetries, "err", certErr)
 		}
 	} else {
 		slog.Warn("cert serial not available for revocation, cert will not be revoked",
@@ -218,7 +246,7 @@ func (d *DaytonaSandbox) PostStop(ctx context.Context, opts SandboxOpts) error {
 	if rb == nil {
 		slog.Debug("PostStop: RemoteBackend is nil, skipping workspace cleanup",
 			"rig", opts.Rig, "polecat", opts.Polecat)
-		return nil
+		return certErr
 	}
 
 	// 2. Optionally stop the workspace.
@@ -237,7 +265,7 @@ func (d *DaytonaSandbox) PostStop(ctx context.Context, opts SandboxOpts) error {
 		}
 	}
 
-	return nil
+	return certErr
 }
 
 // Reconcile is called periodically by patrol to discover orphaned workspaces
