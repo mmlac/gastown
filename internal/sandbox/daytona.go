@@ -181,6 +181,7 @@ func (d *DaytonaSandbox) PreStart(ctx context.Context, opts SandboxOpts) (map[st
 		"GIT_COMMITTER_NAME":  opts.Polecat,
 		"GIT_COMMITTER_EMAIL": opts.Polecat + "@gastown.local",
 		"BD_DOLT_AUTO_COMMIT": "off",
+		"GT_CERT_SERIAL":     certResult.Serial,
 	}
 	if opts.Branch != "" {
 		innerEnv["GT_REPO_BRANCH"] = opts.Branch
@@ -199,10 +200,14 @@ func (d *DaytonaSandbox) PostStop(ctx context.Context, opts SandboxOpts) error {
 	// 1. Revoke cert BEFORE any bead state changes.
 	//    This ordering is critical: revoking first prevents the (now-dead)
 	//    polecat's cert from being used by a rogue process.
-	identity := fmt.Sprintf("gt-%s-%s", opts.Rig, opts.Polecat)
-	if err := d.certIssuer.DenyCert(ctx, identity); err != nil {
-		slog.Warn("cert revocation failed", "identity", identity, "err", err)
-		// Non-fatal — reconciliation will catch orphaned certs.
+	if opts.CertSerial != "" {
+		if err := d.certIssuer.DenyCert(ctx, opts.CertSerial); err != nil {
+			slog.Warn("cert revocation failed", "serial", opts.CertSerial, "err", err)
+			// Non-fatal — reconciliation will catch orphaned certs.
+		}
+	} else {
+		slog.Warn("cert serial not available for revocation, cert will not be revoked",
+			"rig", opts.Rig, "polecat", opts.Polecat)
 	}
 
 	rb := opts.RigSettings.RemoteBackend

@@ -413,6 +413,12 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 	}
 	command = config.PrependEnv(command, envVarsToInject)
 
+	// Extract cert serial from sandbox inner env for rollback and tmux storage.
+	var certSerial string
+	if sandboxInnerEnv != nil {
+		certSerial = sandboxInnerEnv["GT_CERT_SERIAL"]
+	}
+
 	// Create session with command directly to avoid send-keys race condition.
 	// See: https://github.com/anthropics/gastown/issues/280
 	if err := m.tmux.NewSessionWithCommand(sessionID, workDir, command); err != nil {
@@ -423,6 +429,7 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 				Polecat:       polecat,
 				WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
 				RigSettings:   m.settings,
+				CertSerial:    certSerial,
 			}
 			// Use a separate context with timeout for rollback since the original
 			// ctx may already be cancelled (which triggered the failure path).
@@ -471,6 +478,12 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 	debugSession("SetEnvironment GT_TOWN_ROOT", m.tmux.SetEnvironment(sessionID, "GT_TOWN_ROOT", townRoot))
 	// Set GT_RUN in the session environment so respawned processes also inherit it.
 	debugSession("SetEnvironment GT_RUN", m.tmux.SetEnvironment(sessionID, "GT_RUN", runID))
+
+	// Store cert serial in tmux session environment so PostStop can revoke
+	// the correct certificate. The serial survives session restarts.
+	if certSerial != "" {
+		debugSession("SetEnvironment GT_CERT_SERIAL", m.tmux.SetEnvironment(sessionID, "GT_CERT_SERIAL", certSerial))
+	}
 
 	// Disable Dolt auto-commit in tmux session environment (gt-5cc2p).
 	// This ensures respawned processes also inherit the setting.
@@ -620,6 +633,13 @@ func (m *SessionManager) Stop(ctx context.Context, polecat string, force bool) e
 		return ErrSessionNotFound
 	}
 
+	// Read cert serial from tmux env BEFORE killing the session.
+	// The serial was stored by Start() after PreStart issued the certificate.
+	var certSerial string
+	if m.sandbox != nil {
+		certSerial, _ = m.tmux.GetEnvironment(sessionID, "GT_CERT_SERIAL")
+	}
+
 	// Try graceful shutdown first
 	if !force {
 		_ = m.tmux.SendKeysRaw(sessionID, "C-c")
@@ -640,6 +660,7 @@ func (m *SessionManager) Stop(ctx context.Context, polecat string, force bool) e
 			Polecat:       polecat,
 			WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
 			RigSettings:   m.settings,
+			CertSerial:    certSerial,
 		}
 		if err := m.sandbox.PostStop(ctx, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: sandbox post-stop failed for %s: %v\n", polecat, err)

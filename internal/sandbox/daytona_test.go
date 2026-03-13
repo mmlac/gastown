@@ -207,6 +207,7 @@ func TestPreStart_NewWorkspace(t *testing.T) {
 		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
 		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
 		"BD_DOLT_AUTO_COMMIT",
+		"GT_CERT_SERIAL",
 	}
 	for _, key := range expectedEnvKeys {
 		if _, ok := env[key]; !ok {
@@ -228,6 +229,9 @@ func TestPreStart_NewWorkspace(t *testing.T) {
 	}
 	if env["BD_DOLT_AUTO_COMMIT"] != "off" {
 		t.Errorf("BD_DOLT_AUTO_COMMIT = %q, want %q", env["BD_DOLT_AUTO_COMMIT"], "off")
+	}
+	if env["GT_CERT_SERIAL"] != "abc123" {
+		t.Errorf("GT_CERT_SERIAL = %q, want %q", env["GT_CERT_SERIAL"], "abc123")
 	}
 
 	// Should NOT have GT_REPO_BRANCH (no branch set).
@@ -437,18 +441,38 @@ func TestPostStop_CertRevocation(t *testing.T) {
 
 	ctx := context.Background()
 	opts := defaultOpts("gt-abc-TestRig--obsidian")
+	opts.CertSerial = "abc123"
 
 	err := d.PostStop(ctx, opts)
 	if err != nil {
 		t.Fatalf("PostStop() error: %v", err)
 	}
 
-	// Should have denied cert with the identity CN format.
+	// Should have denied cert with the serial number, not the CN.
 	if len(issuer.denyCalls) != 1 {
 		t.Fatalf("expected 1 DenyCert call, got %d", len(issuer.denyCalls))
 	}
-	if issuer.denyCalls[0] != "gt-TestRig-obsidian" {
-		t.Errorf("DenyCert identity = %q, want %q", issuer.denyCalls[0], "gt-TestRig-obsidian")
+	if issuer.denyCalls[0] != "abc123" {
+		t.Errorf("DenyCert serial = %q, want %q", issuer.denyCalls[0], "abc123")
+	}
+}
+
+func TestPostStop_NoCertSerial_SkipsRevocation(t *testing.T) {
+	client := newMockClient("gt-abc")
+	issuer := &mockCertIssuer{}
+	d := NewDaytonaSandbox(client, issuer, nil)
+
+	ctx := context.Background()
+	opts := defaultOpts("gt-abc-TestRig--obsidian")
+	// CertSerial is empty — should skip DenyCert call.
+
+	err := d.PostStop(ctx, opts)
+	if err != nil {
+		t.Fatalf("PostStop() error: %v", err)
+	}
+
+	if len(issuer.denyCalls) != 0 {
+		t.Errorf("expected 0 DenyCert calls when CertSerial is empty, got %d", len(issuer.denyCalls))
 	}
 }
 
@@ -461,6 +485,7 @@ func TestPostStop_AutoStop(t *testing.T) {
 
 	ctx := context.Background()
 	opts := defaultOpts(wsName)
+	opts.CertSerial = "abc123"
 	opts.RigSettings.RemoteBackend.AutoStop = true
 
 	err := d.PostStop(ctx, opts)
@@ -482,6 +507,7 @@ func TestPostStop_AutoDelete(t *testing.T) {
 
 	ctx := context.Background()
 	opts := defaultOpts(wsName)
+	opts.CertSerial = "abc123"
 	opts.RigSettings.RemoteBackend.AutoDelete = true
 
 	err := d.PostStop(ctx, opts)
@@ -503,6 +529,7 @@ func TestPostStop_AutoStopAndAutoDelete(t *testing.T) {
 
 	ctx := context.Background()
 	opts := defaultOpts(wsName)
+	opts.CertSerial = "abc123"
 	opts.RigSettings.RemoteBackend.AutoStop = true
 	opts.RigSettings.RemoteBackend.AutoDelete = true
 
@@ -549,6 +576,7 @@ func TestPostStop_CertRevocationError_NonFatal(t *testing.T) {
 
 	ctx := context.Background()
 	opts := defaultOpts("gt-abc-TestRig--obsidian")
+	opts.CertSerial = "abc123"
 	opts.RigSettings.RemoteBackend.AutoStop = true
 
 	// PostStop should NOT return an error even if cert revocation fails.
@@ -571,6 +599,7 @@ func TestPostStop_StopError_NonFatal(t *testing.T) {
 
 	ctx := context.Background()
 	opts := defaultOpts("gt-abc-TestRig--obsidian")
+	opts.CertSerial = "abc123"
 	opts.RigSettings.RemoteBackend.AutoStop = true
 	opts.RigSettings.RemoteBackend.AutoDelete = true
 
@@ -592,6 +621,7 @@ func TestPostStop_NilRemoteBackend(t *testing.T) {
 
 	ctx := context.Background()
 	opts := defaultOpts("gt-abc-TestRig--obsidian")
+	opts.CertSerial = "abc123"
 	opts.RigSettings.RemoteBackend = nil
 
 	err := d.PostStop(ctx, opts)

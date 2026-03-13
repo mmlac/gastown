@@ -70,6 +70,11 @@ type SandboxOpts struct {
 	// Branch is the git branch to check out in the workspace.
 	// Used during workspace creation to set the initial branch.
 	Branch string
+
+	// CertSerial is the certificate serial number (lowercase hex) issued during
+	// PreStart. PostStop uses this to revoke the correct certificate.
+	// Set by SessionManager after reading from tmux environment.
+	CertSerial string
 }
 
 // ReconcileOpts contains the parameters for periodic reconciliation.
