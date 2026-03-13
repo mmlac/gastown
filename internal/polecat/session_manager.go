@@ -42,10 +42,11 @@ var (
 
 // SessionManager handles polecat session lifecycle.
 type SessionManager struct {
-	tmux     *tmux.Tmux
-	rig      *rig.Rig
-	sandbox  sandbox.Lifecycle    // nil for local-only rigs
-	settings *config.RigSettings  // for exec-wrapper resolution
+	tmux          *tmux.Tmux
+	rig           *rig.Rig
+	sandbox       sandbox.Lifecycle    // nil for local-only rigs
+	settings      *config.RigSettings  // for exec-wrapper resolution
+	installPrefix string               // shortened installation identifier (gt-<installID>)
 }
 
 // SessionManagerOption configures optional SessionManager fields.
@@ -63,6 +64,14 @@ func WithSandbox(s sandbox.Lifecycle) SessionManagerOption {
 func WithSettings(s *config.RigSettings) SessionManagerOption {
 	return func(sm *SessionManager) {
 		sm.settings = s
+	}
+}
+
+// WithInstallPrefix sets the shortened installation identifier (gt-<installID>)
+// used to populate SandboxOpts.InstallPrefix for workspace scoping.
+func WithInstallPrefix(prefix string) SessionManagerOption {
+	return func(sm *SessionManager) {
+		sm.installPrefix = prefix
 	}
 }
 
@@ -295,6 +304,7 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 		sandboxOpts := sandbox.SandboxOpts{
 			Rig:           m.rig.Name,
 			Polecat:       polecat,
+			InstallPrefix: m.installPrefix,
 			WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
 			RigSettings:   m.settings,
 			Branch:        opts.Branch,
@@ -427,6 +437,7 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 			rollbackOpts := sandbox.SandboxOpts{
 				Rig:           m.rig.Name,
 				Polecat:       polecat,
+				InstallPrefix: m.installPrefix,
 				WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
 				RigSettings:   m.settings,
 				CertSerial:    certSerial,
@@ -658,6 +669,7 @@ func (m *SessionManager) Stop(ctx context.Context, polecat string, force bool) e
 		opts := sandbox.SandboxOpts{
 			Rig:           m.rig.Name,
 			Polecat:       polecat,
+			InstallPrefix: m.installPrefix,
 			WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
 			RigSettings:   m.settings,
 			CertSerial:    certSerial,

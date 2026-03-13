@@ -809,7 +809,7 @@ func TestSessionManager_Start_WithSandbox(t *testing.T) {
 		Path:     root,
 		Polecats: []string{polecatName},
 	}
-	sm := NewSessionManager(tmux.NewTmux(), r, WithSandbox(sbx), WithSettings(settings))
+	sm := NewSessionManager(tmux.NewTmux(), r, WithSandbox(sbx), WithSettings(settings), WithInstallPrefix("gt-xyz"))
 
 	// Verify sandbox is set.
 	if sm.sandbox == nil {
@@ -852,6 +852,9 @@ func TestSessionManager_Start_WithSandbox(t *testing.T) {
 	if opts.Polecat != polecatName {
 		t.Errorf("opts.Polecat = %q, want %q", opts.Polecat, polecatName)
 	}
+	if opts.InstallPrefix != "gt-xyz" {
+		t.Errorf("opts.InstallPrefix = %q, want %q", opts.InstallPrefix, "gt-xyz")
+	}
 	if opts.WorkspaceName != expectedWs {
 		t.Errorf("opts.WorkspaceName = %q, want %q", opts.WorkspaceName, expectedWs)
 	}
@@ -891,7 +894,7 @@ func TestSessionManager_Stop_WithSandbox(t *testing.T) {
 		Polecats: []string{polecatName},
 	}
 	tm := tmux.NewTmux()
-	sm := NewSessionManager(tm, r, WithSandbox(sbx), WithSettings(settings))
+	sm := NewSessionManager(tm, r, WithSandbox(sbx), WithSettings(settings), WithInstallPrefix("gt-abc"))
 
 	// Create a tmux session manually to simulate a running polecat.
 	sessionID := sm.SessionName(polecatName)
@@ -923,6 +926,9 @@ func TestSessionManager_Stop_WithSandbox(t *testing.T) {
 	}
 	if opts.Polecat != polecatName {
 		t.Errorf("PostStop opts.Polecat = %q, want %q", opts.Polecat, polecatName)
+	}
+	if opts.InstallPrefix != "gt-abc" {
+		t.Errorf("PostStop opts.InstallPrefix = %q, want %q", opts.InstallPrefix, "gt-abc")
 	}
 	expectedWs := "gt-abc-gastown--" + polecatName
 	if opts.WorkspaceName != expectedWs {
@@ -1039,6 +1045,24 @@ func TestWithSandbox_Option(t *testing.T) {
 	sm = NewSessionManager(tmux.NewTmux(), r, WithSandbox(sbx))
 	if sm.sandbox == nil {
 		t.Error("SessionManager with WithSandbox should have non-nil sandbox")
+	}
+}
+
+// TestWithInstallPrefix_Option verifies that the WithInstallPrefix functional option
+// correctly sets the installPrefix field on SessionManager.
+func TestWithInstallPrefix_Option(t *testing.T) {
+	r := &rig.Rig{Name: "testrig"}
+
+	// Without option: installPrefix is empty.
+	sm := NewSessionManager(tmux.NewTmux(), r)
+	if sm.installPrefix != "" {
+		t.Error("default SessionManager should have empty installPrefix")
+	}
+
+	// With option: installPrefix is set.
+	sm = NewSessionManager(tmux.NewTmux(), r, WithInstallPrefix("gt-abc123"))
+	if sm.installPrefix != "gt-abc123" {
+		t.Errorf("installPrefix = %q, want %q", sm.installPrefix, "gt-abc123")
 	}
 }
 
