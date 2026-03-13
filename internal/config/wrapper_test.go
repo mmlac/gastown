@@ -109,3 +109,47 @@ func TestExpandWrapper_DoesNotMutateInput(t *testing.T) {
 	ExpandWrapper(wrapper, ctx)
 	assert.Equal(t, original, wrapper, "ExpandWrapper should not mutate the input slice")
 }
+
+func TestExpandInnerEnvValues_NilReturnsNil(t *testing.T) {
+	ctx := WrapperContext{Rig: "myrig"}
+	result := ExpandInnerEnvValues(nil, ctx)
+	assert.Nil(t, result)
+}
+
+func TestExpandInnerEnvValues_EmptyReturnsEmpty(t *testing.T) {
+	ctx := WrapperContext{Rig: "myrig"}
+	result := ExpandInnerEnvValues(map[string]string{}, ctx)
+	assert.Equal(t, map[string]string{}, result)
+}
+
+func TestExpandInnerEnvValues_ExpandsTemplateVars(t *testing.T) {
+	ctx := WrapperContext{
+		Rig:           "furiosa",
+		Polecat:       "obsidian",
+		InstallPrefix: "gt-abc",
+		WorkDir:       "/workspace/repo",
+		WorkspaceName: "gt-abc-furiosa--obsidian",
+	}
+	innerEnv := map[string]string{
+		"GT_WORKDIR":   "/data/{{rig}}/{{polecat}}",
+		"GT_WORKSPACE": "{{workspace}}",
+		"GT_PLAIN":     "no-templates-here",
+	}
+	result := ExpandInnerEnvValues(innerEnv, ctx)
+
+	assert.Equal(t, "/data/furiosa/obsidian", result["GT_WORKDIR"])
+	assert.Equal(t, "gt-abc-furiosa--obsidian", result["GT_WORKSPACE"])
+	assert.Equal(t, "no-templates-here", result["GT_PLAIN"])
+}
+
+func TestExpandInnerEnvValues_DoesNotMutateInput(t *testing.T) {
+	ctx := WrapperContext{Rig: "myrig", Polecat: "mypolecat"}
+	innerEnv := map[string]string{
+		"KEY": "{{rig}}-{{polecat}}",
+	}
+	original := innerEnv["KEY"]
+
+	result := ExpandInnerEnvValues(innerEnv, ctx)
+	assert.Equal(t, "myrig-mypolecat", result["KEY"])
+	assert.Equal(t, original, innerEnv["KEY"], "ExpandInnerEnvValues should not mutate input map")
+}

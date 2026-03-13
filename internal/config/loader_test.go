@@ -5316,3 +5316,342 @@ func TestResolveExecWrapper_NoExecWrapperConfigured(t *testing.T) {
 		t.Errorf("expected nil for no exec_wrapper with context, got: %v", result)
 	}
 }
+
+// --- BuildStartupCommand inner env injection tests ---
+
+func TestBuildStartupCommand_NoInnerEnv_Unchanged(t *testing.T) {
+	t.Parallel()
+	townRoot := t.TempDir()
+	rigPath := filepath.Join(townRoot, "testrig")
+
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		Command: "claude",
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	// No inner env — command should be identical to existing behavior
+	cmd := BuildStartupCommand(map[string]string{"GT_ROLE": "polecat"}, rigPath, "")
+
+	// Should contain exec env and claude, but no inner env block
+	if !strings.Contains(cmd, "claude") {
+		t.Errorf("expected claude in command, got: %q", cmd)
+	}
+	// Should NOT contain "env " between wrapper and claude (no inner env)
+	if strings.Contains(cmd, "-- env ") {
+		t.Errorf("expected no inner env injection, got: %q", cmd)
+	}
+}
+
+func TestBuildStartupCommand_NoWrapper_NoInnerEnv_Unchanged(t *testing.T) {
+	t.Parallel()
+	townRoot := t.TempDir()
+	rigPath := filepath.Join(townRoot, "testrig")
+
+	// No exec wrapper configured
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		Command: "claude",
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	cmd := BuildStartupCommand(map[string]string{"GT_ROLE": "polecat"}, rigPath, "hello")
+
+	if !strings.Contains(cmd, "claude") {
+		t.Errorf("expected claude in command, got: %q", cmd)
+	}
+	if !strings.HasPrefix(cmd, "exec env ") {
+		t.Errorf("expected exec env prefix, got: %q", cmd)
+	}
+}
+
+func TestBuildStartupCommand_WrapperNoInnerEnv_Unchanged(t *testing.T) {
+	t.Parallel()
+	townRoot := t.TempDir()
+	rigPath := filepath.Join(townRoot, "testrig")
+
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		Command:     "claude",
+		ExecWrapper: []string{"exitbox", "run", "--profile=test", "--"},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	cmd := BuildStartupCommand(map[string]string{"GT_ROLE": "polecat"}, rigPath, "")
+
+	// Wrapper present, no inner env
+	if !strings.Contains(cmd, "exitbox run --profile=test -- claude") {
+		t.Errorf("expected wrapper before claude without inner env, got: %q", cmd)
+	}
+}
+
+func TestBuildStartupCommand_WrapperWithInnerEnvParam(t *testing.T) {
+	t.Parallel()
+	townRoot := t.TempDir()
+	rigPath := filepath.Join(townRoot, "testrig")
+
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		Command:     "claude",
+		ExecWrapper: []string{"daytona", "exec", "ws-name", "--tty", "--"},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	innerEnv := map[string]string{
+		"GT_PROXY_URL": "https://proxy:8443",
+		"GT_RIG":       "furiosa",
+	}
+	cmd := BuildStartupCommand(
+		map[string]string{"GT_ROLE": "polecat"},
+		rigPath, "hello", innerEnv,
+	)
+
+	// Inner env should appear after -- delimiter
+	if !strings.Contains(cmd, " -- env ") {
+		t.Errorf("expected inner env after --, got: %q", cmd)
+	}
+	// Outer env before wrapper
+	envIdx := strings.Index(cmd, "exec env")
+	wrapperIdx := strings.Index(cmd, "daytona exec")
+	if envIdx == -1 || wrapperIdx == -1 || envIdx >= wrapperIdx {
+		t.Errorf("expected outer env before wrapper, got: %q", cmd)
+	}
+	// Inner env vars should appear after the -- delimiter
+	delimIdx := strings.Index(cmd, " -- ")
+	if delimIdx == -1 {
+		t.Fatalf("expected -- delimiter in command, got: %q", cmd)
+	}
+	afterDelim := cmd[delimIdx:]
+	if !strings.Contains(afterDelim, "GT_PROXY_URL=https://proxy:8443") {
+		t.Errorf("expected GT_PROXY_URL in inner env after --, got: %q", cmd)
+	}
+	if !strings.Contains(afterDelim, "GT_RIG=furiosa") {
+		t.Errorf("expected GT_RIG in inner env after --, got: %q", cmd)
+	}
+}
+
+func TestBuildStartupCommand_InnerEnvFromConfig(t *testing.T) {
+	t.Parallel()
+	townRoot := t.TempDir()
+	rigPath := filepath.Join(townRoot, "testrig")
+
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		Command:             "claude",
+		ExecWrapper:         []string{"daytona", "exec", "ws", "--"},
+		ExecWrapperInnerEnv: map[string]string{"GT_PROXY_URL": "https://proxy:8443"},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	// No innerEnv parameter — should use rc.ExecWrapperInnerEnv
+	cmd := BuildStartupCommand(map[string]string{"GT_ROLE": "polecat"}, rigPath, "")
+
+	if !strings.Contains(cmd, " -- env GT_PROXY_URL=") {
+		t.Errorf("expected inner env from config after --, got: %q", cmd)
+	}
+	if !strings.Contains(cmd, "https://proxy:8443") {
+		t.Errorf("expected proxy URL in command, got: %q", cmd)
+	}
+}
+
+func TestBuildStartupCommand_InnerEnvParamOverridesConfig(t *testing.T) {
+	t.Parallel()
+	townRoot := t.TempDir()
+	rigPath := filepath.Join(townRoot, "testrig")
+
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		Command:             "claude",
+		ExecWrapper:         []string{"wrapper", "--"},
+		ExecWrapperInnerEnv: map[string]string{"KEY": "from-config"},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	// Parameter should override config value for same key
+	paramEnv := map[string]string{"KEY": "from-param"}
+	cmd := BuildStartupCommand(
+		map[string]string{"GT_ROLE": "polecat"},
+		rigPath, "", paramEnv,
+	)
+
+	if !strings.Contains(cmd, "KEY=from-param") {
+		t.Errorf("expected param to override config, got: %q", cmd)
+	}
+	if strings.Contains(cmd, "KEY=from-config") {
+		t.Errorf("config value should be overridden, got: %q", cmd)
+	}
+}
+
+func TestBuildStartupCommand_InnerEnvTemplateExpansion(t *testing.T) {
+	t.Parallel()
+	townRoot := t.TempDir()
+	rigPath := filepath.Join(townRoot, "testrig")
+
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		Command:     "claude",
+		ExecWrapper: []string{"daytona", "exec", "{{workspace}}", "--"},
+		ExecWrapperInnerEnv: map[string]string{
+			"GT_WORKDIR": "/workspace/{{rig}}/{{polecat}}",
+		},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	cmd := BuildStartupCommand(
+		map[string]string{
+			"GT_ROLE":    "polecat",
+			"GT_RIG":     "furiosa",
+			"GT_POLECAT": "obsidian",
+		},
+		rigPath, "",
+	)
+
+	// Inner env template vars should be expanded
+	if !strings.Contains(cmd, "GT_WORKDIR=/workspace/furiosa/obsidian") {
+		t.Errorf("expected expanded inner env template vars, got: %q", cmd)
+	}
+}
+
+func TestBuildStartupCommand_InnerEnvDeterministicOrdering(t *testing.T) {
+	t.Parallel()
+	townRoot := t.TempDir()
+	rigPath := filepath.Join(townRoot, "testrig")
+
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		Command:     "claude",
+		ExecWrapper: []string{"wrapper", "--"},
+		ExecWrapperInnerEnv: map[string]string{
+			"ZEBRA": "z",
+			"ALPHA": "a",
+			"MID":   "m",
+		},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	cmd := BuildStartupCommand(map[string]string{"GT_ROLE": "polecat"}, rigPath, "")
+
+	// Run twice to verify determinism
+	cmd2 := BuildStartupCommand(map[string]string{"GT_ROLE": "polecat"}, rigPath, "")
+	if cmd != cmd2 {
+		t.Errorf("non-deterministic output:\n  run1: %q\n  run2: %q", cmd, cmd2)
+	}
+
+	// Verify sorted order: ALPHA before MID before ZEBRA
+	alphaIdx := strings.Index(cmd, "ALPHA=a")
+	midIdx := strings.Index(cmd, "MID=m")
+	zebraIdx := strings.Index(cmd, "ZEBRA=z")
+	if alphaIdx == -1 || midIdx == -1 || zebraIdx == -1 {
+		t.Fatalf("missing inner env vars in: %q", cmd)
+	}
+	if !(alphaIdx < midIdx && midIdx < zebraIdx) {
+		t.Errorf("expected ALPHA < MID < ZEBRA ordering, got: %q", cmd)
+	}
+}
+
+func TestBuildStartupCommand_DaytonaFullCommand(t *testing.T) {
+	t.Parallel()
+	townRoot := t.TempDir()
+	rigPath := filepath.Join(townRoot, "testrig")
+
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		Command:     "claude",
+		ExecWrapper: []string{"daytona", "exec", "gt-inst-rig--bar", "--tty", "--"},
+		ExecWrapperInnerEnv: map[string]string{
+			"GT_PROXY_URL": "https://proxy:8443",
+			"GT_RIG":       "foo",
+		},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	cmd := BuildStartupCommand(
+		map[string]string{"GT_ROLE": "polecat", "GT_RUN": "abc"},
+		rigPath, "start working",
+	)
+
+	// Full structure: exec env OUTER... daytona exec ws --tty -- env INNER... claude --prompt '...'
+	if !strings.HasPrefix(cmd, "exec env ") {
+		t.Errorf("expected exec env prefix, got: %q", cmd)
+	}
+	if !strings.Contains(cmd, "daytona exec gt-inst-rig--bar --tty --") {
+		t.Errorf("expected wrapper, got: %q", cmd)
+	}
+	// Inner env after --
+	delimIdx := strings.Index(cmd, " -- env ")
+	if delimIdx == -1 {
+		t.Fatalf("expected inner env after --, got: %q", cmd)
+	}
+	// GT_PROXY_URL and GT_RIG should be in inner env (after --)
+	afterDelim := cmd[delimIdx:]
+	if !strings.Contains(afterDelim, "GT_PROXY_URL=") {
+		t.Errorf("expected GT_PROXY_URL in inner env, got: %q", cmd)
+	}
+	// claude should be the agent command after inner env
+	if !strings.Contains(afterDelim, "claude") {
+		t.Errorf("expected claude after inner env, got: %q", cmd)
+	}
+}
+
+func TestBuildStartupCommand_NilInnerEnvParam_Unchanged(t *testing.T) {
+	t.Parallel()
+	townRoot := t.TempDir()
+	rigPath := filepath.Join(townRoot, "testrig")
+
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		Command:     "claude",
+		ExecWrapper: []string{"wrapper", "--"},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	// Explicit nil inner env param — should behave identically to no param
+	cmdNoParam := BuildStartupCommand(map[string]string{"GT_ROLE": "polecat"}, rigPath, "")
+	cmdNilParam := BuildStartupCommand(map[string]string{"GT_ROLE": "polecat"}, rigPath, "", nil)
+
+	if cmdNoParam != cmdNilParam {
+		t.Errorf("nil param should match no param:\n  no-param: %q\n  nil-param: %q", cmdNoParam, cmdNilParam)
+	}
+}
+
+func TestBuildStartupCommand_EmptyInnerEnvParam_Unchanged(t *testing.T) {
+	t.Parallel()
+	townRoot := t.TempDir()
+	rigPath := filepath.Join(townRoot, "testrig")
+
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		Command:     "claude",
+		ExecWrapper: []string{"wrapper", "--"},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	cmdNoParam := BuildStartupCommand(map[string]string{"GT_ROLE": "polecat"}, rigPath, "")
+	cmdEmptyParam := BuildStartupCommand(map[string]string{"GT_ROLE": "polecat"}, rigPath, "", map[string]string{})
+
+	if cmdNoParam != cmdEmptyParam {
+		t.Errorf("empty param should match no param:\n  no-param: %q\n  empty-param: %q", cmdNoParam, cmdEmptyParam)
+	}
+}

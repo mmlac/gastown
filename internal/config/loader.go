@@ -1956,7 +1956,7 @@ func ExtractSimpleRole(gtRole string) string {
 // If envVars contains GT_ROLE, the function uses role-based agent resolution
 // (ResolveRoleAgentConfig) to select the appropriate agent for the role.
 // This enables per-role model selection via role_agents in settings.
-func BuildStartupCommand(envVars map[string]string, rigPath, prompt string) string {
+func BuildStartupCommand(envVars map[string]string, rigPath, prompt string, innerEnvOpt ...map[string]string) string {
 	var rc *RuntimeConfig
 	var townRoot string
 
@@ -2002,6 +2002,12 @@ func BuildStartupCommand(envVars map[string]string, rigPath, prompt string) stri
 	// ExecWrapper is a deployment-level setting (sandbox/container) independent of agent choice.
 	if len(rc.ExecWrapper) == 0 {
 		rc.ExecWrapper = resolveExecWrapper(rigPath, WrapperContext{})
+	}
+
+	// Apply inner env from rig/town settings if not already set on the resolved config.
+	// Like ExecWrapper, inner env is a deployment-level setting.
+	if len(rc.ExecWrapperInnerEnv) == 0 {
+		rc.ExecWrapperInnerEnv = resolveExecWrapperInnerEnv(rigPath)
 	}
 
 	// Copy env vars to avoid mutating caller map
@@ -2064,6 +2070,37 @@ func BuildStartupCommand(envVars map[string]string, rigPath, prompt string) stri
 		cmd += rc.BuildCommandWithPrompt(prompt)
 	} else {
 		cmd += rc.BuildCommand()
+	}
+
+	// Merge inner env from rc.ExecWrapperInnerEnv and optional parameter.
+	// The optional parameter overrides rc values for the same key.
+	var innerEnv map[string]string
+	if len(rc.ExecWrapperInnerEnv) > 0 {
+		innerEnv = make(map[string]string, len(rc.ExecWrapperInnerEnv))
+		for k, v := range rc.ExecWrapperInnerEnv {
+			innerEnv[k] = v
+		}
+	}
+	if len(innerEnvOpt) > 0 && len(innerEnvOpt[0]) > 0 {
+		if innerEnv == nil {
+			innerEnv = make(map[string]string, len(innerEnvOpt[0]))
+		}
+		for k, v := range innerEnvOpt[0] {
+			innerEnv[k] = v
+		}
+	}
+
+	// Expand template variables in inner env values and inject.
+	if len(innerEnv) > 0 {
+		ctx := WrapperContext{
+			Rig:     envVars["GT_RIG"],
+			Polecat: envVars["GT_POLECAT"],
+		}
+		if ctx.Polecat == "" {
+			ctx.Polecat = envVars["GT_CREW"]
+		}
+		innerEnv = ExpandInnerEnvValues(innerEnv, ctx)
+		cmd = InjectInnerEnv(cmd, innerEnv)
 	}
 
 	return cmd
@@ -2230,7 +2267,7 @@ func InjectInnerEnv(command string, innerEnv map[string]string) string {
 //  1. agentOverride (explicit override)
 //  2. role_agents[GT_ROLE] (if GT_ROLE is in envVars)
 //  3. Default agent resolution (rig's Agent → town's DefaultAgent → "claude")
-func BuildStartupCommandWithAgentOverride(envVars map[string]string, rigPath, prompt, agentOverride string) (string, error) {
+func BuildStartupCommandWithAgentOverride(envVars map[string]string, rigPath, prompt, agentOverride string, innerEnvOpt ...map[string]string) (string, error) {
 	var rc *RuntimeConfig
 	var townRoot string
 
@@ -2297,6 +2334,11 @@ func BuildStartupCommandWithAgentOverride(envVars map[string]string, rigPath, pr
 		rc.ExecWrapper = resolveExecWrapper(rigPath, WrapperContext{})
 	}
 
+	// Apply inner env from rig/town settings if not already set on the resolved config.
+	if len(rc.ExecWrapperInnerEnv) == 0 {
+		rc.ExecWrapperInnerEnv = resolveExecWrapperInnerEnv(rigPath)
+	}
+
 	// Copy env vars to avoid mutating caller map
 	resolvedEnv := make(map[string]string, len(envVars)+2)
 	for k, v := range envVars {
@@ -2353,6 +2395,36 @@ func BuildStartupCommandWithAgentOverride(envVars map[string]string, rigPath, pr
 		cmd += rc.BuildCommandWithPrompt(prompt)
 	} else {
 		cmd += rc.BuildCommand()
+	}
+
+	// Merge inner env from rc.ExecWrapperInnerEnv and optional parameter.
+	var innerEnv map[string]string
+	if len(rc.ExecWrapperInnerEnv) > 0 {
+		innerEnv = make(map[string]string, len(rc.ExecWrapperInnerEnv))
+		for k, v := range rc.ExecWrapperInnerEnv {
+			innerEnv[k] = v
+		}
+	}
+	if len(innerEnvOpt) > 0 && len(innerEnvOpt[0]) > 0 {
+		if innerEnv == nil {
+			innerEnv = make(map[string]string, len(innerEnvOpt[0]))
+		}
+		for k, v := range innerEnvOpt[0] {
+			innerEnv[k] = v
+		}
+	}
+
+	// Expand template variables in inner env values and inject.
+	if len(innerEnv) > 0 {
+		ctx := WrapperContext{
+			Rig:     envVars["GT_RIG"],
+			Polecat: envVars["GT_POLECAT"],
+		}
+		if ctx.Polecat == "" {
+			ctx.Polecat = envVars["GT_CREW"]
+		}
+		innerEnv = ExpandInnerEnvValues(innerEnv, ctx)
+		cmd = InjectInnerEnv(cmd, innerEnv)
 	}
 
 	return cmd, nil
@@ -2463,6 +2535,19 @@ func BuildCrewStartupCommandWithAgentOverride(rigName, crewName, rigPath, prompt
 // template expansion is skipped (backwards-compatible).
 // ExecWrapper is a deployment-level setting (sandbox/container) that wraps the agent binary.
 // It is independent of agent choice — exitbox wraps Claude, Codex, or any other runtime.
+// resolveExecWrapperInnerEnv loads exec_wrapper_inner_env from rig settings.
+// Returns nil if no inner env is configured.
+func resolveExecWrapperInnerEnv(rigPath string) map[string]string {
+	if rigPath != "" {
+		if rigSettings, err := LoadRigSettings(RigSettingsPath(rigPath)); err == nil && rigSettings != nil {
+			if rigSettings.Runtime != nil && len(rigSettings.Runtime.ExecWrapperInnerEnv) > 0 {
+				return rigSettings.Runtime.ExecWrapperInnerEnv
+			}
+		}
+	}
+	return nil
+}
+
 func resolveExecWrapper(rigPath string, ctx WrapperContext) []string {
 	if rigPath != "" {
 		if rigSettings, err := LoadRigSettings(RigSettingsPath(rigPath)); err == nil && rigSettings != nil {
