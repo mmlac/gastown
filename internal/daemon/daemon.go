@@ -28,6 +28,7 @@ import (
 	"github.com/steveyegge/gastown/internal/feed"
 	gitpkg "github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mayor"
+	"github.com/steveyegge/gastown/internal/patrol"
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/refinery"
 	"github.com/steveyegge/gastown/internal/rig"
@@ -44,8 +45,9 @@ import (
 // This is recovery-focused: normal wake is handled by feed subscription (bd activity --follow).
 // The daemon is the safety net for dead sessions, GUPP violations, and orphaned work.
 type Daemon struct {
-	config        *Config
-	patrolConfig  *DaemonPatrolConfig
+	config         *Config
+	patrolConfig   *DaemonPatrolConfig
+	patrolRegistry *patrol.Registry
 	tmux          *tmux.Tmux
 	logger        *log.Logger
 	ctx           context.Context
@@ -249,6 +251,7 @@ func New(config *Config) (*Daemon, error) {
 	return &Daemon{
 		config:         config,
 		patrolConfig:   patrolConfig,
+		patrolRegistry: configurePatrolRegistry(patrolConfig),
 		tmux:           tmux.NewTmux(),
 		logger:         logger,
 		ctx:            ctx,
@@ -392,8 +395,8 @@ func (d *Daemon) Run() error {
 	// to periodically push databases to their git remotes.
 	var doltRemotesTicker *time.Ticker
 	var doltRemotesChan <-chan time.Time
-	if IsPatrolEnabled(d.patrolConfig, "dolt_remotes") {
-		interval := doltRemotesInterval(d.patrolConfig)
+	if d.patrolRegistry.IsEnabled("dolt_remotes") {
+		interval := d.patrolRegistry.Interval("dolt_remotes")
 		doltRemotesTicker = time.NewTicker(interval)
 		doltRemotesChan = doltRemotesTicker.C
 		defer doltRemotesTicker.Stop()
@@ -404,8 +407,8 @@ func (d *Daemon) Run() error {
 	// Runs filesystem backup sync (dolt backup sync) for production databases.
 	var doltBackupTicker *time.Ticker
 	var doltBackupChan <-chan time.Time
-	if IsPatrolEnabled(d.patrolConfig, "dolt_backup") {
-		interval := doltBackupInterval(d.patrolConfig)
+	if d.patrolRegistry.IsEnabled("dolt_backup") {
+		interval := d.patrolRegistry.Interval("dolt_backup")
 		doltBackupTicker = time.NewTicker(interval)
 		doltBackupChan = doltBackupTicker.C
 		defer doltBackupTicker.Stop()
@@ -416,8 +419,8 @@ func (d *Daemon) Run() error {
 	// Exports issues to JSONL, scrubs ephemeral data, pushes to git repo.
 	var jsonlGitBackupTicker *time.Ticker
 	var jsonlGitBackupChan <-chan time.Time
-	if IsPatrolEnabled(d.patrolConfig, "jsonl_git_backup") {
-		interval := jsonlGitBackupInterval(d.patrolConfig)
+	if d.patrolRegistry.IsEnabled("jsonl_git_backup") {
+		interval := d.patrolRegistry.Interval("jsonl_git_backup")
 		jsonlGitBackupTicker = time.NewTicker(interval)
 		jsonlGitBackupChan = jsonlGitBackupTicker.C
 		defer jsonlGitBackupTicker.Stop()
@@ -428,8 +431,8 @@ func (d *Daemon) Run() error {
 	// Closes stale wisps (abandoned molecule steps, old patrol data) across all databases.
 	var wispReaperTicker *time.Ticker
 	var wispReaperChan <-chan time.Time
-	if IsPatrolEnabled(d.patrolConfig, "wisp_reaper") {
-		interval := wispReaperInterval(d.patrolConfig)
+	if d.patrolRegistry.IsEnabled("wisp_reaper") {
+		interval := d.patrolRegistry.Interval("wisp_reaper")
 		wispReaperTicker = time.NewTicker(interval)
 		wispReaperChan = wispReaperTicker.C
 		defer wispReaperTicker.Stop()
@@ -440,8 +443,8 @@ func (d *Daemon) Run() error {
 	// Health monitor: TCP check, latency, DB count, gc, zombie detection, backup/disk checks.
 	var doctorDogTicker *time.Ticker
 	var doctorDogChan <-chan time.Time
-	if IsPatrolEnabled(d.patrolConfig, "doctor_dog") {
-		interval := doctorDogInterval(d.patrolConfig)
+	if d.patrolRegistry.IsEnabled("doctor_dog") {
+		interval := d.patrolRegistry.Interval("doctor_dog")
 		doctorDogTicker = time.NewTicker(interval)
 		doctorDogChan = doctorDogTicker.C
 		defer doctorDogTicker.Stop()
@@ -452,8 +455,8 @@ func (d *Daemon) Run() error {
 	// Flattens Dolt commit history to reclaim graph storage (daily).
 	var compactorDogTicker *time.Ticker
 	var compactorDogChan <-chan time.Time
-	if IsPatrolEnabled(d.patrolConfig, "compactor_dog") {
-		interval := compactorDogInterval(d.patrolConfig)
+	if d.patrolRegistry.IsEnabled("compactor_dog") {
+		interval := d.patrolRegistry.Interval("compactor_dog")
 		compactorDogTicker = time.NewTicker(interval)
 		compactorDogChan = compactorDogTicker.C
 		defer compactorDogTicker.Stop()
@@ -465,8 +468,8 @@ func (d *Daemon) Run() error {
 	// runs `gt maintain --force` when commit counts exceed threshold.
 	var scheduledMaintenanceTicker *time.Ticker
 	var scheduledMaintenanceChan <-chan time.Time
-	if IsPatrolEnabled(d.patrolConfig, "scheduled_maintenance") {
-		interval := maintenanceCheckInterval(d.patrolConfig)
+	if d.patrolRegistry.IsEnabled("scheduled_maintenance") {
+		interval := d.patrolRegistry.Interval("scheduled_maintenance")
 		scheduledMaintenanceTicker = time.NewTicker(interval)
 		scheduledMaintenanceChan = scheduledMaintenanceTicker.C
 		defer scheduledMaintenanceTicker.Stop()
@@ -613,7 +616,7 @@ func (d *Daemon) heartbeat(state *State) {
 
 	// 1. Ensure Deacon is running (restart if dead)
 	// Check patrol config - can be disabled in mayor/daemon.json
-	if IsPatrolEnabled(d.patrolConfig, "deacon") {
+	if d.patrolRegistry.IsEnabled("deacon") {
 		d.ensureDeaconRunning()
 	} else {
 		d.logger.Printf("Deacon patrol disabled in config, skipping")
@@ -626,20 +629,20 @@ func (d *Daemon) heartbeat(state *State) {
 	// 2. Poke Boot for intelligent triage (stuck/nudge/interrupt)
 	// Boot handles nuanced "is Deacon responsive" decisions
 	// Only run if Deacon patrol is enabled
-	if IsPatrolEnabled(d.patrolConfig, "deacon") {
+	if d.patrolRegistry.IsEnabled("deacon") {
 		d.ensureBootRunning()
 	}
 
 	// 3. Direct Deacon heartbeat check (belt-and-suspenders)
 	// Boot may not detect all stuck states; this provides a fallback
 	// Only run if Deacon patrol is enabled
-	if IsPatrolEnabled(d.patrolConfig, "deacon") {
+	if d.patrolRegistry.IsEnabled("deacon") {
 		d.checkDeaconHeartbeat()
 	}
 
 	// 4. Ensure Witnesses are running for all rigs (restart if dead)
 	// Check patrol config - can be disabled in mayor/daemon.json
-	if IsPatrolEnabled(d.patrolConfig, "witness") {
+	if d.patrolRegistry.IsEnabled("witness") {
 		d.ensureWitnessesRunning()
 	} else {
 		d.logger.Printf("Witness patrol disabled in config, skipping")
@@ -650,7 +653,7 @@ func (d *Daemon) heartbeat(state *State) {
 	// 5. Ensure Refineries are running for all rigs (restart if dead)
 	// Check patrol config - can be disabled in mayor/daemon.json
 	// Pressure-gated: refineries consume API credits, defer when system is loaded.
-	if IsPatrolEnabled(d.patrolConfig, "refinery") {
+	if d.patrolRegistry.IsEnabled("refinery") {
 		if p := d.checkPressure("refinery"); !p.OK {
 			d.logger.Printf("Deferring refinery spawn: %s", p.Reason)
 		} else {
@@ -667,7 +670,7 @@ func (d *Daemon) heartbeat(state *State) {
 
 	// 6.5. Handle Dog lifecycle: cleanup stuck dogs and dispatch plugins
 	// Pressure-gated: dog dispatch spawns new agent sessions.
-	if IsPatrolEnabled(d.patrolConfig, "handler") {
+	if d.patrolRegistry.IsEnabled("handler") {
 		if p := d.checkPressure("dog"); !p.OK {
 			d.logger.Printf("Deferring dog dispatch: %s", p.Reason)
 			// Still run cleanup phases (stuck/stale/idle) — only skip dispatch

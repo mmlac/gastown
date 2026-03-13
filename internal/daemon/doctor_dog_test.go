@@ -54,9 +54,10 @@ func TestDoctorDogDatabases(t *testing.T) {
 	}
 }
 
-func TestIsPatrolEnabled_DoctorDog(t *testing.T) {
+func TestPatrolRegistryDoctorDog(t *testing.T) {
 	// Nil config: disabled (opt-in patrol)
-	if IsPatrolEnabled(nil, "doctor_dog") {
+	r := configurePatrolRegistry(nil)
+	if r.IsEnabled("doctor_dog") {
 		t.Error("expected doctor_dog to be disabled with nil config")
 	}
 
@@ -64,19 +65,22 @@ func TestIsPatrolEnabled_DoctorDog(t *testing.T) {
 	config := &DaemonPatrolConfig{
 		Patrols: &PatrolsConfig{},
 	}
-	if IsPatrolEnabled(config, "doctor_dog") {
+	r = configurePatrolRegistry(config)
+	if r.IsEnabled("doctor_dog") {
 		t.Error("expected doctor_dog to be disabled by default")
 	}
 
 	// Explicitly enabled
 	config.Patrols.DoctorDog = &DoctorDogConfig{Enabled: true}
-	if !IsPatrolEnabled(config, "doctor_dog") {
+	r = configurePatrolRegistry(config)
+	if !r.IsEnabled("doctor_dog") {
 		t.Error("expected doctor_dog to be enabled when configured")
 	}
 
 	// Explicitly disabled
 	config.Patrols.DoctorDog = &DoctorDogConfig{Enabled: false}
-	if IsPatrolEnabled(config, "doctor_dog") {
+	r = configurePatrolRegistry(config)
+	if r.IsEnabled("doctor_dog") {
 		t.Error("expected doctor_dog to be disabled when explicitly disabled")
 	}
 }

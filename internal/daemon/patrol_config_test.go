@@ -27,34 +27,45 @@ func TestLoadPatrolConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Load config
+	// Load config and build registry
 	config := LoadPatrolConfig(tmpDir)
 	if config == nil {
 		t.Fatal("expected config to be loaded")
 	}
 
-	// Test enabled flags
-	if IsPatrolEnabled(config, "refinery") {
+	// Test enabled flags via registry
+	r := configurePatrolRegistry(config)
+	if r.IsEnabled("refinery") {
 		t.Error("expected refinery to be disabled")
 	}
-	if !IsPatrolEnabled(config, "witness") {
+	if !r.IsEnabled("witness") {
 		t.Error("expected witness to be enabled")
 	}
-	if !IsPatrolEnabled(config, "deacon") {
+	if !r.IsEnabled("deacon") {
 		t.Error("expected deacon to be enabled (default)")
 	}
 }
 
-func TestIsPatrolEnabled_NilConfig(t *testing.T) {
-	// Should default to enabled when config is nil
-	if !IsPatrolEnabled(nil, "refinery") {
-		t.Error("expected default to be enabled")
+func TestPatrolRegistryNilConfig(t *testing.T) {
+	// Session lifecycle patrols default to enabled with nil config
+	r := configurePatrolRegistry(nil)
+	if !r.IsEnabled("refinery") {
+		t.Error("expected refinery to be enabled by default")
+	}
+	if !r.IsEnabled("deacon") {
+		t.Error("expected deacon to be enabled by default")
+	}
+
+	// Opt-in patrols default to disabled with nil config
+	if r.IsEnabled("dolt_remotes") {
+		t.Error("expected dolt_remotes to be disabled by default")
 	}
 }
 
-func TestIsPatrolEnabled_DoltRemotes(t *testing.T) {
+func TestPatrolRegistryDoltRemotes(t *testing.T) {
 	// dolt_remotes defaults to disabled even with nil config (opt-in patrol)
-	if IsPatrolEnabled(nil, "dolt_remotes") {
+	r := configurePatrolRegistry(nil)
+	if r.IsEnabled("dolt_remotes") {
 		t.Error("expected dolt_remotes to be disabled with nil config")
 	}
 
@@ -62,19 +73,22 @@ func TestIsPatrolEnabled_DoltRemotes(t *testing.T) {
 	config := &DaemonPatrolConfig{
 		Patrols: &PatrolsConfig{},
 	}
-	if IsPatrolEnabled(config, "dolt_remotes") {
+	r = configurePatrolRegistry(config)
+	if r.IsEnabled("dolt_remotes") {
 		t.Error("expected dolt_remotes to be disabled by default")
 	}
 
 	// Explicitly enabled
 	config.Patrols.DoltRemotes = &DoltRemotesConfig{Enabled: true}
-	if !IsPatrolEnabled(config, "dolt_remotes") {
+	r = configurePatrolRegistry(config)
+	if !r.IsEnabled("dolt_remotes") {
 		t.Error("expected dolt_remotes to be enabled when configured")
 	}
 
 	// Explicitly disabled
 	config.Patrols.DoltRemotes = &DoltRemotesConfig{Enabled: false}
-	if IsPatrolEnabled(config, "dolt_remotes") {
+	r = configurePatrolRegistry(config)
+	if r.IsEnabled("dolt_remotes") {
 		t.Error("expected dolt_remotes to be disabled when explicitly disabled")
 	}
 }
@@ -107,7 +121,8 @@ func TestSaveAndLoadPatrolConfig(t *testing.T) {
 		t.Fatal("expected config to be loaded")
 	}
 
-	if !IsPatrolEnabled(loaded, "scheduled_maintenance") {
+	r := configurePatrolRegistry(loaded)
+	if !r.IsEnabled("scheduled_maintenance") {
 		t.Error("expected scheduled_maintenance to be enabled")
 	}
 	sm := loaded.Patrols.ScheduledMaintenance
