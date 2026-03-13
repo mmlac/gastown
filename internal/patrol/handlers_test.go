@@ -285,6 +285,10 @@ func TestDefaultRegistryContainsAllHandlers(t *testing.T) {
 
 	r := DefaultRegistry()
 	expectedNames := []string{
+		"deacon",
+		"witness",
+		"refinery",
+		"handler",
 		"dolt_remotes",
 		"dolt_backup",
 		"jsonl_git_backup",
@@ -302,10 +306,18 @@ func TestDefaultRegistryContainsAllHandlers(t *testing.T) {
 		}
 	}
 
-	// All should be disabled by default.
-	enabled := r.EnabledNames()
-	if len(enabled) != 0 {
-		t.Errorf("DefaultRegistry has %d enabled patrols, want 0: %v", len(enabled), enabled)
+	// Session lifecycle patrols (deacon, witness, refinery, handler) should be enabled.
+	// Opt-in patrols should be disabled.
+	for _, name := range []string{"deacon", "witness", "refinery", "handler"} {
+		if !r.IsEnabled(name) {
+			t.Errorf("DefaultRegistry: %q should be enabled by default", name)
+		}
+	}
+	for _, name := range []string{"dolt_remotes", "dolt_backup", "jsonl_git_backup",
+		"wisp_reaper", "doctor_dog", "compactor_dog", "scheduled_maintenance", "sandbox_reconcile"} {
+		if r.IsEnabled(name) {
+			t.Errorf("DefaultRegistry: %q should be disabled by default", name)
+		}
 	}
 }
 

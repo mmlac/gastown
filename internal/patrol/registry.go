@@ -189,6 +189,29 @@ func (r *Registry) EnabledNames() []string {
 	return names
 }
 
+// IsEnabled returns whether the named patrol is registered and enabled.
+// Returns false for unregistered names.
+func (r *Registry) IsEnabled(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	p, ok := r.patrols[name]
+	return ok && p.enabled
+}
+
+// Interval returns the configured interval for the named patrol.
+// Returns 0 if the patrol is not registered.
+func (r *Registry) Interval(name string) time.Duration {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	p, ok := r.patrols[name]
+	if !ok {
+		return 0
+	}
+	return p.interval
+}
+
 // rigInList checks if a rig name is in the filter list.
 func rigInList(rig string, rigs []string) bool {
 	for _, r := range rigs {
@@ -200,10 +223,17 @@ func rigInList(rig string, rigs []string) bool {
 }
 
 // DefaultRegistry returns a pre-configured registry with the built-in patrols.
-// All patrols are registered but disabled by default — the daemon config
+// Session lifecycle patrols (deacon, witness, refinery, handler) are enabled
+// by default. Opt-in patrols are disabled by default — the daemon config
 // enables them based on the operator's daemon.json.
 func DefaultRegistry() *Registry {
 	r := NewRegistry()
+
+	// Session lifecycle patrols (enabled by default).
+	r.Register(NewSessionLifecyclePatrol("deacon", 0), &Config{Enabled: true})
+	r.Register(NewSessionLifecyclePatrol("witness", 0), &Config{Enabled: true})
+	r.Register(NewSessionLifecyclePatrol("refinery", 0), &Config{Enabled: true})
+	r.Register(NewSessionLifecyclePatrol("handler", 0), &Config{Enabled: true})
 
 	// Opt-in patrols (disabled by default, enabled via daemon.json).
 	r.Register(&DoltRemotesPatrol{}, &Config{Enabled: false})

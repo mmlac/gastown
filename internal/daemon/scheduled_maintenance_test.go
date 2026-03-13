@@ -263,9 +263,10 @@ func TestMaintenanceInterval(t *testing.T) {
 	}
 }
 
-func TestIsPatrolEnabledScheduledMaintenance(t *testing.T) {
+func TestPatrolRegistryScheduledMaintenance(t *testing.T) {
 	// Nil config — disabled (opt-in)
-	if IsPatrolEnabled(nil, "scheduled_maintenance") {
+	r := configurePatrolRegistry(nil)
+	if r.IsEnabled("scheduled_maintenance") {
 		t.Error("expected scheduled_maintenance disabled with nil config")
 	}
 
@@ -277,13 +278,15 @@ func TestIsPatrolEnabledScheduledMaintenance(t *testing.T) {
 			},
 		},
 	}
-	if IsPatrolEnabled(config, "scheduled_maintenance") {
+	r = configurePatrolRegistry(config)
+	if r.IsEnabled("scheduled_maintenance") {
 		t.Error("expected scheduled_maintenance disabled when Enabled=false")
 	}
 
 	// Enabled
 	config.Patrols.ScheduledMaintenance.Enabled = true
-	if !IsPatrolEnabled(config, "scheduled_maintenance") {
+	r = configurePatrolRegistry(config)
+	if !r.IsEnabled("scheduled_maintenance") {
 		t.Error("expected scheduled_maintenance enabled when Enabled=true")
 	}
 }
