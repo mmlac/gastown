@@ -2065,13 +2065,6 @@ func BuildStartupCommand(envVars map[string]string, rigPath, prompt string, inne
 		cmd += strings.Join(rc.ExecWrapper, " ") + " "
 	}
 
-	// Add runtime command
-	if prompt != "" {
-		cmd += rc.BuildCommandWithPrompt(prompt)
-	} else {
-		cmd += rc.BuildCommand()
-	}
-
 	// Merge inner env from rc.ExecWrapperInnerEnv and optional parameter.
 	// The optional parameter overrides rc values for the same key.
 	var innerEnv map[string]string
@@ -2090,7 +2083,9 @@ func BuildStartupCommand(envVars map[string]string, rigPath, prompt string, inne
 		}
 	}
 
-	// Expand template variables in inner env values and inject.
+	// Inject inner env DURING assembly — between wrapper and agent command.
+	// This eliminates the need for post-hoc string parsing via InjectInnerEnv,
+	// which depends on ' -- ' delimiters and has fallback parser limitations.
 	if len(innerEnv) > 0 {
 		ctx := WrapperContext{
 			Rig:     envVars["GT_RIG"],
@@ -2100,7 +2095,14 @@ func BuildStartupCommand(envVars map[string]string, rigPath, prompt string, inne
 			ctx.Polecat = envVars["GT_CREW"]
 		}
 		innerEnv = ExpandInnerEnvValues(innerEnv, ctx)
-		cmd = InjectInnerEnv(cmd, innerEnv)
+		cmd += FormatInnerEnvBlock(innerEnv)
+	}
+
+	// Add runtime command
+	if prompt != "" {
+		cmd += rc.BuildCommandWithPrompt(prompt)
+	} else {
+		cmd += rc.BuildCommand()
 	}
 
 	return cmd
@@ -2157,8 +2159,39 @@ func PrependEnv(command string, envVars map[string]string) string {
 	return "export " + strings.Join(exports, " ") + " && " + command
 }
 
+// FormatInnerEnvBlock builds a shell fragment "env K=V K2=V2 " from the given
+// env map. Keys are sorted for deterministic output. Returns "" if the map is
+// empty or nil.
+func FormatInnerEnvBlock(innerEnv map[string]string) string {
+	if len(innerEnv) == 0 {
+		return ""
+	}
+
+	keys := make([]string, 0, len(innerEnv))
+	for k := range innerEnv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var envParts []string
+	for _, k := range keys {
+		envParts = append(envParts, fmt.Sprintf("%s=%s", k, ShellQuote(innerEnv[k])))
+	}
+	return "env " + strings.Join(envParts, " ") + " "
+}
+
 // InjectInnerEnv inserts 'env K=V ...' between the exec-wrapper's -- delimiter
 // and the agent command in a startup command string.
+//
+// NOTE: This function exists for external callers who only have a finished
+// command string. BuildStartupCommand and BuildStartupCommandWithAgentOverride
+// inject inner env during assembly and do NOT use this function.
+//
+// Limitations of post-hoc string parsing:
+//   - The ' -- ' delimiter is specific to daytona/exitbox wrapper conventions
+//     and not guaranteed for all exec-wrappers.
+//   - The fallback parser doesn't handle double-quoted values.
+//   - Agent commands containing '=' may be misidentified as env vars.
 //
 // It transforms:
 //
@@ -2398,12 +2431,6 @@ func BuildStartupCommandWithAgentOverride(envVars map[string]string, rigPath, pr
 		cmd += strings.Join(rc.ExecWrapper, " ") + " "
 	}
 
-	if prompt != "" {
-		cmd += rc.BuildCommandWithPrompt(prompt)
-	} else {
-		cmd += rc.BuildCommand()
-	}
-
 	// Merge inner env from rc.ExecWrapperInnerEnv and optional parameter.
 	var innerEnv map[string]string
 	if len(rc.ExecWrapperInnerEnv) > 0 {
@@ -2421,7 +2448,7 @@ func BuildStartupCommandWithAgentOverride(envVars map[string]string, rigPath, pr
 		}
 	}
 
-	// Expand template variables in inner env values and inject.
+	// Inject inner env DURING assembly — between wrapper and agent command.
 	if len(innerEnv) > 0 {
 		ctx := WrapperContext{
 			Rig:     envVars["GT_RIG"],
@@ -2431,7 +2458,13 @@ func BuildStartupCommandWithAgentOverride(envVars map[string]string, rigPath, pr
 			ctx.Polecat = envVars["GT_CREW"]
 		}
 		innerEnv = ExpandInnerEnvValues(innerEnv, ctx)
-		cmd = InjectInnerEnv(cmd, innerEnv)
+		cmd += FormatInnerEnvBlock(innerEnv)
+	}
+
+	if prompt != "" {
+		cmd += rc.BuildCommandWithPrompt(prompt)
+	} else {
+		cmd += rc.BuildCommand()
 	}
 
 	return cmd, nil
