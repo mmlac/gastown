@@ -8,18 +8,11 @@ import (
 const defaultDoltBackupInterval = 15 * time.Minute
 
 // DoltBackupPatrol syncs Dolt databases to local filesystem backup locations.
-type DoltBackupPatrol struct {
-	// RunFn is the implementation injected by the daemon.
-	RunFn func(ctx context.Context, env Env) error
-}
+// The actual sync logic lives in the daemon; this handler provides metadata
+// (name, interval, rig scope) for the patrol registry.
+type DoltBackupPatrol struct{}
 
-func (p *DoltBackupPatrol) Name() string               { return "dolt_backup" }
-func (p *DoltBackupPatrol) DefaultInterval() time.Duration { return defaultDoltBackupInterval }
-func (p *DoltBackupPatrol) RequiresRig() bool            { return false }
-
-func (p *DoltBackupPatrol) Run(ctx context.Context, env Env) error {
-	if p.RunFn != nil {
-		return p.RunFn(ctx, env)
-	}
-	return nil
-}
+func (p *DoltBackupPatrol) Name() string                       { return "dolt_backup" }
+func (p *DoltBackupPatrol) DefaultInterval() time.Duration     { return defaultDoltBackupInterval }
+func (p *DoltBackupPatrol) RequiresRig() bool                  { return false }
+func (p *DoltBackupPatrol) Run(_ context.Context, _ Env) error { return nil }

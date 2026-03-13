@@ -45,114 +45,9 @@ func TestHandlerMetadata(t *testing.T) {
 	}
 }
 
-// TestRunFnDelegation verifies that handlers with RunFn delegate correctly.
-func TestRunFnDelegation(t *testing.T) {
-	t.Parallel()
-
-	env := Env{TownRoot: "/tmp/test", Logger: slog.Default()}
-	ctx := context.Background()
-
-	t.Run("DoltRemotesPatrol calls RunFn", func(t *testing.T) {
-		called := false
-		p := &DoltRemotesPatrol{RunFn: func(_ context.Context, _ Env) error {
-			called = true
-			return nil
-		}}
-		if err := p.Run(ctx, env); err != nil {
-			t.Fatalf("Run() error: %v", err)
-		}
-		if !called {
-			t.Error("RunFn was not called")
-		}
-	})
-
-	t.Run("DoltBackupPatrol calls RunFn", func(t *testing.T) {
-		called := false
-		p := &DoltBackupPatrol{RunFn: func(_ context.Context, _ Env) error {
-			called = true
-			return nil
-		}}
-		if err := p.Run(ctx, env); err != nil {
-			t.Fatalf("Run() error: %v", err)
-		}
-		if !called {
-			t.Error("RunFn was not called")
-		}
-	})
-
-	t.Run("JsonlGitBackupPatrol calls RunFn", func(t *testing.T) {
-		called := false
-		p := &JsonlGitBackupPatrol{RunFn: func(_ context.Context, _ Env) error {
-			called = true
-			return nil
-		}}
-		if err := p.Run(ctx, env); err != nil {
-			t.Fatalf("Run() error: %v", err)
-		}
-		if !called {
-			t.Error("RunFn was not called")
-		}
-	})
-
-	t.Run("WispReaperPatrol calls RunFn", func(t *testing.T) {
-		called := false
-		p := &WispReaperPatrol{RunFn: func(_ context.Context, _ Env) error {
-			called = true
-			return nil
-		}}
-		if err := p.Run(ctx, env); err != nil {
-			t.Fatalf("Run() error: %v", err)
-		}
-		if !called {
-			t.Error("RunFn was not called")
-		}
-	})
-
-	t.Run("DoctorDogPatrol calls RunFn", func(t *testing.T) {
-		called := false
-		p := &DoctorDogPatrol{RunFn: func(_ context.Context, _ Env) error {
-			called = true
-			return nil
-		}}
-		if err := p.Run(ctx, env); err != nil {
-			t.Fatalf("Run() error: %v", err)
-		}
-		if !called {
-			t.Error("RunFn was not called")
-		}
-	})
-
-	t.Run("CompactorDogPatrol calls RunFn", func(t *testing.T) {
-		called := false
-		p := &CompactorDogPatrol{RunFn: func(_ context.Context, _ Env) error {
-			called = true
-			return nil
-		}}
-		if err := p.Run(ctx, env); err != nil {
-			t.Fatalf("Run() error: %v", err)
-		}
-		if !called {
-			t.Error("RunFn was not called")
-		}
-	})
-
-	t.Run("ScheduledMaintenancePatrol calls RunFn", func(t *testing.T) {
-		called := false
-		p := &ScheduledMaintenancePatrol{RunFn: func(_ context.Context, _ Env) error {
-			called = true
-			return nil
-		}}
-		if err := p.Run(ctx, env); err != nil {
-			t.Fatalf("Run() error: %v", err)
-		}
-		if !called {
-			t.Error("RunFn was not called")
-		}
-	})
-}
-
-// TestRunFnNil verifies that nil RunFn returns nil error.
-func TestRunFnNil(t *testing.T) {
+// TestMetadataOnlyHandlersReturnNil verifies that metadata-only handlers
+// (those whose Run logic lives in the daemon) return nil from Run().
+func TestMetadataOnlyHandlersReturnNil(t *testing.T) {
 	t.Parallel()
 
 	env := Env{TownRoot: "/tmp/test", Logger: slog.Default()}
@@ -171,36 +66,7 @@ func TestRunFnNil(t *testing.T) {
 	for _, h := range handlers {
 		t.Run(h.Name(), func(t *testing.T) {
 			if err := h.Run(ctx, env); err != nil {
-				t.Errorf("Run() with nil RunFn returned error: %v", err)
-			}
-		})
-	}
-}
-
-// TestRunFnErrorPropagation verifies that errors from RunFn are returned.
-func TestRunFnErrorPropagation(t *testing.T) {
-	t.Parallel()
-
-	env := Env{TownRoot: "/tmp/test", Logger: slog.Default()}
-	ctx := context.Background()
-	wantErr := errors.New("patrol failed")
-
-	errFn := func(_ context.Context, _ Env) error { return wantErr }
-
-	handlers := []Handler{
-		&DoltRemotesPatrol{RunFn: errFn},
-		&DoltBackupPatrol{RunFn: errFn},
-		&JsonlGitBackupPatrol{RunFn: errFn},
-		&WispReaperPatrol{RunFn: errFn},
-		&DoctorDogPatrol{RunFn: errFn},
-		&CompactorDogPatrol{RunFn: errFn},
-		&ScheduledMaintenancePatrol{RunFn: errFn},
-	}
-
-	for _, h := range handlers {
-		t.Run(h.Name(), func(t *testing.T) {
-			if err := h.Run(ctx, env); !errors.Is(err, wantErr) {
-				t.Errorf("Run() error = %v, want %v", err, wantErr)
+				t.Errorf("Run() returned error: %v", err)
 			}
 		})
 	}

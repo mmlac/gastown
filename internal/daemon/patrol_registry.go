@@ -97,6 +97,12 @@ func configurePatrolRegistry(cfg *DaemonPatrolConfig) *patrol.Registry {
 			Enabled: p.ScheduledMaintenance.Enabled,
 		})
 	}
+	if p.SandboxReconcile != nil {
+		r.Register(&patrol.SandboxReconcilePatrol{}, &patrol.Config{
+			Enabled:  p.SandboxReconcile.Enabled,
+			Interval: parseDurationOr(p.SandboxReconcile.IntervalStr, 0),
+		})
+	}
 
 	return r
 }

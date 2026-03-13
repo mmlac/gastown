@@ -127,6 +127,7 @@ type PatrolsConfig struct {
 	DoctorDog      *DoctorDogConfig       `json:"doctor_dog,omitempty"`
 	CompactorDog           *CompactorDogConfig            `json:"compactor_dog,omitempty"`
 	ScheduledMaintenance   *ScheduledMaintenanceConfig    `json:"scheduled_maintenance,omitempty"`
+	SandboxReconcile       *SandboxReconcileConfig        `json:"sandbox_reconcile,omitempty"`
 	RestartTracker         *RestartTrackerConfig          `json:"restart_tracker,omitempty"`
 }
 
@@ -189,6 +190,17 @@ type JsonlGitBackupConfig struct {
 	// between consecutive exports. If the delta exceeds this threshold (in either
 	// direction), the export is halted and escalated. Default: 0.20 (20%).
 	SpikeThreshold *float64 `json:"spike_threshold,omitempty"`
+}
+
+// SandboxReconcileConfig holds configuration for the sandbox_reconcile patrol.
+// This patrol periodically reconciles sandbox workspaces against agent beads,
+// cleaning up orphans.
+type SandboxReconcileConfig struct {
+	// Enabled controls whether sandbox reconciliation runs.
+	Enabled bool `json:"enabled"`
+
+	// IntervalStr is how often to reconcile, as a string (e.g., "30m").
+	IntervalStr string `json:"interval,omitempty"`
 }
 
 // DaemonPatrolConfig is the structure of mayor/daemon.json.
