@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 
 	"github.com/steveyegge/gastown/internal/proxy"
 )
@@ -25,7 +26,7 @@ func NewProxyAdminAdapter(admin *proxy.AdminClient) *ProxyAdminAdapter {
 // from *proxy.IssueCertResult to *sandbox.CertResult.
 func (a *ProxyAdminAdapter) IssueCert(ctx context.Context, rig, name, ttl string) (*CertResult, error) {
 	if a.admin == nil {
-		return nil, nil
+		return nil, errors.New("proxy admin client is nil: proxy not running")
 	}
 	result, err := a.admin.IssueCert(ctx, rig, name, ttl)
 	if err != nil {
@@ -47,7 +48,7 @@ func (a *ProxyAdminAdapter) IssueCert(ctx context.Context, rig, name, ttl string
 // DenyCert delegates directly to the underlying AdminClient.
 func (a *ProxyAdminAdapter) DenyCert(ctx context.Context, serial string) error {
 	if a.admin == nil {
-		return nil
+		return errors.New("proxy admin client is nil: proxy not running")
 	}
 	return a.admin.DenyCert(ctx, serial)
 }

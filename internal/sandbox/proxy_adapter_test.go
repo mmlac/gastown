@@ -22,15 +22,17 @@ func TestProxyAdminAdapter_CompileTimeAssertion(t *testing.T) {
 func TestProxyAdminAdapter_NilAdmin(t *testing.T) {
 	adapter := NewProxyAdminAdapter(nil)
 
-	t.Run("IssueCert returns nil nil", func(t *testing.T) {
+	t.Run("IssueCert returns error", func(t *testing.T) {
 		result, err := adapter.IssueCert(context.Background(), "rig", "name", "720h")
-		assert.NoError(t, err)
+		assert.Error(t, err)
 		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "proxy admin client is nil")
 	})
 
-	t.Run("DenyCert returns nil", func(t *testing.T) {
+	t.Run("DenyCert returns error", func(t *testing.T) {
 		err := adapter.DenyCert(context.Background(), "abc123")
-		assert.NoError(t, err)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "proxy admin client is nil")
 	})
 }
 
