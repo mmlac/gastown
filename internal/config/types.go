@@ -14,12 +14,13 @@ import (
 
 // TownConfig represents the main town identity (mayor/town.json).
 type TownConfig struct {
-	Type       string    `json:"type"`                  // "town"
-	Version    int       `json:"version"`               // schema version
-	Name       string    `json:"name"`                  // town identifier (internal)
-	Owner      string    `json:"owner,omitempty"`       // owner email (entity identity)
-	PublicName string    `json:"public_name,omitempty"` // public display name
-	CreatedAt  time.Time `json:"created_at"`
+	Type           string    `json:"type"`                    // "town"
+	Version        int       `json:"version"`                 // schema version
+	Name           string    `json:"name"`                    // town identifier (internal)
+	Owner          string    `json:"owner,omitempty"`         // owner email (entity identity)
+	PublicName     string    `json:"public_name,omitempty"`   // public display name
+	InstallationID string    `json:"installation_id,omitempty"` // unique installation identifier for workspace naming
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // MayorConfig represents town-level behavioral configuration (mayor/config.json).
@@ -656,6 +657,13 @@ type RigSettings struct {
 	// When set, sandbox lifecycle hooks manage workspace creation, cert injection,
 	// and cleanup around session start/stop.
 	RemoteBackend *RemoteBackendConfig `json:"remote_backend,omitempty"`
+}
+
+// RemoteBackend holds the provider identity for a rig's remote backend.
+// Used by reconciliation logic to determine which rigs use Daytona workspaces.
+type RemoteBackend struct {
+	// Provider identifies the remote backend type (e.g., "daytona").
+	Provider string `json:"provider,omitempty"`
 }
 
 // RemoteBackendConfig configures remote sandbox execution for a rig.
