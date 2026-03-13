@@ -5192,3 +5192,121 @@ func TestInjectInnerEnv_NoWrapperJustAgentCmd(t *testing.T) {
 		t.Errorf("got: %q\nwant: %q", result, expected)
 	}
 }
+
+// --- resolveExecWrapper tests ---
+
+func TestResolveExecWrapper_NoExecWrapperConfigured(t *testing.T) {
+	rigPath := t.TempDir()
+	rigSettings := NewRigSettings()
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+	result := resolveExecWrapper(rigPath, WrapperContext{})
+	if result != nil {
+		t.Errorf("expected nil, got %v", result)
+	}
+}
+
+func TestResolveExecWrapper_StaticWrapperZeroContext(t *testing.T) {
+	rigPath := t.TempDir()
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		ExecWrapper: []string{"exitbox", "run", "--profile=gastown-polecat", "--"},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+	result := resolveExecWrapper(rigPath, WrapperContext{})
+	expected := []string{"exitbox", "run", "--profile=gastown-polecat", "--"}
+	if len(result) != len(expected) {
+		t.Fatalf("got %v, want %v", result, expected)
+	}
+	for i := range expected {
+		if result[i] != expected[i] {
+			t.Errorf("result[%d] = %q, want %q", i, result[i], expected[i])
+		}
+	}
+}
+
+func TestResolveExecWrapper_DaytonaStyleExpansion(t *testing.T) {
+	rigPath := t.TempDir()
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		ExecWrapper: []string{"daytona", "exec", "{{workspace}}", "--tty", "--"},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+	ctx := WrapperContext{
+		Rig:           "prodrig",
+		Polecat:       "obsidian",
+		InstallPrefix: "gt-x7f",
+		WorkDir:       "/workspace/repo",
+		WorkspaceName: "gt-x7f-prodrig--obsidian",
+	}
+	result := resolveExecWrapper(rigPath, ctx)
+	expected := []string{"daytona", "exec", "gt-x7f-prodrig--obsidian", "--tty", "--"}
+	if len(result) != len(expected) {
+		t.Fatalf("got %v, want %v", result, expected)
+	}
+	for i := range expected {
+		if result[i] != expected[i] {
+			t.Errorf("result[%d] = %q, want %q", i, result[i], expected[i])
+		}
+	}
+}
+
+func TestResolveExecWrapper_AllTemplateVariablesExpand(t *testing.T) {
+	rigPath := t.TempDir()
+	rigSettings := NewRigSettings()
+	rigSettings.Runtime = &RuntimeConfig{
+		ExecWrapper: []string{
+			"sandbox", "run",
+			"--workspace={{workspace}}",
+			"--rig={{rig}}",
+			"--polecat={{polecat}}",
+			"--prefix={{install_prefix}}",
+			"--dir={{work_dir}}",
+			"--",
+		},
+	}
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+	ctx := WrapperContext{
+		Rig:           "myrig",
+		Polecat:       "ruby",
+		InstallPrefix: "gt-abc",
+		WorkDir:       "/home/dev/project",
+		WorkspaceName: "gt-abc-myrig--ruby",
+	}
+	result := resolveExecWrapper(rigPath, ctx)
+	expected := []string{
+		"sandbox", "run",
+		"--workspace=gt-abc-myrig--ruby",
+		"--rig=myrig",
+		"--polecat=ruby",
+		"--prefix=gt-abc",
+		"--dir=/home/dev/project",
+		"--",
+	}
+	if len(result) != len(expected) {
+		t.Fatalf("got %v, want %v", result, expected)
+	}
+	for i := range expected {
+		if result[i] != expected[i] {
+			t.Errorf("result[%d] = %q, want %q", i, result[i], expected[i])
+		}
+	}
+}
+
+func TestResolveExecWrapper_EmptyRigPath(t *testing.T) {
+	result := resolveExecWrapper("", WrapperContext{
+		Rig:           "myrig",
+		Polecat:       "mypolecat",
+		WorkspaceName: "ws",
+	})
+	if result != nil {
+		t.Errorf("expected nil for empty rigPath, got %v", result)
+	}
+}
