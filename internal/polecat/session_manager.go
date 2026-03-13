@@ -570,6 +570,20 @@ func (m *SessionManager) Stop(polecat string, force bool) error {
 		return fmt.Errorf("killing session: %w", err)
 	}
 
+	// Run sandbox PostStop if configured (cert revocation, workspace stop/delete).
+	// PostStop errors are non-fatal — reconciliation handles cleanup of anything missed.
+	if m.sandbox != nil {
+		opts := sandbox.SandboxOpts{
+			Rig:           m.rig.Name,
+			Polecat:       polecat,
+			WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
+			RigSettings:   m.settings,
+		}
+		if err := m.sandbox.PostStop(context.Background(), opts); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: sandbox post-stop failed for %s: %v\n", polecat, err)
+		}
+	}
+
 	return nil
 }
 
