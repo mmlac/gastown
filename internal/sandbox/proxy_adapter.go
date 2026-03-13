@@ -33,7 +33,7 @@ func (a *ProxyAdminAdapter) IssueCert(ctx context.Context, rig, name, ttl string
 		return nil, err
 	}
 	if result == nil {
-		return nil, nil
+		return nil, errors.New("IssueCert returned nil result without error")
 	}
 	return &CertResult{
 		CN:        result.CN,
