@@ -103,6 +103,10 @@ type SessionStartOptions struct {
 	// If set, GT_AGENT is written to the tmux session environment table so that
 	// IsAgentAlive and waitForPolecatReady read the correct process names.
 	Agent string
+
+	// Branch is the git branch for sandbox workspace creation.
+	// Used by sandbox.PreStart to set the initial branch in the remote workspace.
+	Branch string
 }
 
 // SessionInfo contains information about a running polecat session.
@@ -258,10 +262,16 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 		}
 	}
 
-	// Determine working directory
+	// Determine working directory.
+	// Remote polecats (sandbox != nil) use the marker directory (no local worktree);
+	// local polecats use the git worktree clone path.
 	workDir := opts.WorkDir
 	if workDir == "" {
-		workDir = m.clonePath(polecat)
+		if m.sandbox != nil {
+			workDir = m.polecatDir(polecat) // marker dir for tmux cwd
+		} else {
+			workDir = m.clonePath(polecat) // local git worktree
+		}
 	}
 
 	// Validate issue exists and isn't tombstoned BEFORE creating session.
@@ -269,6 +279,25 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	if opts.Issue != "" {
 		if err := m.validateIssue(opts.Issue, workDir); err != nil {
 			return err
+		}
+	}
+
+	// Run sandbox PreStart if configured.
+	// This creates/starts the remote workspace, issues mTLS certs, and returns
+	// inner env vars to inject after the exec-wrapper's -- delimiter.
+	var sandboxInnerEnv map[string]string
+	if m.sandbox != nil {
+		sandboxOpts := sandbox.SandboxOpts{
+			Rig:           m.rig.Name,
+			Polecat:       polecat,
+			WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
+			RigSettings:   m.settings,
+			Branch:        opts.Branch,
+		}
+		var preErr error
+		sandboxInnerEnv, preErr = m.sandbox.PreStart(context.Background(), sandboxOpts)
+		if preErr != nil {
+			return fmt.Errorf("sandbox pre-start: %w", preErr)
 		}
 	}
 
@@ -333,6 +362,13 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 			return fmt.Errorf("building startup command: %w", err)
 		}
 	}
+	// Inject sandbox inner env vars between the exec-wrapper's -- delimiter and the
+	// agent command. These are returned by sandbox.PreStart and include proxy config,
+	// cert paths, and git author metadata for the remote workspace environment.
+	if len(sandboxInnerEnv) > 0 {
+		command = config.InjectInnerEnv(command, sandboxInnerEnv)
+	}
+
 	// Prepend runtime config dir env if needed
 	if runtimeConfig.Session != nil && runtimeConfig.Session.ConfigDirEnv != "" && opts.RuntimeConfigDir != "" {
 		command = config.PrependEnv(command, map[string]string{runtimeConfig.Session.ConfigDirEnv: opts.RuntimeConfigDir})
@@ -375,6 +411,18 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	// Create session with command directly to avoid send-keys race condition.
 	// See: https://github.com/anthropics/gastown/issues/280
 	if err := m.tmux.NewSessionWithCommand(sessionID, workDir, command); err != nil {
+		// Rollback: if sandbox was pre-started, clean up on tmux failure.
+		if m.sandbox != nil {
+			rollbackOpts := sandbox.SandboxOpts{
+				Rig:           m.rig.Name,
+				Polecat:       polecat,
+				WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
+				RigSettings:   m.settings,
+			}
+			if postErr := m.sandbox.PostStop(context.Background(), rollbackOpts); postErr != nil {
+				debugSession("sandbox rollback after tmux failure", postErr)
+			}
+		}
 		return fmt.Errorf("creating session: %w", err)
 	}
 
