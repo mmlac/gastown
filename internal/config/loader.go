@@ -2120,6 +2120,109 @@ func PrependEnv(command string, envVars map[string]string) string {
 	return "export " + strings.Join(exports, " ") + " && " + command
 }
 
+// InjectInnerEnv inserts 'env K=V ...' between the exec-wrapper's -- delimiter
+// and the agent command in a startup command string.
+//
+// It transforms:
+//
+//	exec env OUTER=val ... <wrapper-args> -- agent-cmd
+//
+// into:
+//
+//	exec env OUTER=val ... <wrapper-args> -- env INNER=val ... agent-cmd
+//
+// If there is no -- delimiter, the inner env block is prepended directly
+// before the agent command (after any 'exec env ...' prefix).
+// An empty innerEnv map returns the command unchanged.
+// Env var keys are sorted for deterministic output.
+func InjectInnerEnv(command string, innerEnv map[string]string) string {
+	if len(innerEnv) == 0 {
+		return command
+	}
+
+	// Build sorted env assignments
+	keys := make([]string, 0, len(innerEnv))
+	for k := range innerEnv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var envParts []string
+	for _, k := range keys {
+		envParts = append(envParts, fmt.Sprintf("%s=%s", k, ShellQuote(innerEnv[k])))
+	}
+	envBlock := "env " + strings.Join(envParts, " ") + " "
+
+	// Look for -- delimiter (exec wrapper boundary)
+	delimIdx := strings.Index(command, " -- ")
+	if delimIdx >= 0 {
+		// Insert env block after "-- "
+		insertPos := delimIdx + 4 // len(" -- ")
+		return command[:insertPos] + envBlock + command[insertPos:]
+	}
+
+	// No -- delimiter. Insert before the agent command.
+	// The command may start with "exec env K=V ... " — find the end of env vars.
+	// Strategy: if command starts with "exec env ", find the last env assignment
+	// (KEY=VALUE pattern) and insert after it.
+	if strings.HasPrefix(command, "exec env ") {
+		// Find where env assignments end and the agent command begins.
+		// Env assignments are KEY=VALUE (possibly quoted). The agent command
+		// is the first token that doesn't match KEY=VALUE.
+		prefix := "exec env "
+		rest := command[len(prefix):]
+		// Split into tokens respecting shell quoting
+		pos := 0
+		for pos < len(rest) {
+			// Skip whitespace
+			for pos < len(rest) && rest[pos] == ' ' {
+				pos++
+			}
+			if pos >= len(rest) {
+				break
+			}
+			// Check if this token looks like KEY=VALUE
+			eqIdx := -1
+			tokenStart := pos
+			for i := pos; i < len(rest) && rest[i] != ' '; i++ {
+				if rest[i] == '=' && eqIdx == -1 {
+					eqIdx = i - tokenStart
+				}
+				// Handle single-quoted values
+				if rest[i] == '\'' {
+					i++
+					for i < len(rest) && rest[i] != '\'' {
+						i++
+					}
+				}
+			}
+			if eqIdx <= 0 {
+				// Not a KEY=VALUE token — this is the agent command
+				return prefix + rest[:pos] + envBlock + rest[pos:]
+			}
+			// Skip past this KEY=VALUE token
+			for pos < len(rest) && rest[pos] != ' ' {
+				if rest[pos] == '\'' {
+					pos++
+					for pos < len(rest) && rest[pos] != '\'' {
+						pos++
+					}
+					if pos < len(rest) {
+						pos++
+					}
+				} else {
+					pos++
+				}
+			}
+		}
+		// All tokens were env vars — append env block at the end
+		return command + " " + envBlock
+	}
+
+	// No exec env prefix — just prepend the env block
+	return envBlock + command
+}
+
 // BuildStartupCommandWithAgentOverride builds a startup command like BuildStartupCommand,
 // but uses agentOverride if non-empty.
 //

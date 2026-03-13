@@ -5096,3 +5096,99 @@ func TestBuildStartupCommandWithAgentOverride_ExecWrapper(t *testing.T) {
 		t.Errorf("expected wrapper immediately before claude command, got: %q", cmd)
 	}
 }
+
+func TestInjectInnerEnv_BasicSingleVar(t *testing.T) {
+	cmd := "exec env OUTER=val exitbox run -- claude --resume"
+	result := InjectInnerEnv(cmd, map[string]string{"INNER": "foo"})
+	expected := "exec env OUTER=val exitbox run -- env INNER=foo claude --resume"
+	if result != expected {
+		t.Errorf("got: %q\nwant: %q", result, expected)
+	}
+}
+
+func TestInjectInnerEnv_MultipleVarsSorted(t *testing.T) {
+	cmd := "exec env OUTER=val wrapper -- agent-cmd"
+	result := InjectInnerEnv(cmd, map[string]string{
+		"ZEBRA": "z",
+		"ALPHA": "a",
+		"MID":   "m",
+	})
+	expected := "exec env OUTER=val wrapper -- env ALPHA=a MID=m ZEBRA=z agent-cmd"
+	if result != expected {
+		t.Errorf("got: %q\nwant: %q", result, expected)
+	}
+}
+
+func TestInjectInnerEnv_ValuesWithSpacesQuoted(t *testing.T) {
+	cmd := "exec env OUTER=val wrapper -- claude"
+	result := InjectInnerEnv(cmd, map[string]string{
+		"MSG": "hello world",
+		"PATH": "/usr/bin",
+	})
+	// "hello world" should be single-quoted, "/usr/bin" should not
+	if !strings.Contains(result, "MSG='hello world'") {
+		t.Errorf("expected quoted MSG value, got: %q", result)
+	}
+	if !strings.Contains(result, "PATH=/usr/bin") {
+		t.Errorf("expected unquoted PATH value, got: %q", result)
+	}
+	// Must appear after --
+	delimIdx := strings.Index(result, " -- ")
+	envIdx := strings.Index(result, "env MSG=")
+	if envIdx <= delimIdx {
+		t.Errorf("inner env should appear after --, got: %q", result)
+	}
+}
+
+func TestInjectInnerEnv_SpecialCharsQuoted(t *testing.T) {
+	cmd := "exec env X=1 wrapper -- agent"
+	result := InjectInnerEnv(cmd, map[string]string{
+		"VAL": "it's a $test",
+	})
+	// ShellQuote should handle the single quote and dollar sign
+	if !strings.Contains(result, " -- env VAL=") {
+		t.Errorf("expected inner env after --, got: %q", result)
+	}
+	// The value should be quoted (contains ' and $)
+	if strings.Contains(result, "VAL=it's") {
+		t.Errorf("value with special chars should be quoted, got: %q", result)
+	}
+}
+
+func TestInjectInnerEnv_NoDelimiter(t *testing.T) {
+	cmd := "exec env OUTER=val claude --resume"
+	result := InjectInnerEnv(cmd, map[string]string{"INNER": "bar"})
+	// Should insert env block before 'claude'
+	if !strings.Contains(result, "env INNER=bar claude") {
+		t.Errorf("expected inner env before agent cmd, got: %q", result)
+	}
+	// Should still start with exec env
+	if !strings.HasPrefix(result, "exec env ") {
+		t.Errorf("expected exec env prefix preserved, got: %q", result)
+	}
+}
+
+func TestInjectInnerEnv_EmptyMapReturnsOriginal(t *testing.T) {
+	cmd := "exec env OUTER=val wrapper -- claude"
+	result := InjectInnerEnv(cmd, map[string]string{})
+	if result != cmd {
+		t.Errorf("empty innerEnv should return original\ngot:  %q\nwant: %q", result, cmd)
+	}
+}
+
+func TestInjectInnerEnv_NilMapReturnsOriginal(t *testing.T) {
+	cmd := "exec env OUTER=val wrapper -- claude"
+	result := InjectInnerEnv(cmd, nil)
+	if result != cmd {
+		t.Errorf("nil innerEnv should return original\ngot:  %q\nwant: %q", result, cmd)
+	}
+}
+
+func TestInjectInnerEnv_NoWrapperJustAgentCmd(t *testing.T) {
+	cmd := "claude --resume"
+	result := InjectInnerEnv(cmd, map[string]string{"KEY": "val"})
+	expected := "env KEY=val claude --resume"
+	if result != expected {
+		t.Errorf("got: %q\nwant: %q", result, expected)
+	}
+}
