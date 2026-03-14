@@ -358,8 +358,13 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// 2. Uncommitted changes (work that would be lost)
 		// 3. Unique commits compared to origin (ensures branch was pushed with actual work)
 
+		// Sandbox polecats: work lives in the remote sandbox, not the host worktree.
+		// Skip cwd availability and uncommitted changes checks — the polecat pushed
+		// its commits to the bare repo via the proxy before calling gt done.
+		isSandboxProxy := os.Getenv("GT_PROXY_IDENTITY") != ""
+
 		// Block if working directory not available - can't verify git state
-		if !cwdAvailable {
+		if !cwdAvailable && !isSandboxProxy {
 			return fmt.Errorf("cannot complete: working directory not available (worktree deleted?)\nUse --status DEFERRED to exit without completing")
 		}
 
@@ -368,25 +373,41 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// excluded — these are toolchain-managed and normally gitignored.
 		// Without this filter, gt done fails on virtually every polecat because
 		// Cursor creates .claude/ at runtime in every workspace.
-		workStatus, err := g.CheckUncommittedWork()
-		if err != nil {
-			return fmt.Errorf("checking git status: %w", err)
-		}
-		if workStatus.HasUncommittedChanges && !workStatus.CleanExcludingRuntime() {
-			return fmt.Errorf("cannot complete: uncommitted changes would be lost\nCommit your changes first, or use --status DEFERRED to exit without completing\nUncommitted: %s", workStatus.String())
+		if !isSandboxProxy {
+			workStatus, err := g.CheckUncommittedWork()
+			if err != nil {
+				return fmt.Errorf("checking git status: %w", err)
+			}
+			if workStatus.HasUncommittedChanges && !workStatus.CleanExcludingRuntime() {
+				return fmt.Errorf("cannot complete: uncommitted changes would be lost\nCommit your changes first, or use --status DEFERRED to exit without completing\nUncommitted: %s", workStatus.String())
+			}
 		}
 
 		// Check if branch has commits ahead of origin/default
 		// If not, work may have been pushed directly to main - that's fine, just skip MR
 		originDefault := "origin/" + defaultBranch
-		aheadCount, err := g.CommitsAhead(originDefault, "HEAD")
-		if err != nil {
-			// Fallback to local branch comparison if origin not available
-			aheadCount, err = g.CommitsAhead(defaultBranch, branch)
+
+		// Sandbox mode: the polecat's commits were pushed to the bare repo from
+		// the sandbox, not the local worktree. Use the bare repo to check commits ahead.
+		var aheadCount int
+		if os.Getenv("GT_PROXY_IDENTITY") != "" && rigName != "" {
+			bareRepo := filepath.Join(townRoot, rigName, ".repo.git")
+			bareGit := git.NewGitWithDir(bareRepo, bareRepo)
+			aheadCount, err = bareGit.CommitsAhead(defaultBranch, branch)
 			if err != nil {
-				// Can't determine - assume work exists and continue
-				style.PrintWarning("could not check commits ahead of %s: %v", defaultBranch, err)
-				aheadCount = 1
+				style.PrintWarning("sandbox: could not check commits in bare repo: %v", err)
+				aheadCount = 1 // assume work exists
+			}
+		} else {
+			aheadCount, err = g.CommitsAhead(originDefault, "HEAD")
+			if err != nil {
+				// Fallback to local branch comparison if origin not available
+				aheadCount, err = g.CommitsAhead(defaultBranch, branch)
+				if err != nil {
+					// Can't determine - assume work exists and continue
+					style.PrintWarning("could not check commits ahead of %s: %v", defaultBranch, err)
+					aheadCount = 1
+				}
 			}
 		}
 
