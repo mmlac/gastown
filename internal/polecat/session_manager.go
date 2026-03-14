@@ -458,6 +458,25 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 		command = config.InjectInnerEnv(command, sandboxInnerEnv)
 	}
 
+	// Inject host settings file into sandbox and rewrite the --settings path
+	// in the command to use the container-local path. The command references
+	// the host path (e.g., /gt/<rig>/polecats/.claude/settings.json) which
+	// doesn't exist inside the sandbox.
+	if m.sandbox != nil {
+		hostSettingsPath := filepath.Join(config.RoleSettingsDir("polecat", m.rig.Path), ".claude", "settings.json")
+		containerSettingsPath := sandbox.DefaultRemoteSettingsPath
+		if settingsData, err := os.ReadFile(hostSettingsPath); err == nil {
+			wsName := m.sandbox.WorkspaceName(m.rig.Name, polecat)
+			if err := m.sandbox.InjectFile(ctx, wsName, containerSettingsPath, settingsData); err != nil {
+				debugSession("injecting settings file", err)
+			} else {
+				command = strings.ReplaceAll(command, hostSettingsPath, containerSettingsPath)
+			}
+		} else {
+			debugSession("reading host settings file", err)
+		}
+	}
+
 	// Prepend runtime config dir env if needed
 	if runtimeConfig.Session != nil && runtimeConfig.Session.ConfigDirEnv != "" && opts.RuntimeConfigDir != "" {
 		command = config.PrependEnv(command, map[string]string{runtimeConfig.Session.ConfigDirEnv: opts.RuntimeConfigDir})

@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/steveyegge/gastown/internal/daytona"
@@ -95,14 +96,35 @@ func (a *DaytonaClientAdapter) InjectCerts(ctx context.Context, wsName, certDir 
 		certDir + "/ca.crt":     ca,
 	}
 	for path, content := range files {
-		_, stderr, exitCode, err := a.client.Exec(ctx, wsName, nil,
-			"bash", "-c", fmt.Sprintf("cat > %s << 'CERTEOF'\n%s\nCERTEOF", path, string(content)))
+		if err := a.InjectFile(ctx, wsName, path, content); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// InjectFile writes a single file into the workspace filesystem via daytona exec.
+// Creates parent directories as needed.
+func (a *DaytonaClientAdapter) InjectFile(ctx context.Context, wsName, path string, content []byte) error {
+	// Extract directory from path
+	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		_, _, exitCode, err := a.client.Exec(ctx, wsName, nil, "mkdir", "-p", dir)
 		if err != nil {
-			return fmt.Errorf("writing %s: %w", path, err)
+			return fmt.Errorf("creating dir for %s: %w", path, err)
 		}
 		if exitCode != 0 {
-			return fmt.Errorf("writing %s: exit code %d: %s", path, exitCode, stderr)
+			return fmt.Errorf("creating dir for %s: exit code %d", path, exitCode)
 		}
+	}
+
+	_, stderr, exitCode, err := a.client.Exec(ctx, wsName, nil,
+		"bash", "-c", fmt.Sprintf("cat > %s << 'CERTEOF'\n%s\nCERTEOF", path, string(content)))
+	if err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("writing %s: exit code %d: %s", path, exitCode, stderr)
 	}
 	return nil
 }

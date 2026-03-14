@@ -92,6 +92,10 @@ func (m *mockWorkspaceClient) InjectCerts(ctx context.Context, wsName, certDir s
 	return m.injectErr
 }
 
+func (m *mockWorkspaceClient) InjectFile(_ context.Context, _, _ string, _ []byte) error {
+	return nil
+}
+
 // mockCertIssuer implements CertIssuer for testing.
 type mockCertIssuer struct {
 	issueCalls []issueCall

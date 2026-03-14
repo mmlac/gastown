@@ -13,6 +13,13 @@ import (
 // Uses a user-writable path since sandboxes run as non-root (daytona user).
 const DefaultRemoteCertDir = "/home/daytona/.gt/certs"
 
+// DefaultRemoteSettingsDir is the directory inside the workspace where
+// claude settings.json is injected. Mirrors the host's .claude/ structure.
+const DefaultRemoteSettingsDir = "/home/daytona/.claude"
+
+// DefaultRemoteSettingsPath is the full path to settings.json inside the sandbox.
+const DefaultRemoteSettingsPath = DefaultRemoteSettingsDir + "/settings.json"
+
 // DefaultProxyAddr is the default proxy server address used when
 // RigSettings.RemoteBackend.ProxyAddr is not configured.
 const DefaultProxyAddr = "127.0.0.1:9876"
@@ -42,6 +49,10 @@ type WorkspaceClient interface {
 	// InjectCerts writes mTLS certificate files into the workspace filesystem
 	// via daytona exec.
 	InjectCerts(ctx context.Context, wsName, certDir string, cert, key, ca []byte) error
+
+	// InjectFile writes a single file into the workspace filesystem via daytona exec.
+	// Creates parent directories as needed.
+	InjectFile(ctx context.Context, wsName, path string, content []byte) error
 }
 
 // WorkspaceCreateOptions configures workspace creation.
@@ -290,6 +301,12 @@ func (d *DaytonaSandbox) Reconcile(ctx context.Context, opts ReconcileOpts) erro
 		return fn(ctx, opts)
 	}
 	return nil
+}
+
+// InjectFile writes a file into the workspace at the given path.
+// Delegates to the underlying WorkspaceClient.
+func (d *DaytonaSandbox) InjectFile(ctx context.Context, wsName, path string, content []byte) error {
+	return d.client.InjectFile(ctx, wsName, path, content)
 }
 
 // Compile-time interface assertion.

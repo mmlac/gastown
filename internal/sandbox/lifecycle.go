@@ -42,6 +42,11 @@ type Lifecycle interface {
 	// WorkspaceName returns the deterministic workspace name for a rig/polecat pair.
 	// The naming convention is: <installPrefix>-<rig>--<polecat>
 	WorkspaceName(rig, polecat string) string
+
+	// InjectFile writes a file into the workspace at the given path.
+	// Used to inject host-side config files (e.g., settings.json) that the
+	// agent needs at startup but that don't exist inside the sandbox.
+	InjectFile(ctx context.Context, wsName, path string, content []byte) error
 }
 
 // SandboxOpts contains the parameters for PreStart and PostStop lifecycle hooks.

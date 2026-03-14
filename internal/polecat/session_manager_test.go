@@ -667,6 +667,10 @@ func (m *mockSandboxLifecycle) WorkspaceName(rig, polecat string) string {
 	return m.installPrefix + "-" + rig + "--" + polecat
 }
 
+func (m *mockSandboxLifecycle) InjectFile(_ context.Context, _, _ string, _ []byte) error {
+	return nil
+}
+
 // TestSessionManager_Start_SandboxFailure verifies that Start returns a wrapped
 // error when sandbox.PreStart fails, and that no tmux session is created.
 func TestSessionManager_Start_SandboxFailure(t *testing.T) {
