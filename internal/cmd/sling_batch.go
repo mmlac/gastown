@@ -240,9 +240,20 @@ func cleanupSpawnedPolecat(spawnInfo *SpawnedPolecatInfo, rigName, convoyID stri
 	polecatGit := git.NewGit(r.Path)
 	t := tmux.NewTmux()
 	polecatMgr := polecat.NewManager(r, polecatGit, t)
-	if err := polecatMgr.Remove(spawnInfo.PolecatName, true); err != nil {
-		fmt.Printf("  %s Could not clean up orphaned polecat %s: %v\n",
-			style.Dim.Render("Warning:"), spawnInfo.PolecatName, err)
+
+	// Reset agent bead to idle state instead of removing the polecat.
+	// This preserves the worktree/directory so the polecat slot can be reused
+	// by the next sling attempt, preventing polecat exhaustion after repeated
+	// failures (e.g., sandbox not found, claude not installed).
+	if err := polecatMgr.SetAgentStateWithRetry(spawnInfo.PolecatName, "idle"); err != nil {
+		// Fall back to full removal if idle reset fails
+		if err := polecatMgr.Remove(spawnInfo.PolecatName, true); err != nil {
+			fmt.Printf("  %s Could not clean up orphaned polecat %s: %v\n",
+				style.Dim.Render("Warning:"), spawnInfo.PolecatName, err)
+		} else {
+			fmt.Printf("  %s Cleaned up orphaned polecat %s\n",
+				style.Dim.Render("○"), spawnInfo.PolecatName)
+		}
 	} else {
 		fmt.Printf("  %s Cleaned up orphaned polecat %s\n",
 			style.Dim.Render("○"), spawnInfo.PolecatName)

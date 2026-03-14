@@ -13,10 +13,13 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/daytona"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/polecat"
+	"github.com/steveyegge/gastown/internal/proxy"
 	"github.com/steveyegge/gastown/internal/rig"
+	"github.com/steveyegge/gastown/internal/sandbox"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/witness"
@@ -350,9 +353,44 @@ func (s *SpawnedPolecatInfo) StartSession() (string, error) {
 		return "", fmt.Errorf("resolving account: %w", err)
 	}
 
-	// Start session
+	// Start session — wire sandbox lifecycle if remote backend is configured.
 	t := tmux.NewTmux()
-	polecatSessMgr := polecat.NewSessionManager(t, r)
+	var smOpts []polecat.SessionManagerOption
+
+	settingsPath := filepath.Join(r.Path, "settings", "config.json")
+	rigSettings, settingsErr := config.LoadRigSettings(settingsPath)
+	if settingsErr == nil && rigSettings.RemoteBackend != nil {
+		// Install prefix for workspace naming. Defaults to "gt" when
+		// GT_INSTALL_PREFIX is not set (matches wrapperContextFromEnv).
+		installPrefix := os.Getenv("GT_INSTALL_PREFIX")
+		if installPrefix == "" {
+			installPrefix = "gt"
+		}
+
+		// Create Daytona client adapter
+		daytonaClient := daytona.NewClient(installPrefix)
+		wsAdapter := sandbox.NewDaytonaClientAdapter(daytonaClient)
+
+		// Create cert issuer via proxy admin API
+		adminAddr := "127.0.0.1:9877"
+		adminClient := proxy.NewAdminClient(adminAddr)
+		certIssuer := sandbox.NewProxyAdminAdapter(adminClient)
+
+		sbx := sandbox.NewDaytonaSandbox(wsAdapter, certIssuer, nil)
+		smOpts = append(smOpts,
+			polecat.WithSandbox(sbx),
+			polecat.WithSettings(rigSettings),
+			polecat.WithInstallPrefix(installPrefix),
+		)
+
+		// Load proxy CA if available
+		caDir := filepath.Join(townRoot, ".runtime", "ca")
+		if ca, err := proxy.LoadOrGenerateCA(caDir); err == nil {
+			smOpts = append(smOpts, polecat.WithProxyCA(ca))
+		}
+	}
+
+	polecatSessMgr := polecat.NewSessionManager(t, r, smOpts...)
 
 	fmt.Printf("Starting session for %s/%s...\n", s.RigName, s.PolecatName)
 	startOpts := polecat.SessionStartOptions{
