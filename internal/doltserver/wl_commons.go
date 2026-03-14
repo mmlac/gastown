@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -383,7 +384,7 @@ func QueryWanted(townRoot, wantedID string) (*WantedItem, error) {
 
 // QueryWantedFull fetches all fields of a wanted item by ID. Returns nil if not found.
 func QueryWantedFull(townRoot, wantedID string) (*WantedItem, error) {
-	query := fmt.Sprintf(`USE %s; SELECT id, title, COALESCE(description, '') as description, COALESCE(project, '') as project, COALESCE(type, '') as type, priority, COALESCE(posted_by, '') as posted_by, COALESCE(claimed_by, '') as claimed_by, status, COALESCE(effort_level, '') as effort_level, COALESCE(evidence_url, '') as evidence_url, COALESCE(sandbox_required, 0) as sandbox_required, COALESCE(CAST(created_at AS CHAR), '') as created_at, COALESCE(CAST(updated_at AS CHAR), '') as updated_at FROM wanted WHERE id='%s';`,
+	query := fmt.Sprintf(`USE %s; SELECT id, title, COALESCE(description, '') as description, COALESCE(project, '') as project, COALESCE(type, '') as type, priority, COALESCE(tags, JSON_ARRAY()) as tags, COALESCE(posted_by, '') as posted_by, COALESCE(claimed_by, '') as claimed_by, status, COALESCE(effort_level, '') as effort_level, COALESCE(evidence_url, '') as evidence_url, COALESCE(sandbox_required, 0) as sandbox_required, COALESCE(CAST(created_at AS CHAR), '') as created_at, COALESCE(CAST(updated_at AS CHAR), '') as updated_at FROM wanted WHERE id='%s';`,
 		WLCommonsDB, EscapeSQL(wantedID))
 
 	output, err := doltSQLQuery(townRoot, query)
@@ -416,6 +417,9 @@ func QueryWantedFull(townRoot, wantedID string) (*WantedItem, error) {
 	}
 	if row["sandbox_required"] == "1" {
 		item.SandboxRequired = true
+	}
+	if tagsJSON := row["tags"]; tagsJSON != "" && tagsJSON != "[]" {
+		_ = json.Unmarshal([]byte(tagsJSON), &item.Tags)
 	}
 	return item, nil
 }
