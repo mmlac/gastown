@@ -70,26 +70,54 @@ func showWanted(store doltserver.WLCommonsStore, wantedID string, asJSON bool) e
 }
 
 func renderWantedItem(item *doltserver.WantedItem) error {
+	const labelWidth = 13
+	// Indent for continuation lines: labelWidth + 2 spaces (the separator)
+	const contIndent = "               "
+
+	noneIfEmpty := func(s string) string {
+		if s == "" {
+			return "(none)"
+		}
+		return s
+	}
+
+	formatMultiLine := func(s string) string {
+		if s == "" {
+			return "(none)"
+		}
+		lines := strings.Split(s, "\n")
+		if len(lines) == 1 {
+			return s
+		}
+		return lines[0] + "\n" + contIndent + strings.Join(lines[1:], "\n"+contIndent)
+	}
+
 	tags := strings.Join(item.Tags, ", ")
 
 	rows := []struct{ label, value string }{
 		{"ID", item.ID},
 		{"Title", item.Title},
-		{"Description", item.Description},
-		{"Project", item.Project},
-		{"Type", item.Type},
-		{"Priority", fmt.Sprintf("%d", item.Priority)},
-		{"Tags", tags},
-		{"Posted By", item.PostedBy},
-		{"Claimed By", item.ClaimedBy},
+		{"Description", formatMultiLine(item.Description)},
+		{"Project", noneIfEmpty(item.Project)},
+		{"Type", noneIfEmpty(item.Type)},
+		{"Priority", wlFormatPriority(fmt.Sprintf("%d", item.Priority))},
+		{"Tags", noneIfEmpty(tags)},
+		{"Posted By", noneIfEmpty(item.PostedBy)},
+		{"Claimed By", noneIfEmpty(item.ClaimedBy)},
 		{"Status", item.Status},
-		{"Effort", item.EffortLevel},
-		{"Evidence URL", item.EvidenceURL},
-		{"Created", item.CreatedAt},
-		{"Updated", item.UpdatedAt},
+		{"Effort", noneIfEmpty(item.EffortLevel)},
+		{"Evidence URL", noneIfEmpty(item.EvidenceURL)},
 	}
 
-	labelWidth := 12
+	if item.SandboxRequired {
+		rows = append(rows, struct{ label, value string }{"Sandbox", "Yes"})
+	}
+
+	rows = append(rows,
+		struct{ label, value string }{"Created", noneIfEmpty(item.CreatedAt)},
+		struct{ label, value string }{"Updated", noneIfEmpty(item.UpdatedAt)},
+	)
+
 	for _, r := range rows {
 		fmt.Printf("%-*s  %s\n", labelWidth, r.label+":", r.value)
 	}
