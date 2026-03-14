@@ -1158,47 +1158,6 @@ func TestResolveAgentConfigWithOverride(t *testing.T) {
 		}
 	})
 
-	t.Run("override uses custom codex hooks alias", func(t *testing.T) {
-		townSettings := NewTownSettings()
-		townSettings.Agents["codex-worker-hooks"] = &RuntimeConfig{
-			Command:    "codex",
-			Args:       []string{"--dangerously-bypass-approvals-and-sandbox"},
-			PromptMode: "arg",
-			Hooks: &RuntimeHooksConfig{
-				Provider:     "codex",
-				Dir:          ".codex",
-				SettingsFile: "hooks.json",
-			},
-		}
-		if err := SaveTownSettings(TownSettingsPath(townRoot), townSettings); err != nil {
-			t.Fatalf("SaveTownSettings: %v", err)
-		}
-
-		rc, name, err := ResolveAgentConfigWithOverride(townRoot, rigPath, "codex-worker-hooks")
-		if err != nil {
-			t.Fatalf("ResolveAgentConfigWithOverride: %v", err)
-		}
-		if name != "codex-worker-hooks" {
-			t.Fatalf("name = %q, want %q", name, "codex-worker-hooks")
-		}
-		if rc.Command != "codex" {
-			t.Fatalf("rc.Command = %q, want %q", rc.Command, "codex")
-		}
-		if rc.PromptMode != "arg" {
-			t.Fatalf("rc.PromptMode = %q, want %q", rc.PromptMode, "arg")
-		}
-		if rc.Hooks == nil {
-			t.Fatal("expected hooks config")
-		}
-		if rc.Hooks.Provider != "codex" || rc.Hooks.Dir != ".codex" || rc.Hooks.SettingsFile != "hooks.json" {
-			t.Fatalf("unexpected hooks config: %+v", rc.Hooks)
-		}
-		args := rc.BuildArgsWithPrompt("start here")
-		if len(args) == 0 || args[len(args)-1] != "start here" {
-			t.Fatalf("BuildArgsWithPrompt should append prompt positionally, got %v", args)
-		}
-	})
-
 	t.Run("unknown override errors", func(t *testing.T) {
 		_, _, err := ResolveAgentConfigWithOverride(townRoot, rigPath, "nope-not-an-agent")
 		if err == nil {

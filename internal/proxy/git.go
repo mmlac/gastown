@@ -51,6 +51,7 @@ package proxy
 
 import (
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -85,6 +86,11 @@ func (s *Server) handleGit(w http.ResponseWriter, r *http.Request) {
 
 	if rig == "" {
 		http.Error(w, "missing rig name", http.StatusBadRequest)
+		return
+	}
+
+	if len(rig) > 256 {
+		http.Error(w, "rig name too long", http.StatusBadRequest)
 		return
 	}
 
@@ -154,6 +160,12 @@ func (s *Server) handleInfoRefs(w http.ResponseWriter, r *http.Request, repoPath
 	pktLine := fmt.Sprintf("# service=%s\n", service)
 	fmt.Fprintf(w, "%04x%s0000", len(pktLine)+4, pktLine)
 
+	// NOTE: 200 status is now committed. If the git subprocess fails after this
+	// point, the client receives a 200 with partial/corrupt output. This is an
+	// inherent limitation of the git smart-HTTP protocol: the pkt-line service
+	// prefix must precede git's output, and writing it commits the response status.
+	// The repo existence pre-flight in handleGit eliminates the most common failure
+	// (missing repo). Git subprocess failures are logged for server-side diagnosis.
 	var errBuf strings.Builder
 	cmd := exec.CommandContext(r.Context(), service, "--stateless-rpc", "--advertise-refs", repoPath)
 	cmd.Stdout = w
@@ -170,7 +182,24 @@ func (s *Server) handlePack(w http.ResponseWriter, r *http.Request, repoPath, se
 		return
 	}
 
+	// Ensure request body is closed even if git subprocess dies early,
+	// preventing file descriptor leaks on aborted connections.
+	defer r.Body.Close()
+
 	identity := cnToIdentity(clientCN)
+
+	// For receive-pack: decompress gzip body first, then enforce CN-scoped branch auth.
+	if service == "git-receive-pack" && r.Header.Get("Content-Encoding") == "gzip" {
+		gz, gzErr := gzip.NewReader(r.Body)
+		if gzErr != nil {
+			s.log.Error("git receive-pack gzip decode failed", "err", gzErr)
+			http.Error(w, "gzip decode failed", http.StatusBadRequest)
+			return
+		}
+		defer gz.Close()
+		r.Body = io.NopCloser(gz)
+		r.Header.Del("Content-Encoding")
+	}
 
 	// For receive-pack: enforce CN-scoped branch authorization.
 	var refs []string
@@ -186,9 +215,23 @@ func (s *Server) handlePack(w http.ResponseWriter, r *http.Request, repoPath, se
 	w.Header().Set("Content-Type", "application/x-"+service+"-result")
 	w.Header().Set("Cache-Control", "no-cache")
 
+	// Git clients send gzip-compressed request bodies (Content-Encoding: gzip).
+	// The git subprocess expects uncompressed input, so we decompress here.
+	var body io.Reader = r.Body
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		gz, gzErr := gzip.NewReader(r.Body)
+		if gzErr != nil {
+			s.log.Error("git pack gzip decode failed", "service", service, "err", gzErr)
+			http.Error(w, "gzip decode failed", http.StatusBadRequest)
+			return
+		}
+		defer gz.Close()
+		body = gz
+	}
+
 	var errBuf strings.Builder
 	cmd := exec.CommandContext(r.Context(), service, "--stateless-rpc", repoPath)
-	cmd.Stdin = r.Body
+	cmd.Stdin = body
 	cmd.Stdout = w
 	cmd.Stderr = &errBuf
 	cmd.Env = minimalEnv()
@@ -353,10 +396,12 @@ func validateReceivePackRefs(body []byte, cnName string) error {
 		}
 		ref := string(parts[2])
 
-		// Only allow refs/heads/polecat/<cnName>-* (prefix form).
-		// Exact-name pushes (without timestamp suffix) are not permitted.
-		if !strings.HasPrefix(ref, allowed) {
-			return fmt.Errorf("push to %q denied: only refs/heads/polecat/%s-* allowed", ref, cnName)
+		// Allow refs/heads/polecat/<cnName>, refs/heads/polecat/<cnName>-*, or
+		// refs/heads/polecat/<cnName>/* (exact match, hyphen suffix, or slash suffix).
+		exactMatch := "refs/heads/polecat/" + cnName
+		allowedSlash := exactMatch + "/"
+		if ref != exactMatch && !strings.HasPrefix(ref, allowed) && !strings.HasPrefix(ref, allowedSlash) {
+			return fmt.Errorf("push to %q denied: only refs/heads/polecat/%s[-/]* allowed", ref, cnName)
 		}
 	}
 	return nil

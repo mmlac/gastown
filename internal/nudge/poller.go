@@ -219,7 +219,7 @@ func (w *Watcher) watch() {
 		fmt.Fprintf(os.Stderr, "nudge watcher init failed for %s: %v\n", w.dir, err)
 		return
 	}
-	defer func() { _ = watcher.Close() }()
+	defer watcher.Close()
 
 	// Watch the directory.
 	if err := watcher.Add(w.dir); err != nil {

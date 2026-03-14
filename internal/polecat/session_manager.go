@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,8 +19,10 @@ import (
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/proxy"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/runtime"
+	"github.com/steveyegge/gastown/internal/sandbox"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/tmux"
@@ -41,16 +45,85 @@ var (
 
 // SessionManager handles polecat session lifecycle.
 type SessionManager struct {
-	tmux *tmux.Tmux
-	rig  *rig.Rig
+	tmux          *tmux.Tmux
+	rig           *rig.Rig
+	sandbox       sandbox.Lifecycle    // nil for local-only rigs
+	settings      *config.RigSettings  // for exec-wrapper resolution
+	installPrefix string               // shortened installation identifier (gt-<installID>)
+	proxyCA       *proxy.CA            // CA for issuing mTLS client certificates
+
+	// mu guards the locks map itself. Each polecat gets its own mutex to
+	// serialize Start/Stop operations and prevent races like concurrent
+	// PreStart (double cert issuance) or Start+Stop interleaving.
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+// polecatLock returns the per-polecat mutex, creating it if needed.
+// This serializes Start/Stop operations for the same polecat to prevent
+// races like concurrent PreStart (double cert issuance), Start+Stop
+// interleaving, or double PostStop via StopAll.
+func (m *SessionManager) polecatLock(polecat string) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.locks == nil {
+		m.locks = make(map[string]*sync.Mutex)
+	}
+	lk, ok := m.locks[polecat]
+	if !ok {
+		lk = &sync.Mutex{}
+		m.locks[polecat] = lk
+	}
+	return lk
+}
+
+// SessionManagerOption configures optional SessionManager fields.
+type SessionManagerOption func(*SessionManager)
+
+// WithSandbox sets the sandbox lifecycle for remote execution backends.
+// When non-nil, SessionManager calls PreStart/PostStop around session creation/destruction.
+func WithSandbox(s sandbox.Lifecycle) SessionManagerOption {
+	return func(sm *SessionManager) {
+		sm.sandbox = s
+	}
+}
+
+// WithProxyCA sets the CA used for issuing mTLS client certificates.
+// When set, the CA is passed to sandbox PreStart/PostStop via SandboxOpts.ProxyCA.
+func WithProxyCA(ca *proxy.CA) SessionManagerOption {
+	return func(sm *SessionManager) {
+		sm.proxyCA = ca
+	}
+}
+
+// WithSettings sets the rig settings for exec-wrapper resolution.
+func WithSettings(s *config.RigSettings) SessionManagerOption {
+	return func(sm *SessionManager) {
+		sm.settings = s
+	}
+}
+
+// WithInstallPrefix sets the shortened installation identifier (gt-<installID>)
+// used to populate SandboxOpts.InstallPrefix for workspace scoping.
+func WithInstallPrefix(prefix string) SessionManagerOption {
+	return func(sm *SessionManager) {
+		sm.installPrefix = prefix
+	}
 }
 
 // NewSessionManager creates a new polecat session manager for a rig.
-func NewSessionManager(t *tmux.Tmux, r *rig.Rig) *SessionManager {
-	return &SessionManager{
+// Optional SessionManagerOption values can be passed to configure sandbox
+// lifecycle and rig settings. Existing callers that pass only (tmux, rig)
+// continue to work unchanged.
+func NewSessionManager(t *tmux.Tmux, r *rig.Rig, opts ...SessionManagerOption) *SessionManager {
+	sm := &SessionManager{
 		tmux: t,
 		rig:  r,
 	}
+	for _, opt := range opts {
+		opt(sm)
+	}
+	return sm
 }
 
 // SessionStartOptions configures polecat session startup.
@@ -75,6 +148,10 @@ type SessionStartOptions struct {
 	// If set, GT_AGENT is written to the tmux session environment table so that
 	// IsAgentAlive and waitForPolecatReady read the correct process names.
 	Agent string
+
+	// Branch is the git branch for sandbox workspace creation.
+	// Used by sandbox.PreStart to set the initial branch in the remote workspace.
+	Branch string
 }
 
 // SessionInfo contains information about a running polecat session.
@@ -206,16 +283,29 @@ func (m *SessionManager) polecatSlot(polecat string) int {
 }
 
 // Start creates and starts a new session for a polecat.
-func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
+// The provided context controls cancellation of sandbox operations (PreStart).
+// If ctx is nil, context.Background() is used for backward compatibility.
+func (m *SessionManager) Start(ctx context.Context, polecat string, opts SessionStartOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Serialize Start/Stop for this polecat to prevent races.
+	lk := m.polecatLock(polecat)
+	lk.Lock()
+	defer lk.Unlock()
+
 	if !m.hasPolecat(polecat) {
 		return fmt.Errorf("%w: %s", ErrPolecatNotFound, polecat)
 	}
 
 	sessionID := m.SessionName(polecat)
 
-	// Check if session already exists.
-	// If an existing session's pane process has died, kill the stale session
-	// and proceed rather than returning ErrSessionRunning (gt-jn40ft).
+	// tmux session lifecycle: check for existing session before creation.
+	// HasSession and KillSessionWithProcesses are direct tmux operations —
+	// they query/manage the tmux server's session table, which is host-side
+	// state independent of any sandbox. Sandbox PreStart runs later, after
+	// this pre-flight check confirms no stale session exists.
 	running, err := m.tmux.HasSession(sessionID)
 	if err != nil {
 		return fmt.Errorf("checking session: %w", err)
@@ -230,10 +320,16 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 		}
 	}
 
-	// Determine working directory
+	// Determine working directory.
+	// Remote polecats (sandbox != nil) use the marker directory (no local worktree);
+	// local polecats use the git worktree clone path.
 	workDir := opts.WorkDir
 	if workDir == "" {
-		workDir = m.clonePath(polecat)
+		if m.sandbox != nil {
+			workDir = m.polecatDir(polecat) // marker dir for tmux cwd
+		} else {
+			workDir = m.clonePath(polecat) // local git worktree
+		}
 	}
 
 	// Validate issue exists and isn't tombstoned BEFORE creating session.
@@ -242,6 +338,57 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 		if err := m.validateIssue(opts.Issue, workDir); err != nil {
 			return err
 		}
+	}
+
+	// Run sandbox PreStart if configured.
+	// This creates/starts the remote workspace, issues mTLS certs, and returns
+	// inner env vars to inject after the exec-wrapper's -- delimiter.
+	var sandboxInnerEnv map[string]string
+	sandboxNeedsCleanup := false
+	if m.sandbox != nil {
+		sandboxOpts := sandbox.SandboxOpts{
+			Rig:           m.rig.Name,
+			Polecat:       polecat,
+			InstallPrefix: m.installPrefix,
+			WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
+			RigSettings:   m.settings,
+			ProxyCA:       m.proxyCA,
+			Branch:        opts.Branch,
+		}
+		var preErr error
+		sandboxInnerEnv, preErr = m.sandbox.PreStart(ctx, sandboxOpts)
+		if preErr != nil {
+			return fmt.Errorf("sandbox pre-start: %w", preErr)
+		}
+
+		// Deferred cleanup: call PostStop if Start returns an error after PreStart
+		// succeeded. This covers all failure paths (tmux creation failure, session
+		// died during startup, GT_AGENT not set) and ensures certs are revoked,
+		// Daytona workspaces stopped, and containers cleaned up. (gtd-8ld)
+		sandboxNeedsCleanup = true
+		defer func() {
+			if !sandboxNeedsCleanup {
+				return
+			}
+			serial := ""
+			if sandboxInnerEnv != nil {
+				serial = sandboxInnerEnv["GT_CERT_SERIAL"]
+			}
+			rollbackOpts := sandbox.SandboxOpts{
+				Rig:           m.rig.Name,
+				Polecat:       polecat,
+				InstallPrefix: m.installPrefix,
+				WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
+				RigSettings:   m.settings,
+				ProxyCA:       m.proxyCA,
+				CertSerial:    serial,
+			}
+			rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer rollbackCancel()
+			if postErr := m.sandbox.PostStop(rollbackCtx, rollbackOpts); postErr != nil {
+				debugSession("sandbox PostStop rollback", postErr)
+			}
+		}()
 	}
 
 	// Resolve runtime config for the agent that will actually run in this session.
@@ -305,6 +452,76 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 			return fmt.Errorf("building startup command: %w", err)
 		}
 	}
+	// Inject host config files into sandbox and prepare additional inner env vars.
+	// Must happen BEFORE InjectInnerEnv so env vars are included in the command.
+	if m.sandbox != nil {
+		wsName := m.sandbox.WorkspaceName(m.rig.Name, polecat)
+		remoteClaudeDir := sandbox.DefaultRemoteSettingsDir
+
+		// Inject settings.json (rewrite --settings path after InjectInnerEnv)
+		hostSettingsPath := filepath.Join(config.RoleSettingsDir("polecat", m.rig.Path), ".claude", "settings.json")
+		if settingsData, err := os.ReadFile(hostSettingsPath); err == nil {
+			if err := m.sandbox.InjectFile(ctx, wsName, sandbox.DefaultRemoteSettingsPath, settingsData); err != nil {
+				debugSession("injecting settings file", err)
+			}
+		} else {
+			debugSession("reading host settings file", err)
+		}
+
+		// Inject credentials for API auth
+		homeDir, _ := os.UserHomeDir()
+		credPath := filepath.Join(homeDir, ".claude", ".credentials.json")
+		if credData, err := os.ReadFile(credPath); err == nil {
+			_ = m.sandbox.InjectFile(ctx, wsName, remoteClaudeDir+"/.credentials.json", credData)
+		}
+
+		// Inject ~/.claude.json (top-level config with onboarding state).
+		// This is the file claude checks for hasCompletedOnboarding, numStartups,
+		// oauthAccount, etc. Without it, the first-run theme picker blocks startup.
+		homeDir2, _ := os.UserHomeDir()
+		claudeJsonPath := filepath.Join(homeDir2, ".claude.json")
+		if claudeJsonData, err := os.ReadFile(claudeJsonPath); err == nil {
+			_ = m.sandbox.InjectFile(ctx, wsName, "/home/daytona/.claude.json", claudeJsonData)
+		}
+
+		// Add env vars to skip interactive onboarding inside the sandbox.
+		// These must be added BEFORE InjectInnerEnv below.
+		sandboxInnerEnv["CLAUDE_CODE_ENTRYPOINT"] = "cli"
+		sandboxInnerEnv["CLAUDECODE"] = "1"
+
+		// Set GT_REPO_URL so gt prime can tell the agent where to clone from.
+		// The proxy serves git over /v1/git/<rig> with mTLS auth.
+		proxyURL := sandboxInnerEnv["GT_PROXY_URL"] // already set by PreStart
+		if proxyURL != "" {
+			sandboxInnerEnv["GT_REPO_URL"] = proxyURL + "/v1/git/" + m.rig.Name
+		}
+
+		// GT_SANDBOX=1 signals to gt prime that this is a remote sandbox.
+		sandboxInnerEnv["GT_SANDBOX"] = "1"
+	}
+
+	// Inject sandbox inner env vars after the exec-wrapper's -- delimiter.
+	// Inserts "env K=V K2=V2" between the -- and the agent command.
+	if len(sandboxInnerEnv) > 0 {
+		if idx := strings.Index(command, " -- "); idx >= 0 {
+			var envParts []string
+			for k, v := range sandboxInnerEnv {
+				envParts = append(envParts, k+"="+v)
+			}
+			sort.Strings(envParts)
+			inject := " env " + strings.Join(envParts, " ") + " "
+			command = command[:idx+4] + inject + command[idx+4:]
+		} else {
+			command = config.PrependEnv(command, sandboxInnerEnv)
+		}
+	}
+
+	// Rewrite host --settings path to container-local path after InjectInnerEnv
+	if m.sandbox != nil {
+		hostSettingsPath := filepath.Join(config.RoleSettingsDir("polecat", m.rig.Path), ".claude", "settings.json")
+		command = strings.ReplaceAll(command, hostSettingsPath, sandbox.DefaultRemoteSettingsPath)
+	}
+
 	// Prepend runtime config dir env if needed
 	if runtimeConfig.Session != nil && runtimeConfig.Session.ConfigDirEnv != "" && opts.RuntimeConfigDir != "" {
 		command = config.PrependEnv(command, map[string]string{runtimeConfig.Session.ConfigDirEnv: opts.RuntimeConfigDir})
@@ -344,15 +561,26 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	}
 	command = config.PrependEnv(command, envVarsToInject)
 
-	// Create session with command directly to avoid send-keys race condition.
+	// Extract cert serial from sandbox inner env for rollback and tmux storage.
+	var certSerial string
+	if sandboxInnerEnv != nil {
+		certSerial = sandboxInnerEnv["GT_CERT_SERIAL"]
+	}
+
+	// tmux session creation: NewSessionWithCommand is the core tmux operation
+	// that creates a new session with the agent command. This runs AFTER sandbox
+	// PreStart (which provisions the remote workspace) and BEFORE env var setup.
+	// On failure, the deferred PostStop cleanup handles sandbox rollback. (gtd-8ld)
 	// See: https://github.com/anthropics/gastown/issues/280
 	if err := m.tmux.NewSessionWithCommand(sessionID, workDir, command); err != nil {
 		return fmt.Errorf("creating session: %w", err)
 	}
 
-	// Set environment (non-fatal: session works without these)
-	// Use centralized AgentEnv for consistency across all role startup paths
-	// Note: townRoot already defined above for ResolveRoleAgentConfig
+	// tmux environment variables: SetEnvironment writes key-value pairs to the
+	// tmux session's environment table. These are host-side metadata that the
+	// agent process reads via show-environment. Sandbox-mediated env vars are
+	// injected separately via sandboxInnerEnv (passed through the exec-wrapper's
+	// -- delimiter). The tmux env table survives session restarts.
 	envVars := config.AgentEnv(config.AgentEnvConfig{
 		Role:             "polecat",
 		Rig:              m.rig.Name,
@@ -387,6 +615,12 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	// Set GT_RUN in the session environment so respawned processes also inherit it.
 	debugSession("SetEnvironment GT_RUN", m.tmux.SetEnvironment(sessionID, "GT_RUN", runID))
 
+	// Store cert serial in tmux session environment so PostStop can revoke
+	// the correct certificate. The serial survives session restarts.
+	if certSerial != "" {
+		debugSession("SetEnvironment GT_CERT_SERIAL", m.tmux.SetEnvironment(sessionID, "GT_CERT_SERIAL", certSerial))
+	}
+
 	// Disable Dolt auto-commit in tmux session environment (gt-5cc2p).
 	// This ensures respawned processes also inherit the setting.
 	debugSession("SetEnvironment BD_DOLT_AUTO_COMMIT", m.tmux.SetEnvironment(sessionID, "BD_DOLT_AUTO_COMMIT", "off"))
@@ -397,9 +631,9 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	processNames := config.ResolveProcessNames(runtimeConfig.ResolvedAgent, runtimeConfig.Command)
 	debugSession("SetEnvironment GT_PROCESS_NAMES", m.tmux.SetEnvironment(sessionID, "GT_PROCESS_NAMES", strings.Join(processNames, ",")))
 
-	// Record agent's pane_id for ZFC-compliant liveness checks (gt-qmsx).
-	// Declared pane identity replaces process-tree inference in IsRuntimeRunning
-	// and FindAgentPane. Legacy sessions without GT_PANE_ID fall back to scanning.
+	// tmux pane identity: GetPaneID queries the tmux server for the pane's
+	// unique ID, stored in the session env for ZFC-compliant liveness checks
+	// (gt-qmsx). This is pure tmux state — not sandbox-mediated.
 	if paneID, err := m.tmux.GetPaneID(sessionID); err == nil {
 		debugSession("SetEnvironment GT_PANE_ID", m.tmux.SetEnvironment(sessionID, "GT_PANE_ID", paneID))
 	}
@@ -412,46 +646,42 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 		}
 	}
 
-	// Apply theme (non-fatal)
+	// tmux session configuration: theme, crash hooks, and visual setup are
+	// pure tmux operations on the host-side session. These work transparently
+	// whether the agent runs locally or via daytona exec --tty tunnel.
 	theme := tmux.AssignTheme(m.rig.Name)
 	debugSession("ConfigureGasTownSession", m.tmux.ConfigureGasTownSession(sessionID, theme, m.rig.Name, polecat, "polecat"))
 
-	// Set pane-died hook for crash detection (non-fatal)
+	// tmux hook: pane-died triggers crash detection callback (non-fatal)
 	agentID := fmt.Sprintf("%s/%s", m.rig.Name, polecat)
 	debugSession("SetPaneDiedHook", m.tmux.SetPaneDiedHook(sessionID, agentID))
 
-	// Wait for Claude to start (non-fatal)
+	// tmux startup sequence: WaitForCommand, AcceptStartupDialogs, and
+	// WaitForRuntimeReady observe the tmux pane output to detect agent
+	// readiness. These poll CapturePane internally — all terminal I/O
+	// flows through the tmux pane, transparent to sandbox tunneling.
 	debugSession("WaitForCommand", m.tmux.WaitForCommand(sessionID, constants.SupportedShells, constants.ClaudeStartTimeout))
-
-	// Accept startup dialogs (workspace trust + bypass permissions) if they appear
 	debugSession("AcceptStartupDialogs", m.tmux.AcceptStartupDialogs(sessionID))
-
-	// Wait for runtime to be fully ready at the prompt (not just started).
-	// Uses prompt-based polling for agents with ReadyPromptPrefix (e.g., Claude "❯ "),
-	// falling back to ReadyDelayMs sleep for agents without prompt detection.
 	debugSession("WaitForRuntimeReady", m.tmux.WaitForRuntimeReady(sessionID, runtimeConfig, constants.ClaudeStartTimeout))
 
-	// Handle fallback nudges for non-hook agents.
+	// tmux nudge delivery: NudgeSession and WaitForRuntimeReady use tmux
+	// send-keys and capture-pane to deliver work instructions to the agent.
+	// These are terminal I/O operations transparent to sandbox tunneling.
 	// See StartupFallbackInfo in runtime package for the fallback matrix.
 	if fallbackInfo.SendBeaconNudge && fallbackInfo.SendStartupNudge && fallbackInfo.StartupNudgeDelayMs == 0 {
-		// Hooks + no prompt: Single combined nudge (hook already ran gt prime synchronously)
 		combined := beacon + "\n\n" + runtime.StartupNudgeContent()
 		debugSession("SendCombinedNudge", m.tmux.NudgeSession(sessionID, combined))
 	} else {
 		if fallbackInfo.SendBeaconNudge {
-			// Agent doesn't support CLI prompt - send beacon via nudge
 			debugSession("SendBeaconNudge", m.tmux.NudgeSession(sessionID, beacon))
 		}
 
 		if fallbackInfo.StartupNudgeDelayMs > 0 {
-			// Wait for agent to finish processing beacon + gt prime before sending work instructions.
-			// Uses prompt-based detection where available; falls back to max(ReadyDelayMs, StartupNudgeDelayMs).
 			primeWaitRC := runtime.RuntimeConfigWithMinDelay(runtimeConfig, fallbackInfo.StartupNudgeDelayMs)
 			debugSession("WaitForPrimeReady", m.tmux.WaitForRuntimeReady(sessionID, primeWaitRC, constants.ClaudeStartTimeout))
 		}
 
 		if fallbackInfo.SendStartupNudge {
-			// Send work instructions via nudge
 			debugSession("SendStartupNudge", m.tmux.NudgeSession(sessionID, runtime.StartupNudgeContent()))
 		}
 	}
@@ -463,11 +693,13 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 		m.verifyStartupNudgeDelivery(sessionID, runtimeConfig)
 	}
 
-	// Legacy fallback for other startup paths (non-fatal)
+	// tmux startup fallback: RunStartupFallback passes m.tmux for terminal
+	// I/O to handle agents that don't support hooks or prompt detection.
 	_ = runtime.RunStartupFallback(m.tmux, sessionID, "polecat", runtimeConfig)
 
-	// Verify session survived startup - if the command crashed, the session may have died.
-	// Without this check, Start() would return success even if the pane died during initialization.
+	// tmux post-startup verification: HasSession confirms the session survived
+	// startup, GetEnvironment reads the GT_AGENT value from the tmux env table.
+	// Both are host-side tmux queries — no sandbox interaction needed.
 	running, err = m.tmux.HasSession(sessionID)
 	if err != nil {
 		return fmt.Errorf("verifying session: %w", err)
@@ -476,9 +708,8 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 		return fmt.Errorf("session %s died during startup (agent command may have failed)", sessionID)
 	}
 
-	// Validate GT_AGENT is set. Without GT_AGENT, IsAgentAlive falls back to
-	// ["node", "claude"] process detection and witness patrol will auto-nuke
-	// polecats running non-Claude agents (e.g., opencode). Fail fast.
+	// Validate GT_AGENT is set — without it, witness patrol will auto-nuke
+	// polecats running non-Claude agents. Fail fast and clean up.
 	gtAgent, _ := m.tmux.GetEnvironment(sessionID, "GT_AGENT")
 	if gtAgent == "" {
 		_ = m.tmux.KillSessionWithProcesses(sessionID)
@@ -507,6 +738,9 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	session.RecordAgentInstantiateFromDir(context.Background(), runID, runtimeConfig.ResolvedAgent,
 		"polecat", polecat, sessionID, m.rig.Name, townRoot, opts.Issue, workDir)
 
+	// Disarm the deferred PostStop cleanup — startup succeeded. (gtd-8ld)
+	sandboxNeedsCleanup = false
+
 	return nil
 }
 
@@ -519,9 +753,24 @@ func (m *SessionManager) isSessionStale(sessionID string) bool {
 }
 
 // Stop terminates a polecat session.
-func (m *SessionManager) Stop(polecat string, force bool) error {
+// The provided context controls cancellation of sandbox operations (PostStop).
+// If ctx is nil, context.Background() is used for backward compatibility.
+func (m *SessionManager) Stop(ctx context.Context, polecat string, force bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Serialize Start/Stop for this polecat to prevent races.
+	lk := m.polecatLock(polecat)
+	lk.Lock()
+	defer lk.Unlock()
+
 	sessionID := m.SessionName(polecat)
 
+	// tmux session lifecycle: HasSession, GetEnvironment, SendKeysRaw, and
+	// KillSessionWithProcesses are all direct tmux operations. Stop() reads
+	// the cert serial from tmux env (host-side metadata) before destroying the
+	// session, then calls sandbox.PostStop for remote workspace cleanup.
 	running, err := m.tmux.HasSession(sessionID)
 	if err != nil {
 		return fmt.Errorf("checking session: %w", err)
@@ -530,24 +779,46 @@ func (m *SessionManager) Stop(polecat string, force bool) error {
 		return ErrSessionNotFound
 	}
 
-	// Try graceful shutdown first
+	// Read cert serial from tmux env BEFORE killing the session.
+	var certSerial string
+	if m.sandbox != nil {
+		certSerial, _ = m.tmux.GetEnvironment(sessionID, "GT_CERT_SERIAL")
+	}
+
+	// Graceful shutdown via tmux send-keys (C-c), then force kill.
 	if !force {
 		_ = m.tmux.SendKeysRaw(sessionID, "C-c")
 		session.WaitForSessionExit(m.tmux, sessionID, constants.GracefulShutdownTimeout)
 	}
 
-	// Use KillSessionWithProcesses to ensure all descendant processes are killed.
-	// This prevents orphan bash processes from Claude's Bash tool surviving session termination.
+	// KillSessionWithProcesses ensures all descendant processes are killed.
 	if err := m.tmux.KillSessionWithProcesses(sessionID); err != nil {
 		return fmt.Errorf("killing session: %w", err)
+	}
+
+	// Run sandbox PostStop if configured (cert revocation, workspace stop/delete).
+	// PostStop errors are non-fatal — reconciliation handles cleanup of anything missed.
+	if m.sandbox != nil {
+		opts := sandbox.SandboxOpts{
+			Rig:           m.rig.Name,
+			Polecat:       polecat,
+			InstallPrefix: m.installPrefix,
+			WorkspaceName: m.sandbox.WorkspaceName(m.rig.Name, polecat),
+			RigSettings:   m.settings,
+			ProxyCA:       m.proxyCA,
+			CertSerial:    certSerial,
+		}
+		if err := m.sandbox.PostStop(ctx, opts); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: sandbox post-stop failed for %s: %v\n", polecat, err)
+		}
 	}
 
 	return nil
 }
 
 // IsRunning checks if a polecat session is active and healthy.
-// Checks both tmux session existence AND agent process liveness to avoid
-// reporting zombie sessions (tmux alive but Claude dead) as "running".
+// CheckSessionHealth is a tmux query that checks both session existence and
+// agent process liveness — pure host-side tmux state, no sandbox interaction.
 func (m *SessionManager) IsRunning(polecat string) (bool, error) {
 	sessionID := m.SessionName(polecat)
 	status := m.tmux.CheckSessionHealth(sessionID, 0)
@@ -555,6 +826,8 @@ func (m *SessionManager) IsRunning(polecat string) (bool, error) {
 }
 
 // Status returns detailed status for a polecat session.
+// HasSession and GetSessionInfo are tmux queries for session metadata
+// (creation time, window count, activity) — host-side tmux state.
 func (m *SessionManager) Status(polecat string) (*SessionInfo, error) {
 	sessionID := m.SessionName(polecat)
 
@@ -609,7 +882,7 @@ func (m *SessionManager) Status(polecat string) (*SessionInfo, error) {
 }
 
 // List returns information about all sessions for this rig.
-// This includes polecats, witness, refinery, and crew sessions.
+// ListSessions queries the tmux server for all session names — pure host-side state.
 // Use ListPolecats() to get only polecat sessions.
 func (m *SessionManager) List() ([]SessionInfo, error) {
 	sessions, err := m.tmux.ListSessions()
@@ -658,6 +931,8 @@ func (m *SessionManager) ListPolecats() ([]SessionInfo, error) {
 }
 
 // Attach attaches to a polecat session.
+// AttachSession is a tmux operation that switches the terminal to the session's
+// pane — works transparently whether the agent runs locally or via sandbox tunnel.
 func (m *SessionManager) Attach(polecat string) error {
 	sessionID := m.SessionName(polecat)
 
@@ -673,6 +948,8 @@ func (m *SessionManager) Attach(polecat string) error {
 }
 
 // Capture returns the recent output from a polecat session.
+// CapturePane reads from the tmux pane's scrollback buffer — terminal I/O
+// that works transparently through daytona exec --tty tunnel.
 func (m *SessionManager) Capture(polecat string, lines int) (string, error) {
 	sessionID := m.SessionName(polecat)
 
@@ -688,6 +965,7 @@ func (m *SessionManager) Capture(polecat string, lines int) (string, error) {
 }
 
 // CaptureSession returns the recent output from a session by raw session ID.
+// Same tmux CapturePane operation as Capture, but accepts a raw session ID.
 func (m *SessionManager) CaptureSession(sessionID string, lines int) (string, error) {
 	running, err := m.tmux.HasSession(sessionID)
 	if err != nil {
@@ -701,6 +979,8 @@ func (m *SessionManager) CaptureSession(sessionID string, lines int) (string, er
 }
 
 // Inject sends a message to a polecat session.
+// SendKeysDebounced writes keystrokes to the tmux pane — terminal I/O that
+// works transparently through the sandbox tunnel.
 func (m *SessionManager) Inject(polecat, message string) error {
 	sessionID := m.SessionName(polecat)
 
@@ -721,7 +1001,12 @@ func (m *SessionManager) Inject(polecat, message string) error {
 }
 
 // StopAll terminates all polecat sessions for this rig.
-func (m *SessionManager) StopAll(force bool) error {
+// The provided context controls cancellation of sandbox operations.
+// If ctx is nil, context.Background() is used for backward compatibility.
+func (m *SessionManager) StopAll(ctx context.Context, force bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	infos, err := m.ListPolecats()
 	if err != nil {
 		return err
@@ -729,7 +1014,7 @@ func (m *SessionManager) StopAll(force bool) error {
 
 	var errs []error
 	for _, info := range infos {
-		if err := m.Stop(info.Polecat, force); err != nil {
+		if err := m.Stop(ctx, info.Polecat, force); err != nil {
 			errs = append(errs, fmt.Errorf("stopping %s: %w", info.Polecat, err))
 		}
 	}
@@ -777,15 +1062,9 @@ func (m *SessionManager) validateIssue(issueID, workDir string) error {
 
 // verifyStartupNudgeDelivery checks if the polecat started working after the
 // startup nudge and retries the nudge if the agent is still idle at its prompt.
-// This fixes the Mode B race condition (GH#1379) where the startup nudge arrives
-// before Claude Code is ready, causing the polecat to sit idle.
-//
-// The approach models ensureAgentReady (sling_helpers.go): after the nudge, wait
-// a verification delay, then check if the agent is at its idle prompt. If idle,
-// re-send the nudge and check again, up to StartupNudgeMaxRetries times.
-//
-// Non-fatal: if verification fails or times out, the session is left running.
-// The witness zombie patrol will eventually detect and handle truly idle polecats.
+// Uses tmux HasSession, IsAtPrompt (capture-pane), and NudgeSession (send-keys)
+// — all terminal I/O transparent to sandbox tunneling. Non-fatal: the witness
+// zombie patrol handles truly idle polecats if verification fails.
 func (m *SessionManager) verifyStartupNudgeDelivery(sessionID string, rc *config.RuntimeConfig) {
 	// Only verify for agents with prompt detection. Without ReadyPromptPrefix,
 	// we can't distinguish "idle at prompt" from "busy processing".

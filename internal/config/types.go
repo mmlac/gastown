@@ -651,6 +651,44 @@ type RigSettings struct {
 	// Takes precedence over RoleAgents["crew"] but is overridden by explicit --agent flags.
 	// Example: {"denali": "codex", "glacier": "gemini"}
 	WorkerAgents map[string]string `json:"worker_agents,omitempty"`
+
+	// RemoteBackend configures remote sandbox execution (e.g., Daytona workspaces).
+	// When set, sandbox lifecycle hooks manage workspace creation, cert injection,
+	// and cleanup around session start/stop.
+	RemoteBackend *RemoteBackendConfig `json:"remote_backend,omitempty"`
+}
+
+// RemoteBackendConfig configures remote sandbox execution for a rig.
+// Used by DaytonaSandbox to provision workspaces, inject certificates,
+// and manage workspace lifecycle around polecat sessions.
+type RemoteBackendConfig struct {
+	// Image is the container image for workspace creation.
+	Image string `json:"image,omitempty"`
+
+	// Snapshot is a pre-built snapshot ID to use instead of Image.
+	Snapshot string `json:"snapshot,omitempty"`
+
+	// Dockerfile is an inline Dockerfile (alternative to Image/Snapshot).
+	Dockerfile string `json:"dockerfile,omitempty"`
+
+	// Profile is the execution profile name for workspace resource allocation.
+	Profile string `json:"profile,omitempty"`
+
+	// ProxyAddr is the proxy server address (host:port).
+	// Defaults to the standard proxy address if empty.
+	ProxyAddr string `json:"proxy_addr,omitempty"`
+
+	// AutoStopInterval is the idle duration before the workspace is automatically
+	// stopped by the remote backend. Zero means use the backend's default.
+	AutoStopInterval time.Duration `json:"auto_stop_interval,omitempty"`
+
+	// AutoStop controls whether the workspace is stopped when the polecat
+	// session ends. If false, the workspace remains running for reuse.
+	AutoStop bool `json:"auto_stop,omitempty"`
+
+	// AutoDelete controls whether the workspace is deleted when the polecat
+	// session ends. If false, the workspace is retained for reuse.
+	AutoDelete bool `json:"auto_delete,omitempty"`
 }
 
 // CrewConfig represents crew workspace settings for a rig.

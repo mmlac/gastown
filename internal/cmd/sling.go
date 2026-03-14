@@ -319,7 +319,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 						return fmt.Errorf("%s '%s' cannot be batch-scheduled with an explicit rig\nUse: gt sling %s (children auto-resolve rigs)", idType, id, id)
 					}
 				}
-				return runBatchSchedule(beadIDs, rigName, townRoot)
+				return runBatchSchedule(beadIDs, rigName)
 			}
 			// Explicit rig: print tip about auto-resolve
 			fmt.Printf("  %s the rig can be auto-resolved from bead prefixes. "+
@@ -421,7 +421,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 				}
 			}
 			beadID := args[0]
-			formula := resolveFormula(slingFormula, slingHookRawBead, townRoot, rigName)
+			formula := resolveFormula(slingFormula, slingHookRawBead)
 			return scheduleBead(beadID, rigName, ScheduleOptions{
 				Formula:     formula,
 				Args:        slingArgs,
@@ -447,7 +447,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	if len(args) == 1 {
 		idType, err := detectSchedulerIDType(args[0])
 		if err == nil && idType != "task" {
-			formula := resolveFormula(slingFormula, slingHookRawBead, townRoot, "")
+			formula := resolveFormula(slingFormula, slingHookRawBead)
 
 			switch idType {
 			case "convoy":
@@ -784,11 +784,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	// This ensures polecats get structured work guidance through formula-on-bead.
 	// Use --hook-raw-bead to bypass for expert/debugging scenarios.
 	if formulaName == "" && !slingHookRawBead && strings.Contains(targetAgent, "/polecats/") {
-		targetRig := ""
-		if parts := strings.SplitN(targetAgent, "/", 2); len(parts) >= 1 {
-			targetRig = parts[0]
-		}
-		formulaName = resolveFormula(slingFormula, false, townRoot, targetRig)
+		formulaName = resolveFormula(slingFormula, false)
 		if slingFormula != "" {
 			fmt.Printf("  Applying %s for polecat work...\n", formulaName)
 		} else {

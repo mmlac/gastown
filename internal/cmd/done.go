@@ -358,8 +358,13 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// 2. Uncommitted changes (work that would be lost)
 		// 3. Unique commits compared to origin (ensures branch was pushed with actual work)
 
+		// Sandbox polecats: work lives in the remote sandbox, not the host worktree.
+		// Skip cwd availability and uncommitted changes checks — the polecat pushed
+		// its commits to the bare repo via the proxy before calling gt done.
+		isSandboxProxy := os.Getenv("GT_PROXY_IDENTITY") != ""
+
 		// Block if working directory not available - can't verify git state
-		if !cwdAvailable {
+		if !cwdAvailable && !isSandboxProxy {
 			return fmt.Errorf("cannot complete: working directory not available (worktree deleted?)\nUse --status DEFERRED to exit without completing")
 		}
 
@@ -368,25 +373,41 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// excluded — these are toolchain-managed and normally gitignored.
 		// Without this filter, gt done fails on virtually every polecat because
 		// Cursor creates .claude/ at runtime in every workspace.
-		workStatus, err := g.CheckUncommittedWork()
-		if err != nil {
-			return fmt.Errorf("checking git status: %w", err)
-		}
-		if workStatus.HasUncommittedChanges && !workStatus.CleanExcludingRuntime() {
-			return fmt.Errorf("cannot complete: uncommitted changes would be lost\nCommit your changes first, or use --status DEFERRED to exit without completing\nUncommitted: %s", workStatus.String())
+		if !isSandboxProxy {
+			workStatus, err := g.CheckUncommittedWork()
+			if err != nil {
+				return fmt.Errorf("checking git status: %w", err)
+			}
+			if workStatus.HasUncommittedChanges && !workStatus.CleanExcludingRuntime() {
+				return fmt.Errorf("cannot complete: uncommitted changes would be lost\nCommit your changes first, or use --status DEFERRED to exit without completing\nUncommitted: %s", workStatus.String())
+			}
 		}
 
 		// Check if branch has commits ahead of origin/default
 		// If not, work may have been pushed directly to main - that's fine, just skip MR
 		originDefault := "origin/" + defaultBranch
-		aheadCount, err := g.CommitsAhead(originDefault, "HEAD")
-		if err != nil {
-			// Fallback to local branch comparison if origin not available
-			aheadCount, err = g.CommitsAhead(defaultBranch, branch)
+
+		// Sandbox mode: the polecat's commits were pushed to the bare repo from
+		// the sandbox, not the local worktree. Use the bare repo to check commits ahead.
+		var aheadCount int
+		if os.Getenv("GT_PROXY_IDENTITY") != "" && rigName != "" {
+			bareRepo := filepath.Join(townRoot, rigName, ".repo.git")
+			bareGit := git.NewGitWithDir(bareRepo, bareRepo)
+			aheadCount, err = bareGit.CommitsAhead(defaultBranch, branch)
 			if err != nil {
-				// Can't determine - assume work exists and continue
-				style.PrintWarning("could not check commits ahead of %s: %v", defaultBranch, err)
-				aheadCount = 1
+				style.PrintWarning("sandbox: could not check commits in bare repo: %v", err)
+				aheadCount = 1 // assume work exists
+			}
+		} else {
+			aheadCount, err = g.CommitsAhead(originDefault, "HEAD")
+			if err != nil {
+				// Fallback to local branch comparison if origin not available
+				aheadCount, err = g.CommitsAhead(defaultBranch, branch)
+				if err != nil {
+					// Can't determine - assume work exists and continue
+					style.PrintWarning("could not check commits ahead of %s: %v", defaultBranch, err)
+					aheadCount = 1
+				}
 			}
 		}
 
@@ -523,8 +544,6 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// Handle "direct" strategy: push to target branch, skip MR
 		if convoyInfo != nil && convoyInfo.MergeStrategy == "direct" {
 			fmt.Printf("%s Direct merge strategy: pushing to %s\n", style.Bold.Render("→"), defaultBranch)
-			// Push submodule changes before direct push (gt-dzs)
-			pushSubmoduleChanges(g, defaultBranch)
 			directRefspec := branch + ":" + defaultBranch
 			directPushErr := g.Push("origin", directRefspec, false)
 			if directPushErr != nil {
@@ -577,12 +596,6 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// isn't pushed yet, Refinery finds nothing to merge. The worktree gets
 		// nuked at the end of gt done, so the commits are lost forever.
 		//
-		// Auto-push submodule changes BEFORE parent push (gt-dzs).
-		// If the parent repo's submodule pointer references commits that don't
-		// exist on the submodule's remote, the Refinery MR will be broken.
-		// Detect modified submodules and push each one first.
-		pushSubmoduleChanges(g, defaultBranch)
-
 		// Use explicit refspec (branch:branch) to create the remote branch.
 		// Without refspec, git push follows the tracking config — polecat branches
 		// track origin/main, so a bare push sends commits to main directly,
@@ -1052,35 +1065,6 @@ notifyWitness:
 		fmt.Printf("  Witness will handle cleanup.\n")
 	}
 	return nil
-}
-
-// pushSubmoduleChanges detects submodules modified between origin/defaultBranch
-// and HEAD, and pushes each submodule's new commit to its remote before the
-// parent repo push. This prevents the parent's submodule pointer from
-// referencing commits that don't exist on the submodule's remote (gt-dzs).
-func pushSubmoduleChanges(g *git.Git, defaultBranch string) {
-	subChanges, err := g.SubmoduleChanges("origin/"+defaultBranch, "HEAD")
-	if err != nil {
-		// Non-fatal: repos without submodules return nil, nil.
-		// Only warn if the error is real (not just "no submodules").
-		style.PrintWarning("could not detect submodule changes: %v", err)
-		return
-	}
-	for _, sc := range subChanges {
-		if sc.NewSHA == "" {
-			continue // Submodule removed, nothing to push
-		}
-		shortSHA := sc.NewSHA
-		if len(shortSHA) > 8 {
-			shortSHA = shortSHA[:8]
-		}
-		fmt.Printf("Pushing submodule %s (%s)...\n", sc.Path, shortSHA)
-		if subPushErr := g.PushSubmoduleCommit(sc.Path, sc.NewSHA, "origin"); subPushErr != nil {
-			style.PrintWarning("submodule push failed for %s: %v (parent push may fail)", sc.Path, subPushErr)
-		} else {
-			fmt.Printf("%s Submodule %s pushed\n", style.Bold.Render("✓"), sc.Path)
-		}
-	}
 }
 
 // setDoneIntentLabel writes a done-intent:<type>:<unix-ts> label on the agent bead

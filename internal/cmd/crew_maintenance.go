@@ -24,7 +24,7 @@ func runCrewRename(cmd *cobra.Command, args []string) error {
 	}
 	// Note: newName is just the new name, no rig prefix expected
 
-	crewMgr, r, err := getCrewManagerForMember(crewRig, oldName)
+	crewMgr, r, err := getCrewManager(crewRig)
 	if err != nil {
 		return err
 	}

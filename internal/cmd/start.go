@@ -989,14 +989,11 @@ func runStartCrew(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	// If rig still not specified, try to infer from cwd, then by crew name
+	// If rig still not specified, try to infer from cwd
 	if rigName == "" {
 		rigName, err = inferRigFromCwd(townRoot)
 		if err != nil {
-			rigName, err = inferRigFromCrewName(townRoot, name)
-			if err != nil {
-				return fmt.Errorf("could not determine rig (use --rig flag or rig/name format): %w", err)
-			}
+			return fmt.Errorf("could not determine rig (use --rig flag or rig/name format): %w", err)
 		}
 	}
 

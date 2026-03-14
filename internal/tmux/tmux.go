@@ -1404,21 +1404,6 @@ func (t *Tmux) sendKeysLiteralWithRetry(target, text string, timeout time.Durati
 // queue up and execute one at a time. This prevents garbled input when
 // SessionStart hooks and nudges arrive simultaneously.
 func (t *Tmux) NudgeSession(session, message string) error {
-	return t.NudgeSessionWithOpts(session, message, NudgeOpts{})
-}
-
-// NudgeOpts controls optional behavior for nudge delivery.
-type NudgeOpts struct {
-	// SkipEscape omits the Escape keystroke (step 5) and the 600ms readline
-	// timeout (step 6) from the delivery protocol. Set this for agents where
-	// Escape cancels in-flight generation (e.g., Gemini CLI) rather than
-	// harmlessly exiting vim INSERT mode.
-	SkipEscape bool
-}
-
-// NudgeSessionWithOpts is like NudgeSession but accepts delivery options.
-// See NudgeOpts for available options.
-func (t *Tmux) NudgeSessionWithOpts(session, message string, opts NudgeOpts) error {
 	// Serialize nudges to this session to prevent interleaving.
 	// Use a timed lock to avoid permanent blocking if a previous nudge hung.
 	if !acquireNudgeLock(session, nudgeLockTimeout) {
@@ -1452,17 +1437,15 @@ func (t *Tmux) NudgeSessionWithOpts(session, message string, opts NudgeOpts) err
 	// 4. Wait 500ms for text delivery to complete (tested, required)
 	time.Sleep(500 * time.Millisecond)
 
-	if !opts.SkipEscape {
-		// 5. Send Escape to exit vim INSERT mode if enabled (harmless in normal mode)
-		// See: https://github.com/anthropics/gastown/issues/307
-		_, _ = t.run("send-keys", "-t", target, "Escape")
+	// 5. Send Escape to exit vim INSERT mode if enabled (harmless in normal mode)
+	// See: https://github.com/anthropics/gastown/issues/307
+	_, _ = t.run("send-keys", "-t", target, "Escape")
 
-		// 6. Wait 600ms — must exceed bash readline's keyseq-timeout (500ms default)
-		// so ESC is processed alone, not as a meta prefix for the subsequent Enter.
-		// Without this, ESC+Enter within 500ms becomes M-Enter (meta-return) which
-		// does NOT submit the line.
-		time.Sleep(600 * time.Millisecond)
-	}
+	// 6. Wait 600ms — must exceed bash readline's keyseq-timeout (500ms default)
+	// so ESC is processed alone, not as a meta prefix for the subsequent Enter.
+	// Without this, ESC+Enter within 500ms becomes M-Enter (meta-return) which
+	// does NOT submit the line.
+	time.Sleep(600 * time.Millisecond)
 
 	// 7. Send Enter with retry (critical for message submission)
 	var lastErr error
@@ -1536,12 +1519,12 @@ func (t *Tmux) NudgePane(pane, message string) error {
 	return fmt.Errorf("failed to send Enter after 3 attempts: %w", lastErr)
 }
 
-// AcceptStartupDialogs dismisses startup dialogs that can block automated
-// sessions. Currently handles (in order):
-//  1. Workspace trust dialog (Claude "Quick safety check", Codex "Do you trust the contents of this directory?")
+// AcceptStartupDialogs dismisses all Claude Code startup dialogs that can block
+// automated sessions. Currently handles (in order):
+//  1. Workspace trust dialog ("Quick safety check" / "trust this folder") — v2.1.55+
 //  2. Bypass permissions warning ("Bypass Permissions mode") — requires Down+Enter
 //
-// Call this after starting the agent and waiting for it to initialize (WaitForCommand),
+// Call this after starting Claude and waiting for it to initialize (WaitForCommand),
 // but before sending any prompts. Idempotent: safe to call on sessions without dialogs.
 func (t *Tmux) AcceptStartupDialogs(session string) error {
 	if err := t.AcceptWorkspaceTrustDialog(session); err != nil {
@@ -1553,13 +1536,14 @@ func (t *Tmux) AcceptStartupDialogs(session string) error {
 	return nil
 }
 
-// AcceptWorkspaceTrustDialog dismisses workspace trust dialogs for supported
-// agents. Claude shows "Quick safety check"; Codex shows
-// "Do you trust the contents of this directory?". In both cases the safe
-// continue option is pre-selected, so Enter accepts the dialog.
+// AcceptWorkspaceTrustDialog dismisses the Claude Code workspace trust dialog.
+// Starting with Claude Code v2.1.55, a "Quick safety check" dialog appears on first launch
+// in a workspace, asking the user to confirm they trust the folder. Option 1 ("Yes, I trust
+// this folder") is pre-selected, so we just need to press Enter to accept.
+// This dialog appears BEFORE the bypass permissions warning, so call this first.
 //
 // Uses a polling loop instead of a single check to handle the race condition where
-// the agent hasn't rendered the dialog yet when we first check. Exits early if the
+// Claude hasn't rendered the dialog yet when we first check. Exits early if the
 // agent prompt appears (indicating no dialog will be shown).
 func (t *Tmux) AcceptWorkspaceTrustDialog(session string) error {
 	deadline := time.Now().Add(constants.DialogPollTimeout)
@@ -1570,10 +1554,8 @@ func (t *Tmux) AcceptWorkspaceTrustDialog(session string) error {
 			continue
 		}
 
-		// Look for characteristic trust dialog text before prompt detection.
-		// Codex trust screens include a leading ">" banner line, so prompt
-		// detection alone would exit too early.
-		if containsWorkspaceTrustDialog(content) {
+		// Look for characteristic trust dialog text
+		if strings.Contains(content, "trust this folder") || strings.Contains(content, "Quick safety check") {
 			// Dialog found — accept it (option 1 is pre-selected, just press Enter)
 			if _, err := t.run("send-keys", "-t", session, "Enter"); err != nil {
 				return err
@@ -1595,12 +1577,6 @@ func (t *Tmux) AcceptWorkspaceTrustDialog(session string) error {
 
 	// Timeout — no dialog detected, safe to proceed
 	return nil
-}
-
-func containsWorkspaceTrustDialog(content string) bool {
-	return strings.Contains(content, "trust this folder") ||
-		strings.Contains(content, "Quick safety check") ||
-		strings.Contains(content, "Do you trust the contents of this directory?")
 }
 
 // promptSuffixes are strings that indicate a shell or agent prompt is visible.

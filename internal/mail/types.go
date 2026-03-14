@@ -33,9 +33,6 @@ const (
 	// TypeTask indicates a message requiring action from the recipient.
 	TypeTask MessageType = "task"
 
-	// TypeEscalation indicates a structured escalation copy persisted in mail.
-	TypeEscalation MessageType = "escalation"
-
 	// TypeScavenge indicates optional first-come-first-served work.
 	TypeScavenge MessageType = "scavenge"
 
@@ -86,7 +83,7 @@ type Message struct {
 	// Priority is the message priority.
 	Priority Priority `json:"priority"`
 
-	// Type indicates the message type (task, escalation, scavenge, notification, reply).
+	// Type indicates the message type (task, scavenge, notification, reply).
 	Type MessageType `json:"type"`
 
 	// Delivery specifies how the message is delivered (queue or interrupt).
@@ -404,7 +401,7 @@ func (bm *BeadsMessage) ToMessage() *Message {
 	// Convert message type, default to notification
 	msgType := TypeNotification
 	switch MessageType(bm.msgType) {
-	case TypeTask, TypeEscalation, TypeScavenge, TypeReply:
+	case TypeTask, TypeScavenge, TypeReply:
 		msgType = MessageType(bm.msgType)
 	}
 
@@ -532,7 +529,7 @@ func PriorityFromInt(p int) Priority {
 // ParseMessageType parses a message type string, returning TypeNotification for invalid values.
 func ParseMessageType(s string) MessageType {
 	switch MessageType(s) {
-	case TypeTask, TypeEscalation, TypeScavenge, TypeNotification, TypeReply:
+	case TypeTask, TypeScavenge, TypeNotification, TypeReply:
 		return MessageType(s)
 	default:
 		return TypeNotification

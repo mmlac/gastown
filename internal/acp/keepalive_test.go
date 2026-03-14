@@ -72,9 +72,7 @@ func TestProxy_RunKeepAlive_Logic(t *testing.T) {
 	}
 
 	// Case 3: Busy agent, idle for 50s -> should NOT send heartbeat
-	p.promptMux.Lock()
 	p.activePromptID = "prompt-123"
-	p.promptMux.Unlock()
 	p.lastActivity.Store(time.Now().Add(-50 * time.Second).UnixNano())
 	tickerChan <- time.Now()
 

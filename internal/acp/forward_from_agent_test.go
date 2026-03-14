@@ -3,7 +3,6 @@ package acp
 import (
 	"encoding/json"
 	"os"
-	"sync"
 	"testing"
 	"time"
 )
@@ -274,9 +273,7 @@ func TestForwardFromAgent_PropulsionTriggers(t *testing.T) {
 	}
 
 	// Test reset on prompt response
-	p.promptMux.Lock()
 	p.activePromptID = "test-prompt"
-	p.promptMux.Unlock()
 	responseMsg := JSONRPCMessage{
 		JSONRPC: "2.0",
 		ID:      "test-prompt",
@@ -291,9 +288,7 @@ func TestForwardFromAgent_PropulsionTriggers(t *testing.T) {
 	}
 
 	// 1. Verify that output is forwarded again after reset
-	p.promptMux.Lock()
 	p.activePromptID = "test-prompt-2"
-	p.promptMux.Unlock()
 	msgAfterReset := JSONRPCMessage{
 		JSONRPC: "2.0",
 		Method:  "test/after-reset",
@@ -304,8 +299,7 @@ func TestForwardFromAgent_PropulsionTriggers(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Read received messages to verify forwarding
-	var receivedMsgs []JSONRPCMessage
-	var mu sync.Mutex
+	receivedMsgs := []JSONRPCMessage{}
 	decoder := json.NewDecoder(stdoutReader)
 
 	// We need to read everything that was sent to stdoutWriter
@@ -318,22 +312,18 @@ func TestForwardFromAgent_PropulsionTriggers(t *testing.T) {
 			if err := decoder.Decode(&msg); err != nil {
 				return
 			}
-			mu.Lock()
 			receivedMsgs = append(receivedMsgs, msg)
-			mu.Unlock()
 		}
 	}()
 	time.Sleep(100 * time.Millisecond)
 
 	foundAfterReset := false
-	mu.Lock()
 	for _, m := range receivedMsgs {
 		if m.Method == "test/after-reset" {
 			foundAfterReset = true
 			break
 		}
 	}
-	mu.Unlock()
 	if !foundAfterReset {
 		t.Error("Message after propulsion reset was not forwarded")
 	}

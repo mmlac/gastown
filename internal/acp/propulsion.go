@@ -181,7 +181,7 @@ func (p *Propeller) eventLoop() {
 		logEvent(p.townRoot, "acp_error", fmt.Sprintf("failed to create nudge watcher: %v", err))
 		return
 	}
-	defer func() { _ = watcher.Close() }()
+	defer watcher.Close()
 
 	for {
 		select {
@@ -206,7 +206,8 @@ func (p *Propeller) deliverNudges() {
 
 	debugLog(p.townRoot, "[Propeller] deliverNudges: drained %d nudge(s)", len(nudges))
 
-	text := formatNudgesForPropeller(nudges)
+	// Use the shared formatter from nudge package
+	text := nudge.FormatForInjection(nudges)
 
 	// Determine urgency
 	urgent := false
@@ -217,58 +218,14 @@ func (p *Propeller) deliverNudges() {
 		}
 	}
 
-	meta := buildSessionUpdateMeta(nudges, p.session)
-	requeue := func(reason string) {
-		if err := nudge.Requeue(p.townRoot, p.session, nudges); err != nil {
-			logEvent(p.townRoot, "acp_error", fmt.Sprintf("failed to requeue nudges after %s: %v", reason, err))
-			style.PrintWarning("ACP Propeller failed to requeue nudges after %s: %v", reason, err)
-			return
-		}
-		logEvent(p.townRoot, "acp_degraded", fmt.Sprintf("requeued %d nudges: %s", len(nudges), reason))
-	}
-
-	if p.proxy == nil || p.proxy.SessionID() == "" {
-		requeue("session not ready")
-		return
-	}
-
-	if err := p.notify(text, meta, urgent); err != nil {
-		requeue(fmt.Sprintf("delivery failure: %v", err))
-		style.PrintWarning("ACP Propeller failed to deliver nudge: %v", err)
-	}
-}
-
-type escalationDeliveryMeta struct {
-	Kind     string
-	ThreadID string
-	Severity string
-}
-
-func escalationMetaFromNudges(nudges []nudge.QueuedNudge) *escalationDeliveryMeta {
-	for _, n := range nudges {
-		if n.Kind != "escalation" {
-			continue
-		}
-		return &escalationDeliveryMeta{
-			Kind:     n.Kind,
-			ThreadID: n.ThreadID,
-			Severity: n.Severity,
-		}
-	}
-	return nil
-}
-
-func formatNudgesForPropeller(nudges []nudge.QueuedNudge) string {
-	return nudge.FormatForInjection(nudges)
-}
-
-func buildSessionUpdateMeta(nudges []nudge.QueuedNudge, session string) map[string]string {
 	meta := map[string]string{
 		"gt/eventType": "nudge",
 		"gt/count":     strconv.Itoa(len(nudges)),
+		"gt/urgent":    strconv.Itoa(len(nudges) - len(nudges)), // count of urgent? No, just flag it.
 		"gt/drained":   "true",
-		"gt/session":   session,
+		"gt/session":   p.session,
 	}
+	// Actually, let's count urgent
 	urgentCount := 0
 	for _, n := range nudges {
 		if n.Priority == nudge.PriorityUrgent {
@@ -276,13 +233,10 @@ func buildSessionUpdateMeta(nudges []nudge.QueuedNudge, session string) map[stri
 		}
 	}
 	meta["gt/urgent"] = strconv.Itoa(urgentCount)
-	if escalationMeta := escalationMetaFromNudges(nudges); escalationMeta != nil {
-		meta["gt/escalation"] = "true"
-		meta["gt/threadID"] = escalationMeta.ThreadID
-		meta["gt/severity"] = escalationMeta.Severity
-		meta["gt/kind"] = escalationMeta.Kind
+
+	if err := p.notify(text, meta, urgent); err != nil {
+		style.PrintWarning("ACP Propeller failed to deliver nudge: %v", err)
 	}
-	return meta
 }
 
 func (p *Propeller) Stop() {
@@ -336,9 +290,6 @@ func (p *Propeller) notifyWithMeta(text string, meta map[string]string) {
 func (p *Propeller) notify(text string, meta map[string]string, urgent bool) error {
 	if p.proxy == nil || text == "" {
 		return nil
-	}
-	if p.proxy.SessionID() == "" {
-		return fmt.Errorf("sessionID not available")
 	}
 
 	// Always notify the UI

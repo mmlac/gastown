@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/steveyegge/gastown/internal/workspace"
@@ -105,13 +106,19 @@ func IsACPActive(townRoot string) bool {
 		return false
 	}
 
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+
 	// Check if process is alive without any side effects.
 	// NOTE: We intentionally do NOT remove stale PID files here.
 	// Stale PID cleanup should be done explicitly via CleanupStaleACP(),
 	// not as a side effect of checking if ACP is active.
 	// Removing the PID file here triggers the proxy's PID file monitoring,
 	// causing unexpected shutdowns.
-	return acpProcessAlive(pid)
+	err = process.Signal(syscall.Signal(0))
+	return err == nil
 }
 
 func IsACPActiveInWorkDir(workDir string) bool {

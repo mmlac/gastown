@@ -201,10 +201,10 @@ func RunSpiderDetection(doltPath, forkDir string, cfg SpiderConfig) ([]FraudSign
 	// Run each detector independently. A failure in one detector shouldn't
 	// prevent others from running — partial results are better than none.
 	detectors := []struct {
-		name   string
-		kind   FraudSignalKind
-		query  string
-		scorer func([]string) (float64, int, string)
+		name    string
+		kind    FraudSignalKind
+		query   string
+		scorer  func([]string) (float64, int, string)
 	}{
 		{"collusion", SignalCollusion, collusionQuery(cfg), scoreCollusion},
 		{"rubber_stamp", SignalRubberStamp, rubberStampQuery(cfg), scoreRubberStamp},
@@ -246,8 +246,8 @@ func RunSpiderDetection(doltPath, forkDir string, cfg SpiderConfig) ([]FraudSign
 // Score is the a_to_b_ratio (already 0.0–1.0). Higher ratio = more suspicious.
 func scoreCollusion(row []string) (float64, int, string) {
 	ratio := parseFloatColumn(row, 5, 0.5)
-	count := parseIntColumn(row, 2)
-	total := parseIntColumn(row, 3)
+	count := parseIntColumn(row, 2, 0)
+	total := parseIntColumn(row, 3, 0)
 	return ratio, total, fmt.Sprintf("collusion: %d/%d stamps (%.0f%%) go to one partner", count, total, ratio*100)
 }
 
@@ -256,8 +256,8 @@ func scoreCollusion(row []string) (float64, int, string) {
 // Score is the uniformity_ratio (0.0–1.0). 1.0 = every stamp has identical valence.
 func scoreRubberStamp(row []string) (float64, int, string) {
 	ratio := parseFloatColumn(row, 4, 0.5)
-	identical := parseIntColumn(row, 2)
-	total := parseIntColumn(row, 3)
+	identical := parseIntColumn(row, 2, 0)
+	total := parseIntColumn(row, 3, 0)
 	return ratio, total, fmt.Sprintf("rubber-stamp: %d/%d stamps have identical valence (%.0f%%)", identical, total, ratio*100)
 }
 
@@ -269,7 +269,7 @@ func scoreRubberStamp(row []string) (float64, int, string) {
 func scoreConfidenceInflation(row []string) (float64, int, string) {
 	avgConf := parseFloatColumn(row, 2, 0.95)
 	spread := parseFloatColumn(row, 5, 0)
-	count := parseIntColumn(row, 1)
+	count := parseIntColumn(row, 1, 0)
 	// Map [0.95, 1.0] → [0.5, 1.0]
 	score := 0.5 + (avgConf-0.95)*10.0
 	score = math.Min(1.0, math.Max(0.5, score))
@@ -282,9 +282,9 @@ func scoreConfidenceInflation(row []string) (float64, int, string) {
 // are more suspicious than lopsided ones. Minimum 0.5 since the detector
 // already filters for >= 2 in each direction.
 func scoreSelfLoop(row []string) (float64, int, string) {
-	forward := parseIntColumn(row, 2)
-	reverse := parseIntColumn(row, 3)
-	total := parseIntColumn(row, 4)
+	forward := parseIntColumn(row, 2, 0)
+	reverse := parseIntColumn(row, 3, 0)
+	total := parseIntColumn(row, 4, 0)
 	if total == 0 {
 		return 0.5, 0, "self-loop detected"
 	}
@@ -310,13 +310,13 @@ func parseFloatColumn(row []string, idx int, fallback float64) float64 {
 }
 
 // parseIntColumn safely extracts an int from a CSV row at the given index.
-func parseIntColumn(row []string, idx int) int {
+func parseIntColumn(row []string, idx int, fallback int) int {
 	if idx >= len(row) {
-		return 0
+		return fallback
 	}
 	v, err := strconv.Atoi(strings.TrimSpace(row[idx]))
 	if err != nil {
-		return 0
+		return fallback
 	}
 	return v
 }

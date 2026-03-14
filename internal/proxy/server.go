@@ -201,7 +201,7 @@ func (s *Server) DenyCert(serial *big.Int) {
 	s.denyList.Deny(serial)
 }
 
-// Start begins listening and serving. Blocks until ctx is canceled.
+// Start begins listening and serving. Blocks until ctx is cancelled.
 func (s *Server) Start(ctx context.Context) error {
 	pool := x509.NewCertPool()
 	pool.AddCert(s.ca.Cert)
@@ -286,6 +286,7 @@ func (s *Server) Start(ctx context.Context) error {
 	var adminSrv *http.Server
 	if s.cfg.AdminListenAddr != "" {
 		adminMux := http.NewServeMux()
+		adminMux.HandleFunc("/v1/admin/health", s.handleHealth)
 		adminMux.HandleFunc("/v1/admin/deny-cert", s.handleDenyCert)
 		adminMux.HandleFunc("/v1/admin/issue-cert", s.handleIssueCert)
 
@@ -313,14 +314,39 @@ func (s *Server) Start(ctx context.Context) error {
 		}()
 	}
 
+	// Periodic sweep: prune stale DenyList entries and rate limiters to prevent
+	// unbounded memory growth from rotating polecats over months of operation.
+	// Runs every hour; entries accumulate again naturally from active certs. (gtd-uay)
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				before := s.denyList.Len()
+				s.denyList.Reset()
+				s.rateLimiters.Range(func(key, _ any) bool {
+					s.rateLimiters.Delete(key)
+					return true
+				})
+				s.log.Info("gt-proxy-server: sweep complete", "denied_pruned", before)
+			}
+		}
+	}()
+
 	select {
 	case <-ctx.Done():
-		// Issue 5: Give shutdown a reasonable deadline to drain in-flight requests.
+		// Shutdown admin and main servers with independent timeouts so a slow
+		// admin shutdown doesn't starve the main server's drain window. (gtd-uay)
+		if adminSrv != nil {
+			adminCtx, adminCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = adminSrv.Shutdown(adminCtx)
+			adminCancel()
+		}
 		shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if adminSrv != nil {
-			_ = adminSrv.Shutdown(shutCtx)
-		}
 		return srv.Shutdown(shutCtx)
 	case err := <-errCh:
 		return err
@@ -475,6 +501,16 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 		Serial:    leaf.SerialNumber.Text(16),
 		ExpiresAt: leaf.NotAfter.UTC().Format(time.RFC3339),
 	})
+}
+
+// handleHealth handles GET /v1/admin/health on the local admin server.
+// Returns 200 OK to indicate the server is alive and ready.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 // denyCertRequest is the JSON body for POST /v1/admin/deny-cert.

@@ -21,21 +21,15 @@ var assignCmd = &cobra.Command{
 	Long: `Create a new bead and immediately hook it to a crew member.
 
 This is a shortcut for "bd create" + "gt hook". The crew member name
-is short-form (just the name), and the rig is resolved in order:
---rig flag, current directory, or by scanning all rigs for the crew
-member name. This means "gt assign dave ..." works from anywhere in
-the town if dave exists in exactly one rig.
-
-The crew member must exist (the directory <rig>/crew/<name> must be
-present) or the command will error.
+is short-form (just the name), and the rig is inferred from the current
+working directory.
 
 Examples:
   gt assign monet "Fix the auth token refresh bug"
   gt assign monet "Review error handling" -d "The retry logic looks wrong"
   gt assign monet "Fix auth bug" --type bug --priority 1
   gt assign monet "Fix auth bug" --nudge
-  gt assign monet "Fix auth bug" --label important
-  gt assign monet "Fix auth bug" --rig beads   # Explicit rig override`,
+  gt assign monet "Fix auth bug" --label important`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: runAssign,
 }
@@ -79,18 +73,8 @@ func runAssign(_ *cobra.Command, args []string) error {
 	if rigName == "" {
 		rigName, err = inferRigFromCwd(townRoot)
 		if err != nil {
-			// Fallback: scan all rigs for a crew member with this name
-			rigName, err = inferRigFromCrewName(townRoot, crewName)
-			if err != nil {
-				return fmt.Errorf("inferring rig (use --rig to specify): %w", err)
-			}
+			return fmt.Errorf("inferring rig (use --rig to specify): %w", err)
 		}
-	}
-
-	// Validate crew member exists
-	crewDir := filepath.Join(townRoot, rigName, "crew", crewName)
-	if _, err := os.Stat(crewDir); os.IsNotExist(err) {
-		return fmt.Errorf("crew member %q not found in rig %q (no directory %s)", crewName, rigName, crewDir)
 	}
 
 	agentID := rigName + "/crew/" + crewName

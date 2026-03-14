@@ -1232,7 +1232,15 @@ func ResolveRoleAgentConfig(role, townRoot, rigPath string) *RuntimeConfig {
 	resolveConfigMu.Lock()
 	defer resolveConfigMu.Unlock()
 	rc := resolveRoleAgentConfigCore(role, townRoot, rigPath)
-	return withRoleSettingsFlag(rc, role, rigPath)
+	rc = withRoleSettingsFlag(rc, role, rigPath)
+
+	// Strip exec_wrapper for non-worker roles. Infrastructure agents (witness,
+	// refinery, deacon) must run locally for direct access to bare repos, Dolt,
+	// tmux sessions, and the daemon. Only workers (polecat, crew) run in sandboxes.
+	if role != "" && role != "polecat" && role != "crew" {
+		rc.ExecWrapper = nil
+	}
+	return rc
 }
 
 // ResolveWorkerAgentConfig resolves the agent configuration for a named crew worker.
@@ -1999,9 +2007,44 @@ func BuildStartupCommand(envVars map[string]string, rigPath, prompt string) stri
 	}
 
 	// Apply exec wrapper from rig/town settings if not already set on the resolved config.
-	// ExecWrapper is a deployment-level setting (sandbox/container) independent of agent choice.
-	if len(rc.ExecWrapper) == 0 {
+	// Only applies to worker roles (polecat, crew) — infrastructure roles
+	// (witness, refinery, deacon) must run locally for direct access to
+	// bare repos, Dolt, and tmux sessions.
+	isWorkerRole := role == "" || role == "polecat" || role == "crew"
+	if !isWorkerRole {
+		rc.ExecWrapper = nil
+	}
+	if isWorkerRole && len(rc.ExecWrapper) == 0 {
 		rc.ExecWrapper = resolveExecWrapper(rigPath)
+	}
+	// Expand {{workspace}}, {{rig}}, {{polecat}} templates in exec wrapper.
+	if isWorkerRole && len(rc.ExecWrapper) > 0 {
+		rigName := envVars["GT_RIG"]
+			polecatName := envVars["GT_POLECAT"]
+			if polecatName == "" {
+				polecatName = envVars["GT_CREW"]
+			}
+			installPrefix := envVars["GT_INSTALL_PREFIX"]
+			if installPrefix == "" {
+				installPrefix = "gt"
+			}
+			wsName := ""
+			if rigName != "" && polecatName != "" {
+				wsName = installPrefix + "-" + rigName + "--" + polecatName
+			} else if rigName != "" {
+				wsName = installPrefix + "-" + rigName
+			}
+			replacer := strings.NewReplacer(
+				"{{workspace}}", wsName,
+				"{{rig}}", rigName,
+				"{{polecat}}", polecatName,
+				"{{install_prefix}}", installPrefix,
+			)
+			expanded := make([]string, len(rc.ExecWrapper))
+			for i, arg := range rc.ExecWrapper {
+				expanded[i] = replacer.Replace(arg)
+			}
+			rc.ExecWrapper = expanded
 	}
 
 	// Copy env vars to avoid mutating caller map
@@ -2190,8 +2233,44 @@ func BuildStartupCommandWithAgentOverride(envVars map[string]string, rigPath, pr
 	}
 
 	// Apply exec wrapper from rig/town settings if not already set on the resolved config.
-	if len(rc.ExecWrapper) == 0 {
+	// Only applies to worker roles (polecat, crew) — infrastructure roles
+	// (witness, refinery, deacon) must run locally for direct access to
+	// bare repos, Dolt, and tmux sessions.
+	isWorkerRole := role == "" || role == "polecat" || role == "crew"
+	if !isWorkerRole {
+		rc.ExecWrapper = nil
+	}
+	if isWorkerRole && len(rc.ExecWrapper) == 0 {
 		rc.ExecWrapper = resolveExecWrapper(rigPath)
+	}
+	// Expand {{workspace}}, {{rig}}, {{polecat}} templates in exec wrapper.
+	if isWorkerRole && len(rc.ExecWrapper) > 0 {
+		rigName := envVars["GT_RIG"]
+			polecatName := envVars["GT_POLECAT"]
+			if polecatName == "" {
+				polecatName = envVars["GT_CREW"]
+			}
+			installPrefix := envVars["GT_INSTALL_PREFIX"]
+			if installPrefix == "" {
+				installPrefix = "gt"
+			}
+			wsName := ""
+			if rigName != "" && polecatName != "" {
+				wsName = installPrefix + "-" + rigName + "--" + polecatName
+			} else if rigName != "" {
+				wsName = installPrefix + "-" + rigName
+			}
+			replacer := strings.NewReplacer(
+				"{{workspace}}", wsName,
+				"{{rig}}", rigName,
+				"{{polecat}}", polecatName,
+				"{{install_prefix}}", installPrefix,
+			)
+			expanded := make([]string, len(rc.ExecWrapper))
+			for i, arg := range rc.ExecWrapper {
+				expanded[i] = replacer.Replace(arg)
+			}
+			rc.ExecWrapper = expanded
 	}
 
 	// Copy env vars to avoid mutating caller map

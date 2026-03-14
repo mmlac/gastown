@@ -24,7 +24,6 @@ type hookInput struct {
 	SessionID      string `json:"session_id"`
 	TranscriptPath string `json:"transcript_path"`
 	Source         string `json:"source"` // startup, resume, clear, compact
-	HookEventName  string `json:"hook_event_name"`
 }
 
 // readHookSessionID reads session ID from available sources in hook mode.
@@ -43,7 +42,6 @@ type hookInput struct {
 //	SessionStart: "export GT_SESSION_ID=$(uuidgen) GT_HOOK_SOURCE=startup && gt prime --hook"
 //	PreCompress:  "export GT_HOOK_SOURCE=compact && gt prime --hook"
 func readHookSessionID() (sessionID, source string) {
-	primeStructuredSessionStartOutput = false
 	// Source can come from env (any runtime) or stdin JSON (Claude only).
 	// Check env first so it's available even when stdin provides the session ID.
 	source = os.Getenv("GT_HOOK_SOURCE")
@@ -55,11 +53,11 @@ func readHookSessionID() (sessionID, source string) {
 	if id := os.Getenv("CLAUDE_SESSION_ID"); id != "" {
 		return id, source
 	}
+
 	// 2. Try reading stdin JSON (Claude Code format).
 	//    Checked before persisted file so a fresh Claude session always wins
 	//    over a potentially stale .runtime/session_id from a previous session.
 	if input := readStdinJSON(); input != nil {
-		primeStructuredSessionStartOutput = input.HookEventName == "SessionStart"
 		if input.SessionID != "" {
 			// Stdin source overrides env source when both are present
 			if input.Source != "" {
@@ -255,18 +253,7 @@ func outputSessionMetadata(ctx RoleContext) {
 	sessionID := resolveSessionIDForPrime(actor)
 
 	// Output structured metadata line
-	fmt.Println(formatSessionMetadataLine(actor, sessionID))
-}
-
-// formatSessionMetadataLine keeps the bracketed "[GAS TOWN]" banner for normal
-// human-facing output, but removes the leading brackets during structured
-// SessionStart hooks because Codex will see '[' and try to parse the line as
-// JSON instead of treating it as plain text session metadata.
-func formatSessionMetadataLine(actor, sessionID string) string {
-	if primeStructuredSessionStartOutput {
-		return fmt.Sprintf("GAS TOWN role:%s pid:%d session:%s", actor, os.Getpid(), sessionID)
-	}
-	return fmt.Sprintf("[GAS TOWN] role:%s pid:%d session:%s", actor, os.Getpid(), sessionID)
+	fmt.Printf("[GAS TOWN] role:%s pid:%d session:%s\n", actor, os.Getpid(), sessionID)
 }
 
 // --- Session state detection (merged from prime_state.go) ---
