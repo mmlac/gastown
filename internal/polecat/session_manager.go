@@ -451,6 +451,44 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 			return fmt.Errorf("building startup command: %w", err)
 		}
 	}
+	// Inject host config files into sandbox and prepare additional inner env vars.
+	// Must happen BEFORE InjectInnerEnv so env vars are included in the command.
+	if m.sandbox != nil {
+		wsName := m.sandbox.WorkspaceName(m.rig.Name, polecat)
+		remoteClaudeDir := sandbox.DefaultRemoteSettingsDir
+
+		// Inject settings.json (rewrite --settings path after InjectInnerEnv)
+		hostSettingsPath := filepath.Join(config.RoleSettingsDir("polecat", m.rig.Path), ".claude", "settings.json")
+		if settingsData, err := os.ReadFile(hostSettingsPath); err == nil {
+			if err := m.sandbox.InjectFile(ctx, wsName, sandbox.DefaultRemoteSettingsPath, settingsData); err != nil {
+				debugSession("injecting settings file", err)
+			}
+		} else {
+			debugSession("reading host settings file", err)
+		}
+
+		// Inject credentials for API auth
+		homeDir, _ := os.UserHomeDir()
+		credPath := filepath.Join(homeDir, ".claude", ".credentials.json")
+		if credData, err := os.ReadFile(credPath); err == nil {
+			_ = m.sandbox.InjectFile(ctx, wsName, remoteClaudeDir+"/.credentials.json", credData)
+		}
+
+		// Inject ~/.claude.json (top-level config with onboarding state).
+		// This is the file claude checks for hasCompletedOnboarding, numStartups,
+		// oauthAccount, etc. Without it, the first-run theme picker blocks startup.
+		homeDir2, _ := os.UserHomeDir()
+		claudeJsonPath := filepath.Join(homeDir2, ".claude.json")
+		if claudeJsonData, err := os.ReadFile(claudeJsonPath); err == nil {
+			_ = m.sandbox.InjectFile(ctx, wsName, "/home/daytona/.claude.json", claudeJsonData)
+		}
+
+		// Add env vars to skip interactive onboarding inside the sandbox.
+		// These must be added BEFORE InjectInnerEnv below.
+		sandboxInnerEnv["CLAUDE_CODE_ENTRYPOINT"] = "cli"
+		sandboxInnerEnv["CLAUDECODE"] = "1"
+	}
+
 	// Inject sandbox inner env vars between the exec-wrapper's -- delimiter and the
 	// agent command. These are returned by sandbox.PreStart and include proxy config,
 	// cert paths, and git author metadata for the remote workspace environment.
@@ -458,23 +496,10 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 		command = config.InjectInnerEnv(command, sandboxInnerEnv)
 	}
 
-	// Inject host settings file into sandbox and rewrite the --settings path
-	// in the command to use the container-local path. The command references
-	// the host path (e.g., /gt/<rig>/polecats/.claude/settings.json) which
-	// doesn't exist inside the sandbox.
+	// Rewrite host --settings path to container-local path after InjectInnerEnv
 	if m.sandbox != nil {
 		hostSettingsPath := filepath.Join(config.RoleSettingsDir("polecat", m.rig.Path), ".claude", "settings.json")
-		containerSettingsPath := sandbox.DefaultRemoteSettingsPath
-		if settingsData, err := os.ReadFile(hostSettingsPath); err == nil {
-			wsName := m.sandbox.WorkspaceName(m.rig.Name, polecat)
-			if err := m.sandbox.InjectFile(ctx, wsName, containerSettingsPath, settingsData); err != nil {
-				debugSession("injecting settings file", err)
-			} else {
-				command = strings.ReplaceAll(command, hostSettingsPath, containerSettingsPath)
-			}
-		} else {
-			debugSession("reading host settings file", err)
-		}
+		command = strings.ReplaceAll(command, hostSettingsPath, sandbox.DefaultRemoteSettingsPath)
 	}
 
 	// Prepend runtime config dir env if needed
