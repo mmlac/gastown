@@ -58,11 +58,12 @@ var (
 )
 
 var mqCmd = &cobra.Command{
-	Use:     "mq",
-	Aliases: []string{"mr"},
-	GroupID: GroupWork,
-	Short:   "Merge queue operations",
-	RunE:    requireSubcommand,
+	Use:         "mq",
+	Aliases:     []string{"mr"},
+	GroupID:     GroupWork,
+	Annotations: map[string]string{AnnotationPolecatSafe: "true"},
+	Short:       "Merge queue operations",
+	RunE:        requireSubcommand,
 	Long: `Manage merge requests and the merge queue for a rig.
 
 Alias: 'gt mr' is equivalent to 'gt mq' (merge request vs merge queue).
