@@ -2002,8 +2002,11 @@ func BuildStartupCommand(envVars map[string]string, rigPath, prompt string, inne
 	wrapperCtx := wrapperContextFromEnv(envVars)
 
 	// Apply exec wrapper and inner env from rig/town settings if not already set.
-	// Uses a single LoadRigSettings call to avoid redundant file reads.
-	if len(rc.ExecWrapper) == 0 || len(rc.ExecWrapperInnerEnv) == 0 {
+	// Only applies to worker roles (polecat, crew) — infrastructure roles
+	// (witness, refinery, deacon) must run locally for direct access to
+	// bare repos, Dolt, and tmux sessions.
+	isWorkerRole := role == "" || role == "polecat" || role == "crew"
+	if isWorkerRole && (len(rc.ExecWrapper) == 0 || len(rc.ExecWrapperInnerEnv) == 0) {
 		wrapper, innerEnv := resolveExecWrapperConfig(rigPath, wrapperCtx)
 		if len(rc.ExecWrapper) == 0 {
 			rc.ExecWrapper = wrapper
@@ -2387,8 +2390,11 @@ func BuildStartupCommandWithAgentOverride(envVars map[string]string, rigPath, pr
 	wrapperCtx := wrapperContextFromEnv(envVars)
 
 	// Apply exec wrapper and inner env from rig/town settings if not already set.
-	// Uses a single LoadRigSettings call to avoid redundant file reads.
-	if len(rc.ExecWrapper) == 0 || len(rc.ExecWrapperInnerEnv) == 0 {
+	// Only applies to worker roles (polecat, crew) — infrastructure roles
+	// (witness, refinery, deacon) must run locally for direct access to
+	// bare repos, Dolt, and tmux sessions.
+	isWorkerRole := role == "" || role == "polecat" || role == "crew"
+	if isWorkerRole && (len(rc.ExecWrapper) == 0 || len(rc.ExecWrapperInnerEnv) == 0) {
 		wrapper, innerEnv := resolveExecWrapperConfig(rigPath, wrapperCtx)
 		if len(rc.ExecWrapper) == 0 {
 			rc.ExecWrapper = wrapper
