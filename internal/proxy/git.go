@@ -188,6 +188,19 @@ func (s *Server) handlePack(w http.ResponseWriter, r *http.Request, repoPath, se
 
 	identity := cnToIdentity(clientCN)
 
+	// For receive-pack: decompress gzip body first, then enforce CN-scoped branch auth.
+	if service == "git-receive-pack" && r.Header.Get("Content-Encoding") == "gzip" {
+		gz, gzErr := gzip.NewReader(r.Body)
+		if gzErr != nil {
+			s.log.Error("git receive-pack gzip decode failed", "err", gzErr)
+			http.Error(w, "gzip decode failed", http.StatusBadRequest)
+			return
+		}
+		defer gz.Close()
+		r.Body = io.NopCloser(gz)
+		r.Header.Del("Content-Encoding")
+	}
+
 	// For receive-pack: enforce CN-scoped branch authorization.
 	var refs []string
 	if service == "git-receive-pack" {
@@ -383,12 +396,12 @@ func validateReceivePackRefs(body []byte, cnName string) error {
 		}
 		ref := string(parts[2])
 
-		// Only allow refs/heads/polecat/<cnName>-* or refs/heads/polecat/<cnName>/*
-		// (branch names may use hyphen or slash separators).
-		// Exact-name pushes (without timestamp suffix) are not permitted.
-		allowedSlash := "refs/heads/polecat/" + cnName + "/"
-		if !strings.HasPrefix(ref, allowed) && !strings.HasPrefix(ref, allowedSlash) {
-			return fmt.Errorf("push to %q denied: only refs/heads/polecat/%s-* or refs/heads/polecat/%s/* allowed", ref, cnName, cnName)
+		// Allow refs/heads/polecat/<cnName>, refs/heads/polecat/<cnName>-*, or
+		// refs/heads/polecat/<cnName>/* (exact match, hyphen suffix, or slash suffix).
+		exactMatch := "refs/heads/polecat/" + cnName
+		allowedSlash := exactMatch + "/"
+		if ref != exactMatch && !strings.HasPrefix(ref, allowed) && !strings.HasPrefix(ref, allowedSlash) {
+			return fmt.Errorf("push to %q denied: only refs/heads/polecat/%s[-/]* allowed", ref, cnName)
 		}
 	}
 	return nil
