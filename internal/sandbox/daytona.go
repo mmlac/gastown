@@ -10,7 +10,8 @@ import (
 
 // DefaultRemoteCertDir is the directory inside the workspace where mTLS
 // certificates are injected for proxy authentication.
-const DefaultRemoteCertDir = "/etc/gt/certs"
+// Uses a user-writable path since sandboxes run as non-root (daytona user).
+const DefaultRemoteCertDir = "/home/daytona/.gt/certs"
 
 // DefaultProxyAddr is the default proxy server address used when
 // RigSettings.RemoteBackend.ProxyAddr is not configured.
