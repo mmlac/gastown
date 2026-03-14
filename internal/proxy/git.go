@@ -51,6 +51,7 @@ package proxy
 
 import (
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -201,9 +202,23 @@ func (s *Server) handlePack(w http.ResponseWriter, r *http.Request, repoPath, se
 	w.Header().Set("Content-Type", "application/x-"+service+"-result")
 	w.Header().Set("Cache-Control", "no-cache")
 
+	// Git clients send gzip-compressed request bodies (Content-Encoding: gzip).
+	// The git subprocess expects uncompressed input, so we decompress here.
+	var body io.Reader = r.Body
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		gz, gzErr := gzip.NewReader(r.Body)
+		if gzErr != nil {
+			s.log.Error("git pack gzip decode failed", "service", service, "err", gzErr)
+			http.Error(w, "gzip decode failed", http.StatusBadRequest)
+			return
+		}
+		defer gz.Close()
+		body = gz
+	}
+
 	var errBuf strings.Builder
 	cmd := exec.CommandContext(r.Context(), service, "--stateless-rpc", repoPath)
-	cmd.Stdin = r.Body
+	cmd.Stdin = body
 	cmd.Stdout = w
 	cmd.Stderr = &errBuf
 	cmd.Env = minimalEnv()
