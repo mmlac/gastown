@@ -329,6 +329,45 @@ func wlCommonsConformance(t *testing.T, newStore func(t *testing.T) WLCommonsSto
 			t.Errorf("ClaimedBy = %q, want to contain %q", got.ClaimedBy, "specific-rig")
 		}
 	})
+
+	t.Run("QueryReturnsTagsField", func(t *testing.T) {
+		t.Parallel()
+		store := newStore(t)
+
+		item := &WantedItem{
+			ID:    "w-conf12",
+			Title: "Tagged item",
+			Tags:  []string{"go", "database"},
+		}
+		if err := store.InsertWanted(item); err != nil {
+			t.Fatalf("InsertWanted() error: %v", err)
+		}
+
+		got, err := store.QueryWanted("w-conf12")
+		if err != nil {
+			t.Fatalf("QueryWanted() error: %v", err)
+		}
+		if len(got.Tags) != 2 || got.Tags[0] != "go" || got.Tags[1] != "database" {
+			t.Errorf("Tags = %v, want [go database]", got.Tags)
+		}
+	})
+
+	t.Run("QueryReturnsEmptyTagsForNoTags", func(t *testing.T) {
+		t.Parallel()
+		store := newStore(t)
+
+		if err := store.InsertWanted(&WantedItem{ID: "w-conf13", Title: "Untagged item"}); err != nil {
+			t.Fatalf("InsertWanted() error: %v", err)
+		}
+
+		got, err := store.QueryWanted("w-conf13")
+		if err != nil {
+			t.Fatalf("QueryWanted() error: %v", err)
+		}
+		if len(got.Tags) != 0 {
+			t.Errorf("Tags = %v, want empty for item with no tags", got.Tags)
+		}
+	})
 }
 
 // TestFakeWLCommonsStore_Conformance runs the conformance suite against the fake.

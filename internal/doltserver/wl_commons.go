@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -351,7 +352,7 @@ CALL DOLT_COMMIT('-m', 'wl done: %s');
 
 // QueryWanted fetches a wanted item by ID. Returns nil if not found.
 func QueryWanted(townRoot, wantedID string) (*WantedItem, error) {
-	query := fmt.Sprintf(`USE %s; SELECT id, title, status, COALESCE(claimed_by, '') as claimed_by FROM wanted WHERE id='%s';`,
+	query := fmt.Sprintf(`USE %s; SELECT id, title, status, COALESCE(claimed_by, '') as claimed_by, COALESCE(tags, JSON_ARRAY()) as tags FROM wanted WHERE id='%s';`,
 		WLCommonsDB, EscapeSQL(wantedID))
 
 	output, err := doltSQLQuery(townRoot, query)
@@ -370,6 +371,11 @@ func QueryWanted(townRoot, wantedID string) (*WantedItem, error) {
 		Title:     row["title"],
 		Status:    row["status"],
 		ClaimedBy: row["claimed_by"],
+	}
+	if tagsStr := row["tags"]; tagsStr != "" && tagsStr != "[]" {
+		if err := json.Unmarshal([]byte(tagsStr), &item.Tags); err != nil {
+			return nil, fmt.Errorf("parsing tags for %q: %w", wantedID, err)
+		}
 	}
 	return item, nil
 }
