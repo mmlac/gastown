@@ -532,6 +532,15 @@ func runConfigAgentTiersSetOrder(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no agent tiers configured; run 'gt config agent tiers init' first")
 	}
 
+	// Validate: no duplicate tier names in order list
+	seen := make(map[string]bool, len(args))
+	for _, name := range args {
+		if seen[name] {
+			return fmt.Errorf("duplicate tier name %q in order list", name)
+		}
+		seen[name] = true
+	}
+
 	// Validate: all args must exist in Tiers
 	for _, name := range args {
 		if !townSettings.AgentTiers.HasTier(name) {
