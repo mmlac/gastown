@@ -487,6 +487,16 @@ func (m *SessionManager) Start(ctx context.Context, polecat string, opts Session
 		// These must be added BEFORE InjectInnerEnv below.
 		sandboxInnerEnv["CLAUDE_CODE_ENTRYPOINT"] = "cli"
 		sandboxInnerEnv["CLAUDECODE"] = "1"
+
+		// Set GT_REPO_URL so gt prime can tell the agent where to clone from.
+		// The proxy serves git over /v1/git/<rig> with mTLS auth.
+		proxyURL := sandboxInnerEnv["GT_PROXY_URL"] // already set by PreStart
+		if proxyURL != "" {
+			sandboxInnerEnv["GT_REPO_URL"] = proxyURL + "/v1/git/" + m.rig.Name
+		}
+
+		// GT_SANDBOX=1 signals to gt prime that this is a remote sandbox.
+		sandboxInnerEnv["GT_SANDBOX"] = "1"
 	}
 
 	// Inject sandbox inner env vars between the exec-wrapper's -- delimiter and the

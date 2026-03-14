@@ -11,6 +11,7 @@ import (
 
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/checkpoint"
+	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/deacon"
 	"github.com/steveyegge/gastown/internal/rig"
@@ -738,4 +739,69 @@ func explain(condition bool, reason string) {
 	if primeExplain && condition {
 		fmt.Printf("\n[EXPLAIN] %s\n", reason)
 	}
+}
+
+// outputSandboxBootstrap emits git clone instructions when running in a remote
+// sandbox. Detects sandbox mode by checking if the rig has a remote_backend
+// configured AND the prime call came through the proxy (GT_PROXY_IDENTITY set).
+//
+// The agent receives this output and must clone the repo before it can work.
+// The clone URL uses the proxy's /v1/git/<rig> endpoint with mTLS auth.
+func outputSandboxBootstrap(ctx RoleContext) {
+	// Only for polecats in rigs with remote backends
+	if ctx.Role != RolePolecat {
+		return
+	}
+
+	// Check if this call came through the proxy
+	proxyIdentity := os.Getenv("GT_PROXY_IDENTITY")
+	if proxyIdentity == "" {
+		return
+	}
+
+	// Check if the rig has a remote backend configured
+	rigPath := filepath.Join(ctx.TownRoot, ctx.Rig)
+	settingsPath := filepath.Join(rigPath, "settings", "config.json")
+	rigSettings, err := config.LoadRigSettings(settingsPath)
+	if err != nil || rigSettings.RemoteBackend == nil {
+		return
+	}
+
+	// Build the git clone URL from proxy address
+	proxyAddr := rigSettings.RemoteBackend.ProxyAddr
+	if proxyAddr == "" {
+		proxyAddr = "127.0.0.1:9876"
+	}
+	repoURL := "https://" + proxyAddr + "/v1/git/" + ctx.Rig
+
+	// Determine the branch to check out
+	branch := os.Getenv("GT_BRANCH")
+	if branch == "" {
+		branch = os.Getenv("GT_REPO_BRANCH")
+	}
+
+	// Get default branch from rig
+	r := &rig.Rig{Name: ctx.Rig, Path: rigPath}
+	defaultBranch := r.DefaultBranch()
+
+	fmt.Println()
+	fmt.Printf("%s\n\n", style.Bold.Render("## Sandbox Workspace Bootstrap"))
+	fmt.Println("You are running inside a remote Daytona sandbox. Your workspace")
+	fmt.Println("does not have a git repository yet. Clone it from the proxy:")
+	fmt.Println()
+	fmt.Println("```bash")
+	fmt.Printf("git clone %s repo && cd repo\n", repoURL)
+	if branch != "" {
+		fmt.Printf("git checkout %s  # your assigned branch\n", branch)
+	} else {
+		fmt.Printf("# Default branch: %s\n", defaultBranch)
+	}
+	fmt.Println("```")
+	fmt.Println()
+	fmt.Println("The mTLS certificates for git auth are already configured via")
+	fmt.Println("GIT_SSL_CERT, GIT_SSL_KEY, and GIT_SSL_CAINFO environment variables.")
+	fmt.Println()
+	fmt.Println("After cloning, run `gt prime` again from inside the repo to get")
+	fmt.Println("your work context and hooked bead.")
+	fmt.Println()
 }
