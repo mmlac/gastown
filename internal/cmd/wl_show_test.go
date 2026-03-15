@@ -83,7 +83,7 @@ func TestShowWantedText(t *testing.T) {
 		"Description:", "Add structured logs",
 		"Project:", "gastown",
 		"Type:", "feature",
-		"Priority:", "2",
+		"Priority:", "P2",
 		"Tags:", "logging",
 		"Posted By:", "their-rig",
 		"Status:", "open",
@@ -139,6 +139,10 @@ func TestShowWantedEmptyFields(t *testing.T) {
 			t.Errorf("output missing label %q\nfull output:\n%s", label, out)
 		}
 	}
+	// Empty optional fields must render as "(none)".
+	if strings.Count(out, "(none)") == 0 {
+		t.Errorf("output missing (none) placeholder for empty fields\nfull output:\n%s", out)
+	}
 }
 
 func TestShowWantedMultilineDescription(t *testing.T) {
@@ -157,5 +161,20 @@ func TestShowWantedMultilineDescription(t *testing.T) {
 
 	if !strings.Contains(out, "Line one") {
 		t.Errorf("output missing first line of description\nfull output:\n%s", out)
+	}
+	// All lines of a multiline description must appear.
+	if !strings.Contains(out, "Line two") {
+		t.Errorf("output missing second line of description\nfull output:\n%s", out)
+	}
+	if !strings.Contains(out, "Line three") {
+		t.Errorf("output missing third line of description\nfull output:\n%s", out)
+	}
+	// Continuation lines must be indented with the 15-char (labelWidth+2) prefix.
+	indent := strings.Repeat(" ", 15)
+	if !strings.Contains(out, indent+"Line two") {
+		t.Errorf("Line two not indented with %d-space prefix\nfull output:\n%s", 15, out)
+	}
+	if !strings.Contains(out, indent+"Line three") {
+		t.Errorf("Line three not indented with %d-space prefix\nfull output:\n%s", 15, out)
 	}
 }
