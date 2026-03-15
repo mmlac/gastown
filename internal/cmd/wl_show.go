@@ -72,26 +72,41 @@ func showWanted(store doltserver.WLCommonsStore, wantedID string, asJSON bool) e
 func renderWantedItem(item *doltserver.WantedItem) error {
 	tags := strings.Join(item.Tags, ", ")
 
+	sandboxVal := "No"
+	if item.SandboxRequired {
+		sandboxVal = "Yes"
+	}
+
 	rows := []struct{ label, value string }{
 		{"ID", item.ID},
 		{"Title", item.Title},
 		{"Description", item.Description},
 		{"Project", item.Project},
 		{"Type", item.Type},
-		{"Priority", fmt.Sprintf("%d", item.Priority)},
+		{"Priority", wlFormatPriority(fmt.Sprintf("%d", item.Priority))},
 		{"Tags", tags},
 		{"Posted By", item.PostedBy},
 		{"Claimed By", item.ClaimedBy},
 		{"Status", item.Status},
 		{"Effort", item.EffortLevel},
 		{"Evidence URL", item.EvidenceURL},
+		{"Sandbox", sandboxVal},
 		{"Created", item.CreatedAt},
 		{"Updated", item.UpdatedAt},
 	}
 
-	labelWidth := 12
+	labelWidth := 13
+	indent := strings.Repeat(" ", labelWidth+2)
 	for _, r := range rows {
-		fmt.Printf("%-*s  %s\n", labelWidth, r.label+":", r.value)
+		val := r.value
+		if val == "" {
+			val = "(none)"
+		}
+		lines := strings.Split(val, "\n")
+		fmt.Printf("%-*s  %s\n", labelWidth, r.label+":", lines[0])
+		for _, line := range lines[1:] {
+			fmt.Printf("%s%s\n", indent, line)
+		}
 	}
 	return nil
 }
