@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mail"
@@ -1064,6 +1065,17 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 					description += fmt.Sprintf("\npre_verified_base: %s", verifiedBase)
 				} else {
 					style.PrintWarning("could not resolve origin/%s for pre-verified base: %v (pre-verification data incomplete)", target, baseErr)
+				}
+			}
+
+			// gt-42m: Repair metadata.json drift before issuing bd create --ephemeral.
+			// If a rig's metadata.json has dolt_mode=embedded while the dolt server
+			// is running, bd opens an embedded instance that contends with the
+			// server for on-disk locks, deadlocking in futex_wait_queue (gt-e18).
+			// EnsureMetadata is idempotent and rewrites only when something is wrong.
+			if rigName != "" && townRoot != "" {
+				if err := doltserver.EnsureMetadata(townRoot, rigName); err != nil {
+					style.PrintWarning("could not repair metadata for rig %q: %v (continuing — bd create may hang on stale embedded mode)", rigName, err)
 				}
 			}
 

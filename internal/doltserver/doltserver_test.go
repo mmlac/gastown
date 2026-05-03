@@ -1548,6 +1548,57 @@ func TestEnsureMetadata_RepairsEmptyFile(t *testing.T) {
 	}
 }
 
+// TestEnsureMetadata_RepairsEmbeddedMode tests the gt-42m / gt-e18 deadlock
+// scenario: a rig's metadata.json has dolt_mode=embedded while the dolt
+// server is running. bd create --ephemeral honors the embedded setting and
+// contends with the live server for on-disk locks, deadlocking in
+// futex_wait_queue. EnsureMetadata must rewrite dolt_mode to "server" so
+// future bd invocations connect via TCP instead.
+func TestEnsureMetadata_RepairsEmbeddedMode(t *testing.T) {
+	townRoot := t.TempDir()
+
+	beadsDir := filepath.Join(townRoot, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mirror the exact shape observed in /gt/automatonai/.beads/metadata.json
+	// that triggered seven gt-e18 occurrences in twelve hours.
+	metaPath := filepath.Join(beadsDir, "metadata.json")
+	original := map[string]interface{}{
+		"database":         "dolt",
+		"backend":          "dolt",
+		"dolt_mode":        "embedded",
+		"dolt_server_host": "127.0.0.1",
+		"dolt_server_port": 3307,
+		"dolt_database":    "hq",
+		"project_id":       "preserve-me",
+	}
+	data, _ := json.Marshal(original)
+	if err := os.WriteFile(metaPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsureMetadata(townRoot, "hq"); err != nil {
+		t.Fatalf("EnsureMetadata failed: %v", err)
+	}
+
+	repaired, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("reading metadata: %v", err)
+	}
+	var meta map[string]interface{}
+	if err := json.Unmarshal(repaired, &meta); err != nil {
+		t.Fatalf("parsing metadata: %v", err)
+	}
+	if meta["dolt_mode"] != "server" {
+		t.Errorf("dolt_mode = %v, want server (embedded was not corrected)", meta["dolt_mode"])
+	}
+	if meta["project_id"] != "preserve-me" {
+		t.Errorf("project_id not preserved: %v", meta["project_id"])
+	}
+}
+
 // TestEnsureMetadata_RepairsWrongBackend tests that metadata.json with
 // backend=sqlite gets corrected to dolt.
 func TestEnsureMetadata_RepairsWrongBackend(t *testing.T) {
